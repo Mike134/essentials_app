@@ -217,8 +217,23 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           future: _lookupOptions[field.column],
           builder: (context, snapshot) {
             final options = snapshot.data ?? const [];
+            final currentValue = _lookupValues[field.column];
+            // While options are still loading, `items` below doesn't yet
+            // contain currentValue -- DropdownButtonFormField asserts (in
+            // debug builds only, which is why this was only ever visible
+            // via `flutter run`/F5, never the release APK) that its value
+            // matches exactly one item unless items is empty or the value
+            // is null. A required field's items list actually starts empty
+            // (no blank placeholder item), which happens to dodge this; an
+            // optional one always has that placeholder, so it doesn't.
+            // Falling back to null here is safe either way: once options
+            // load, DropdownButtonFormField's own state picks up the
+            // now-valid initialValue via didUpdateWidget.
+            final hasCurrentValue = options.any(
+              (option) => option[lookup.valueColumn] == currentValue,
+            );
             return DropdownButtonFormField<int>(
-              initialValue: _lookupValues[field.column],
+              initialValue: hasCurrentValue ? currentValue : null,
               decoration: InputDecoration(labelText: field.label),
               items: [
                 if (!field.required)
