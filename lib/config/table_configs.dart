@@ -332,8 +332,79 @@ final journalConfig = TableConfig(
   ],
 );
 
+/// Batch 3 -- 7 FK fields, but by this point that's just a longer config on
+/// the same lookup-field shape batch 2 already proved, not new architecture.
+/// `readSource` points reads at the `subscription_computed` view (see
+/// schema.sql) instead of the bare table, so `yearly_cost`/`next_date` --
+/// computed at query time, never stored -- come back alongside the real
+/// columns; both are marked `readOnly` since there's no column to write.
+final subscriptionConfig = TableConfig(
+  tableName: 'subscription',
+  displayColumn: 'name',
+  readSource: 'subscription_computed',
+  fields: const [
+    FieldConfig(column: 'name', label: 'Name', required: true),
+    FieldConfig(
+      column: 'domain_id',
+      label: 'Domain',
+      lookup: LookupConfig(table: 'domain'),
+    ),
+    FieldConfig(
+      column: 'used_by_id',
+      label: 'Used By',
+      lookup: LookupConfig(table: 'person'),
+    ),
+    FieldConfig(
+      column: 'class_id',
+      label: 'Class',
+      lookup: LookupConfig(table: 'class'),
+    ),
+    FieldConfig(
+      column: 'renewal_period_id',
+      label: 'Renewal Period',
+      lookup: LookupConfig(table: 'time_frame'),
+    ),
+    FieldConfig(column: 'cost', label: 'Cost', type: FieldType.real),
+    FieldConfig(
+      column: 'yearly_cost',
+      label: 'Yearly Cost',
+      type: FieldType.real,
+      readOnly: true,
+    ),
+    FieldConfig(
+      column: 'payment_method_id',
+      label: 'Payment Method',
+      // account.code (e.g. "CAPONE MC (7072)"), not account.name -- see
+      // CLAUDE.md "Known data quirks": this FK was always resolved against
+      // code in the source workbook, not the account's display name.
+      lookup: LookupConfig(table: 'account', displayColumn: 'code'),
+    ),
+    FieldConfig(
+      column: 'importance_id',
+      label: 'Importance',
+      lookup: LookupConfig(table: 'importance'),
+    ),
+    FieldConfig(
+      column: 'disposition_id',
+      label: 'Disposition',
+      lookup: LookupConfig(table: 'disposition'),
+    ),
+    FieldConfig(column: 'start_date', label: 'Start Date'),
+    FieldConfig(column: 'next_date', label: 'Next Date', readOnly: true),
+    FieldConfig(column: 'last_date', label: 'Last Date'),
+    FieldConfig(column: 'link', label: 'Link'),
+    FieldConfig(
+      column: 'active',
+      label: 'Active',
+      type: FieldType.boolean,
+      defaultValue: true, // schema.sql: active INTEGER NOT NULL DEFAULT 1
+    ),
+    FieldConfig(column: 'note', label: 'Note'),
+  ],
+);
+
 /// All tables with a registered [TableConfig], in nav-menu order --
-/// matches CLAUDE.md's batch-1/batch-2 ordering exactly.
+/// matches CLAUDE.md's batch-1/batch-2/batch-3 ordering exactly.
 final List<TableConfig> registeredTables = [
   domainConfig,
   priorityConfig,
@@ -354,4 +425,5 @@ final List<TableConfig> registeredTables = [
   shipperConfig,
   shipmentConfig,
   journalConfig,
+  subscriptionConfig,
 ];

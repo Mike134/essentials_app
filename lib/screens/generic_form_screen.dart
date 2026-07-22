@@ -69,6 +69,9 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
 
     final values = <String, Object?>{};
     for (final field in widget.config.fields) {
+      // Computed fields (e.g. subscription_computed's yearly_cost/next_date)
+      // aren't real columns on the write target -- nothing to save.
+      if (field.readOnly) continue;
       if (field.type == FieldType.boolean) {
         values[field.column] = (_boolValues[field.column] ?? false) ? 1 : 0;
       } else if (field.isLookup) {
@@ -144,6 +147,21 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   }
 
   Widget _buildField(FieldConfig field) {
+    if (field.readOnly) {
+      // Same disabled-TextFormField treatment as the ID field above --
+      // shown for context, never editable. Reuses the controller already
+      // populated in initState (query-time value from config.readSource
+      // when editing, blank on add since the row doesn't exist yet).
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: TextFormField(
+          controller: _controllers[field.column],
+          enabled: false,
+          decoration: InputDecoration(labelText: field.label),
+        ),
+      );
+    }
+
     if (field.type == FieldType.boolean) {
       return SwitchListTile(
         title: Text(field.label),

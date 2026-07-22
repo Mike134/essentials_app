@@ -30,7 +30,7 @@ class GenericDao {
   Future<List<Map<String, Object?>>> getAll() async {
     final db = await _db;
     return db.query(
-      config.tableName,
+      config.readSource ?? config.tableName,
       orderBy: config.orderBy ?? config.displayColumn,
     );
   }

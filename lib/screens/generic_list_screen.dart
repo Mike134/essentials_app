@@ -193,6 +193,23 @@ class _GenericListScreenState extends State<GenericListScreen> {
     FieldConfig field,
     Map<String, Map<int, String>> lookupMaps,
   ) {
+    if (field.readOnly) {
+      // Computed, query-time-only value (e.g. subscription_computed's
+      // yearly_cost/next_date) -- nothing to write back, so no inline
+      // editor at all, same reasoning as `id`.
+      return TrinaColumn(
+        title: field.label,
+        field: field.column,
+        type: switch (field.type) {
+          FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
+          FieldType.integer => TrinaColumnType.number(),
+          _ => TrinaColumnType.text(),
+        },
+        readOnly: true,
+        width: field.type == FieldType.text ? 220 : 110,
+      );
+    }
+
     if (field.type == FieldType.boolean) {
       return TrinaColumn(
         title: field.label,
@@ -287,6 +304,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
     if (event.column.field == 'id' || event.column.field == _actionsField) return;
 
     final field = widget.config.fields.firstWhere((f) => f.column == event.column.field);
+    // Computed/readOnly columns are readOnly in TrinaGrid too, so this
+    // shouldn't fire for them -- guard anyway rather than writing to a
+    // column that doesn't exist on the write target.
+    if (field.readOnly) return;
     final id = event.row.cells['id']!.value as int;
 
     Object? value = event.value;

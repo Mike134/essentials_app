@@ -33,6 +33,7 @@ class FieldConfig {
     this.required = false,
     this.lookup,
     this.defaultValue,
+    this.readOnly = false,
   });
 
   /// The literal SQLite column name.
@@ -59,6 +60,12 @@ class FieldConfig {
   final LookupConfig? lookup;
 
   bool get isLookup => lookup != null;
+
+  /// True for a value computed at query time (e.g. `subscription_computed`'s
+  /// `yearly_cost`/`next_date`, per schema.sql) rather than stored as a real
+  /// column on [TableConfig.tableName] -- never editable in the grid or
+  /// form, and never written on insert/update (there's no column to write).
+  final bool readOnly;
 }
 
 /// Drives the generic list + form screens for one SQLite table. One config
@@ -71,6 +78,7 @@ class TableConfig {
     required this.displayColumn,
     required this.fields,
     this.orderBy,
+    this.readSource,
   });
 
   final String tableName;
@@ -83,4 +91,14 @@ class TableConfig {
 
   /// Editable fields, in the order they should appear on the form.
   final List<FieldConfig> fields;
+
+  /// Query source for reads ([GenericDao.getAll]) -- defaults to
+  /// [tableName] when null. Set this when a table has computed/derived
+  /// columns not stored on the table itself, e.g. `subscription` ->
+  /// `subscription_computed` (see schema.sql): `yearly_cost`/`next_date`
+  /// only exist in that view, computed at query time so they can never go
+  /// stale. Writes (insert/update/delete) always target [tableName] --
+  /// a plain SQLite view is read-only without `INSTEAD OF` triggers,
+  /// which this project doesn't use.
+  final String? readSource;
 }
