@@ -113,6 +113,18 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            // The surrogate PK is database-controlled and never editable,
+            // in either view type -- shown read-only here only when
+            // editing, since a new/unsaved row has no id yet to show.
+            if (widget.isEditing)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: TextFormField(
+                  initialValue: '${widget.existing!['id']}',
+                  enabled: false,
+                  decoration: const InputDecoration(labelText: 'ID'),
+                ),
+              ),
             for (final field in widget.config.fields) _buildField(field),
             const SizedBox(height: 24),
             FilledButton(

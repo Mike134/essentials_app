@@ -39,6 +39,7 @@ dependencies:
   sqflite_common_ffi: ^2.3.4+4
   path: ^1.9.0
   permission_handler: ^11.3.1
+  trina_grid: ^2.2.2
 
 dev_dependencies:
   flutter_test:
