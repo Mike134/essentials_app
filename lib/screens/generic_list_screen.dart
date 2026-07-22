@@ -44,7 +44,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
   static const String _actionsField = '_actions';
 
   late final GenericDao _dao;
-  late Future<List<Map<String, Object?>>> _rowsFuture;
+  late Future<_ListData> _rowsFuture;
 
   @override
   void initState() {
@@ -64,8 +64,28 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   void _reload() {
     setState(() {
-      _rowsFuture = _dao.getAll();
+      _rowsFuture = _loadData();
     });
+  }
+
+  /// Fetches rows plus, for every lookup [FieldConfig], an id -> display-text
+  /// map -- so the grid can show e.g. a gender's name instead of its raw
+  /// `gender_id`. The form screen resolves lookups itself (dropdown built
+  /// straight from [GenericDao.getLookupOptions]); the grid needs its own
+  /// resolution since it renders plain cell values, not per-field widgets.
+  Future<_ListData> _loadData() async {
+    final rows = await _dao.getAll();
+    final lookupMaps = <String, Map<int, String>>{};
+    for (final field in widget.config.fields) {
+      if (!field.isLookup) continue;
+      final lookup = field.lookup!;
+      final options = await _dao.getLookupOptions(lookup);
+      lookupMaps[field.column] = {
+        for (final option in options)
+          option[lookup.valueColumn] as int: '${option[lookup.displayColumn]}',
+      };
+    }
+    return _ListData(rows: rows, lookupMaps: lookupMaps);
   }
 
   Future<void> _openForm({Map<String, Object?>? row}) async {
@@ -116,11 +136,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
     }
   }
 
-  Map<String, Object?> _rowMapFromTrinaRow(TrinaRow trinaRow) {
-    return {for (final entry in trinaRow.cells.entries) entry.key: entry.value.value};
-  }
-
-  List<TrinaColumn> _buildColumns() {
+  List<TrinaColumn> _buildColumns(List<Map<String, Object?>> rows) {
     return [
       TrinaColumn(
         title: 'ID',
@@ -139,7 +155,13 @@ class _GenericListScreenState extends State<GenericListScreen> {
         frozen: TrinaColumnFrozen.end,
         width: 120,
         renderer: (rendererContext) {
-          final row = _rowMapFromTrinaRow(rendererContext.row);
+          // Looked up from the original (unresolved) rows, not rebuilt from
+          // the grid's own cells -- a lookup column's cell holds resolved
+          // display text (e.g. "Female"), not the raw FK id the edit form
+          // needs for its dropdown ([_loadData] resolves ids to text only
+          // for display).
+          final id = rendererContext.row.cells['id']!.value as int;
+          final row = rows.firstWhere((r) => r['id'] == id);
           return Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -193,6 +215,20 @@ class _GenericListScreenState extends State<GenericListScreen> {
       );
     }
 
+    if (field.isLookup) {
+      // Read-only in the grid -- editing a lookup means picking from the
+      // referenced table, which needs the full form's dropdown, not
+      // TrinaGrid's own text/number inline editor. The cell already shows
+      // resolved display text (see _cellValueFor), not the raw FK id.
+      return TrinaColumn(
+        title: field.label,
+        field: field.column,
+        type: TrinaColumnType.text(),
+        readOnly: true,
+        width: 160,
+      );
+    }
+
     return TrinaColumn(
       title: field.label,
       field: field.column,
@@ -205,7 +241,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
     );
   }
 
-  Object? _cellValueFor(FieldConfig field, Object? raw) {
+  Object? _cellValueFor(
+    FieldConfig field,
+    Object? raw,
+    Map<String, Map<int, String>> lookupMaps,
+  ) {
+    if (field.isLookup) {
+      if (raw == null) return '';
+      return lookupMaps[field.column]?[raw as int] ?? '';
+    }
     if (field.type == FieldType.boolean) {
       return raw == 1 || raw == true ? 1 : 0;
     }
@@ -215,14 +259,19 @@ class _GenericListScreenState extends State<GenericListScreen> {
     return raw;
   }
 
-  List<TrinaRow> _buildRows(List<Map<String, Object?>> rows) {
+  List<TrinaRow> _buildRows(
+    List<Map<String, Object?>> rows,
+    Map<String, Map<int, String>> lookupMaps,
+  ) {
     return [
       for (final row in rows)
         TrinaRow(
           cells: {
             'id': TrinaCell(value: row['id']),
             for (final field in widget.config.fields)
-              field.column: TrinaCell(value: _cellValueFor(field, row[field.column])),
+              field.column: TrinaCell(
+                value: _cellValueFor(field, row[field.column], lookupMaps),
+              ),
             _actionsField: TrinaCell(value: ''),
           },
         ),
@@ -232,9 +281,13 @@ class _GenericListScreenState extends State<GenericListScreen> {
   void _onGridChanged(TrinaGridOnChangedEvent event) {
     if (event.column.field == 'id' || event.column.field == _actionsField) return;
 
-    final id = event.row.cells['id']!.value as int;
     final field = widget.config.fields.firstWhere((f) => f.column == event.column.field);
+    // Lookup columns are readOnly (see _buildFieldColumn) so this shouldn't
+    // fire for them, but guard anyway rather than writing resolved display
+    // text back into an integer FK column.
+    if (field.isLookup) return;
 
+    final id = event.row.cells['id']!.value as int;
     Object? value = event.value;
     if (field.type == FieldType.text) {
       final text = (value as String? ?? '').trim();
@@ -248,7 +301,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(titleCase(widget.config.tableName))),
       drawer: widget.drawer,
-      body: FutureBuilder<List<Map<String, Object?>>>(
+      body: FutureBuilder<_ListData>(
         future: _rowsFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -257,13 +310,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
           }
-          final rows = snapshot.data ?? const [];
+          final data = snapshot.data;
+          final rows = data?.rows ?? const [];
           if (rows.isEmpty) {
             return const Center(child: Text('No records yet.'));
           }
+          final lookupMaps = data!.lookupMaps;
           return TrinaGrid(
-            columns: _buildColumns(),
-            rows: _buildRows(rows),
+            columns: _buildColumns(rows),
+            rows: _buildRows(rows, lookupMaps),
             configuration: const TrinaGridConfiguration(
               columnSize: TrinaGridColumnSizeConfig(
                 autoSizeMode: TrinaAutoSizeMode.none,
@@ -281,4 +336,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
       ),
     );
   }
+}
+
+/// Result of [_GenericListScreenState._loadData]: the raw rows (used for
+/// editing/deleting, and for any non-lookup cell value) plus, per lookup
+/// field, an id -> display-text map (used only to render grid cells).
+class _ListData {
+  const _ListData({required this.rows, required this.lookupMaps});
+
+  final List<Map<String, Object?>> rows;
+  final Map<String, Map<int, String>> lookupMaps;
 }

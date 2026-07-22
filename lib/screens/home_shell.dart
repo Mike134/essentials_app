@@ -9,8 +9,9 @@ import 'generic_list_screen.dart';
 /// [NavigationRail] on wide (Windows desktop) layouts, [Drawer] on narrow
 /// (Android) layouts -- one [LayoutBuilder] switch, not two separate
 /// implementations, per CLAUDE.md's "one codebase, no native control
-/// mapping" decision. Only `domain` is registered so far (batch 1); the
-/// rest of batch 1 is just additions to [registeredTables].
+/// mapping" decision. Every registered table (batch 1 and batch 2) shares
+/// this same nav shell -- new tables are just additions to
+/// [registeredTables].
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
