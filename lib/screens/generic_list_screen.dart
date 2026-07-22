@@ -129,6 +129,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
   Future<void> _saveCellEdit(int id, String column, Object? value) async {
     try {
       await _dao.update(id, {column: value});
+      // A computed field (e.g. subscription_computed's yearly_cost) can
+      // depend on whatever column just changed -- cost affects yearly_cost,
+      // start_date/renewal_period_id affect next_date, etc. Rather than
+      // hardcode that dependency graph in Dart (a second place the SQL
+      // formula in schema.sql would need to stay in sync with), just
+      // re-fetch whenever the table has any readOnly field at all. TrinaGrid
+      // otherwise keeps showing whatever value a computed cell held at the
+      // last full load, since editing a different cell doesn't touch it.
+      if (widget.config.fields.any((f) => f.readOnly)) _reload();
     } on DatabaseException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e')));

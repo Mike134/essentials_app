@@ -79,6 +79,7 @@ class TableConfig {
     required this.fields,
     this.orderBy,
     this.readSource,
+    this.computePreview,
   });
 
   final String tableName;
@@ -101,4 +102,20 @@ class TableConfig {
   /// a plain SQLite view is read-only without `INSTEAD OF` triggers,
   /// which this project doesn't use.
   final String? readSource;
+
+  /// Recomputes [FieldConfig.readOnly] field values for a live preview in
+  /// the form, before the row has been saved -- e.g. subscription's
+  /// yearly_cost/next_date as you edit cost/start_date/renewal_period.
+  /// [GenericFormScreen] calls this when the user leaves a field the
+  /// computed columns depend on (not on every keystroke), passing the
+  /// in-progress form values keyed by column name; the returned map's
+  /// entries overwrite the matching readOnly fields' displayed text.
+  ///
+  /// This necessarily duplicates the SQL view's formula in Dart -- there's
+  /// no row to query the view against until the user saves. Keep it a
+  /// preview only (never written on save; [GenericFormScreen] always
+  /// excludes readOnly fields from what it writes) so any drift between
+  /// this and schema.sql's formula is cosmetic, not a data-correctness
+  /// risk -- it self-corrects the moment the row is saved and reloaded.
+  final Future<Map<String, Object?>> Function(Map<String, Object?> values)? computePreview;
 }

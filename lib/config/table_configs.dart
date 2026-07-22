@@ -1,3 +1,4 @@
+import '../db/database_helper.dart';
 import '../models/table_config.dart';
 
 /// Batch 1 configs -- no lookups, prove the base template + navigation.
@@ -342,6 +343,7 @@ final subscriptionConfig = TableConfig(
   tableName: 'subscription',
   displayColumn: 'name',
   readSource: 'subscription_computed',
+  computePreview: _computeSubscriptionPreview,
   fields: const [
     FieldConfig(column: 'name', label: 'Name', required: true),
     FieldConfig(
@@ -402,6 +404,72 @@ final subscriptionConfig = TableConfig(
     FieldConfig(column: 'note', label: 'Note'),
   ],
 );
+
+/// Mirrors `subscription_computed`'s formula (schema.sql) in Dart, for the
+/// form's live pre-save preview only -- see [TableConfig.computePreview]'s
+/// doc comment for why this duplication is an accepted, low-risk tradeoff
+/// rather than a single-source-of-truth violation: the real, authoritative
+/// value always comes from the view once the row is saved and reloaded.
+Future<Map<String, Object?>> _computeSubscriptionPreview(
+  Map<String, Object?> values,
+) async {
+  final cost = values['cost'] as num?;
+  final renewalPeriodId = values['renewal_period_id'] as int?;
+  final startDateText = values['start_date'] as String?;
+
+  int? multiplier;
+  if (renewalPeriodId != null) {
+    final db = await DatabaseHelper.instance.database;
+    final rows = await db.query(
+      'time_frame',
+      columns: ['multiplier'],
+      where: 'id = ?',
+      whereArgs: [renewalPeriodId],
+    );
+    if (rows.isNotEmpty) multiplier = rows.first['multiplier'] as int?;
+  }
+
+  double? yearlyCost;
+  if (cost != null && multiplier != null && multiplier != 0) {
+    yearlyCost = double.parse((cost * 12.0 / multiplier).toStringAsFixed(2));
+  }
+
+  String? nextDate;
+  final startDate = startDateText == null ? null : DateTime.tryParse(startDateText);
+  if (startDate != null && multiplier != null) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final startDateOnly = DateTime(startDate.year, startDate.month, startDate.day);
+    if (startDateOnly.isAfter(today)) {
+      nextDate = startDateText;
+    } else {
+      final monthsElapsed = (today.year - startDate.year) * 12 +
+          (today.month - startDate.month) -
+          (today.day < startDate.day ? 1 : 0);
+      final periodsElapsed = (monthsElapsed ~/ multiplier) + 1;
+      final next = _addMonthsClamped(startDate, periodsElapsed * multiplier);
+      nextDate = '${next.year.toString().padLeft(4, '0')}-'
+          '${next.month.toString().padLeft(2, '0')}-'
+          '${next.day.toString().padLeft(2, '0')}';
+    }
+  }
+
+  return {'yearly_cost': yearlyCost, 'next_date': nextDate};
+}
+
+/// Adds [months] to [start], clamping the day to the target month's last
+/// valid day rather than rolling over into the following month -- matches
+/// SQLite's `date(x, '+N months')` modifier (what subscription_computed
+/// actually uses), which Dart's plain `DateTime(y, m, d)` constructor does
+/// not do on its own.
+DateTime _addMonthsClamped(DateTime start, int months) {
+  final totalMonths = (start.year * 12 + start.month - 1) + months;
+  final year = totalMonths ~/ 12;
+  final month = totalMonths % 12 + 1;
+  final lastDayOfMonth = DateTime(year, month + 1, 0).day;
+  final day = start.day > lastDayOfMonth ? lastDayOfMonth : start.day;
+  return DateTime(year, month, day);
+}
 
 /// All tables with a registered [TableConfig], in nav-menu order --
 /// matches CLAUDE.md's batch-1/batch-2/batch-3 ordering exactly.

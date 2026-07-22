@@ -28,6 +28,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   final Map<String, bool> _boolValues = {};
   final Map<String, int?> _lookupValues = {};
   final Map<String, Future<List<Map<String, Object?>>>> _lookupOptions = {};
+  final Map<String, FocusNode> _focusNodes = {};
   bool _saving = false;
 
   @override
@@ -50,6 +51,18 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       } else {
         _controllers[field.column] =
             TextEditingController(text: existingValue?.toString() ?? '');
+        // Recompute readOnly fields (e.g. yearly_cost) when the user tabs
+        // off an editable field that might feed them -- only wired up when
+        // this config actually has a preview formula (see computePreview's
+        // doc comment), and never for readOnly fields themselves (those are
+        // outputs, not inputs).
+        if (!field.readOnly && widget.config.computePreview != null) {
+          final focusNode = FocusNode();
+          focusNode.addListener(() {
+            if (!focusNode.hasFocus) _recomputePreview();
+          });
+          _focusNodes[field.column] = focusNode;
+        }
       }
     }
   }
@@ -59,18 +72,19 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     for (final controller in _controllers.values) {
       controller.dispose();
     }
+    for (final focusNode in _focusNodes.values) {
+      focusNode.dispose();
+    }
     super.dispose();
   }
 
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-
-    setState(() => _saving = true);
-
+  /// The in-progress field values a save would write, keyed by column --
+  /// also what [TableConfig.computePreview] recomputes readOnly fields
+  /// from, so unlike [_save] this must be callable without validating or
+  /// actually writing anything.
+  Map<String, Object?> _currentValues() {
     final values = <String, Object?>{};
     for (final field in widget.config.fields) {
-      // Computed fields (e.g. subscription_computed's yearly_cost/next_date)
-      // aren't real columns on the write target -- nothing to save.
       if (field.readOnly) continue;
       if (field.type == FieldType.boolean) {
         values[field.column] = (_boolValues[field.column] ?? false) ? 1 : 0;
@@ -89,6 +103,27 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         }
       }
     }
+    return values;
+  }
+
+  Future<void> _recomputePreview() async {
+    final compute = widget.config.computePreview;
+    if (compute == null) return;
+    final updates = await compute(_currentValues());
+    if (!mounted) return;
+    setState(() {
+      for (final entry in updates.entries) {
+        _controllers[entry.key]?.text = entry.value?.toString() ?? '';
+      }
+    });
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _saving = true);
+
+    final values = _currentValues();
 
     try {
       if (widget.isEditing) {
@@ -166,7 +201,10 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       return SwitchListTile(
         title: Text(field.label),
         value: _boolValues[field.column] ?? false,
-        onChanged: (value) => setState(() => _boolValues[field.column] = value),
+        onChanged: (value) {
+          setState(() => _boolValues[field.column] = value);
+          _recomputePreview();
+        },
       );
     }
 
@@ -190,7 +228,10 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                     child: Text('${option[lookup.displayColumn]}'),
                   ),
               ],
-              onChanged: (value) => setState(() => _lookupValues[field.column] = value),
+              onChanged: (value) {
+                setState(() => _lookupValues[field.column] = value);
+                _recomputePreview();
+              },
               validator: field.required
                   ? (value) => value == null ? '${field.label} is required' : null
                   : null,
@@ -204,6 +245,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: TextFormField(
         controller: _controllers[field.column],
+        focusNode: _focusNodes[field.column],
         decoration: InputDecoration(labelText: field.label),
         keyboardType: switch (field.type) {
           FieldType.integer => TextInputType.number,
