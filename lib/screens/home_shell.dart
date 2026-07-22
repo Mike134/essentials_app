@@ -43,18 +43,24 @@ class _HomeShellState extends State<HomeShell> {
         return Scaffold(
           body: Row(
             children: [
-              NavigationRail(
-                selectedIndex: _selectedIndex,
-                onDestinationSelected: _select,
-                labelType: NavigationRailLabelType.all,
-                destinations: [
-                  for (final table in tables)
-                    NavigationRailDestination(
-                      icon: const Icon(Icons.table_chart_outlined),
-                      selectedIcon: const Icon(Icons.table_chart),
-                      label: Text(titleCase(table.tableName)),
-                    ),
-                ],
+              // Not Flutter's NavigationRail -- it needs bounded height
+              // (uses Expanded internally) and can't be made to scroll, so
+              // it just overflows once there are more destinations than
+              // fit. With all 19 batch-1/2 tables eventually registered, a
+              // plain scrollable ListView is the only reliable option.
+              SizedBox(
+                width: 140,
+                child: ListView(
+                  children: [
+                    for (var i = 0; i < tables.length; i++)
+                      _railItem(
+                        context,
+                        label: titleCase(tables[i].tableName),
+                        selected: i == _selectedIndex,
+                        onTap: () => _select(i),
+                      ),
+                  ],
+                ),
               ),
               const VerticalDivider(width: 1),
               Expanded(child: content),
@@ -62,6 +68,39 @@ class _HomeShellState extends State<HomeShell> {
           ),
         );
       },
+    );
+  }
+
+  Widget _railItem(
+    BuildContext context, {
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        color: selected ? colorScheme.secondaryContainer : null,
+        child: Column(
+          children: [
+            Icon(
+              selected ? Icons.table_chart : Icons.table_chart_outlined,
+              color: selected ? colorScheme.onSecondaryContainer : null,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                color: selected ? colorScheme.onSecondaryContainer : null,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
