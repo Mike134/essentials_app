@@ -40,6 +40,11 @@ dependencies:
   path: ^1.9.0
   permission_handler: ^11.3.1
   trina_grid: ^2.2.2
+  # Direct dependency (not just via trina_grid) because TrinaColumnType
+  # .select's popup needs a ShadTheme ancestor -- see main.dart. Pinned to
+  # match what trina_grid already resolves to, so this doesn't independently
+  # drag in a second, possibly-incompatible shadcn_ui version.
+  shadcn_ui: ^0.43.4
 
 dev_dependencies:
   flutter_test:

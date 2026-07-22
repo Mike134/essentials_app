@@ -69,10 +69,9 @@ class _GenericListScreenState extends State<GenericListScreen> {
   }
 
   /// Fetches rows plus, for every lookup [FieldConfig], an id -> display-text
-  /// map -- so the grid can show e.g. a gender's name instead of its raw
-  /// `gender_id`. The form screen resolves lookups itself (dropdown built
-  /// straight from [GenericDao.getLookupOptions]); the grid needs its own
-  /// resolution since it renders plain cell values, not per-field widgets.
+  /// map -- used both to label each option in that field's inline dropdown
+  /// (see _buildFieldColumn's `TrinaColumnType.select`) and to turn the
+  /// selected id back into text for the cell's own display (`formatter`).
   Future<_ListData> _loadData() async {
     final rows = await _dao.getAll();
     final lookupMaps = <String, Map<int, String>>{};
@@ -136,7 +135,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
     }
   }
 
-  List<TrinaColumn> _buildColumns(List<Map<String, Object?>> rows) {
+  List<TrinaColumn> _buildColumns(
+    List<Map<String, Object?>> rows,
+    Map<String, Map<int, String>> lookupMaps,
+  ) {
     return [
       TrinaColumn(
         title: 'ID',
@@ -146,7 +148,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
         frozen: TrinaColumnFrozen.start,
         width: 80,
       ),
-      for (final field in widget.config.fields) _buildFieldColumn(field),
+      for (final field in widget.config.fields) _buildFieldColumn(field, lookupMaps),
       TrinaColumn(
         title: '',
         field: _actionsField,
@@ -155,11 +157,11 @@ class _GenericListScreenState extends State<GenericListScreen> {
         frozen: TrinaColumnFrozen.end,
         width: 120,
         renderer: (rendererContext) {
-          // Looked up from the original (unresolved) rows, not rebuilt from
-          // the grid's own cells -- a lookup column's cell holds resolved
-          // display text (e.g. "Female"), not the raw FK id the edit form
-          // needs for its dropdown ([_loadData] resolves ids to text only
-          // for display).
+          // Looked up from the original rows by id, not rebuilt from the
+          // grid's own cells -- boolean cells hold 1/0 rather than the row's
+          // original null, and text cells coerce a null column to '', so
+          // reconstructing from cells would feed the edit form subtly wrong
+          // starting values for an existing row.
           final id = rendererContext.row.cells['id']!.value as int;
           final row = rows.firstWhere((r) => r['id'] == id);
           return Row(
@@ -187,7 +189,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
     ];
   }
 
-  TrinaColumn _buildFieldColumn(FieldConfig field) {
+  TrinaColumn _buildFieldColumn(
+    FieldConfig field,
+    Map<String, Map<int, String>> lookupMaps,
+  ) {
     if (field.type == FieldType.boolean) {
       return TrinaColumn(
         title: field.label,
@@ -216,15 +221,21 @@ class _GenericListScreenState extends State<GenericListScreen> {
     }
 
     if (field.isLookup) {
-      // Read-only in the grid -- editing a lookup means picking from the
-      // referenced table, which needs the full form's dropdown, not
-      // TrinaGrid's own text/number inline editor. The cell already shows
-      // resolved display text (see _cellValueFor), not the raw FK id.
+      // Cell values stay the raw FK id (see _cellValueFor) -- TrinaColumnType
+      // .select's `items` are the ids themselves, not the referenced rows,
+      // so the stored/edited value and the underlying column type never
+      // diverge. `itemToString` labels each id in the dropdown popup;
+      // `formatter` (a plain TrinaColumn property, independent of column
+      // type) labels the cell itself when not being edited -- select columns
+      // don't format their own display text the way number/date columns do.
+      final options = lookupMaps[field.column] ?? const <int, String>{};
+      String displayFor(int? id) => id == null ? '' : (options[id] ?? '');
+      final items = <int?>[if (!field.required) null, ...options.keys];
       return TrinaColumn(
         title: field.label,
         field: field.column,
-        type: TrinaColumnType.text(),
-        readOnly: true,
+        type: TrinaColumnType.select<int?>(items, itemToString: displayFor),
+        formatter: (value) => displayFor(value as int?),
         width: 160,
       );
     }
@@ -241,15 +252,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
     );
   }
 
-  Object? _cellValueFor(
-    FieldConfig field,
-    Object? raw,
-    Map<String, Map<int, String>> lookupMaps,
-  ) {
-    if (field.isLookup) {
-      if (raw == null) return '';
-      return lookupMaps[field.column]?[raw as int] ?? '';
-    }
+  Object? _cellValueFor(FieldConfig field, Object? raw) {
+    // Left as the raw FK id (or null) -- the select column's `items` are
+    // ids, and its `formatter` (see _buildFieldColumn) turns that back into
+    // display text for the cell. Converting it to a string here the way the
+    // plain-text branch below does would desync the cell's value from
+    // `TrinaColumnType.select<int?>`'s item type and break both the
+    // dropdown's current-selection highlight and its edit validation.
+    if (field.isLookup) return raw;
     if (field.type == FieldType.boolean) {
       return raw == 1 || raw == true ? 1 : 0;
     }
@@ -259,19 +269,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
     return raw;
   }
 
-  List<TrinaRow> _buildRows(
-    List<Map<String, Object?>> rows,
-    Map<String, Map<int, String>> lookupMaps,
-  ) {
+  List<TrinaRow> _buildRows(List<Map<String, Object?>> rows) {
     return [
       for (final row in rows)
         TrinaRow(
           cells: {
             'id': TrinaCell(value: row['id']),
             for (final field in widget.config.fields)
-              field.column: TrinaCell(
-                value: _cellValueFor(field, row[field.column], lookupMaps),
-              ),
+              field.column: TrinaCell(value: _cellValueFor(field, row[field.column])),
             _actionsField: TrinaCell(value: ''),
           },
         ),
@@ -282,14 +287,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
     if (event.column.field == 'id' || event.column.field == _actionsField) return;
 
     final field = widget.config.fields.firstWhere((f) => f.column == event.column.field);
-    // Lookup columns are readOnly (see _buildFieldColumn) so this shouldn't
-    // fire for them, but guard anyway rather than writing resolved display
-    // text back into an integer FK column.
-    if (field.isLookup) return;
-
     final id = event.row.cells['id']!.value as int;
+
     Object? value = event.value;
-    if (field.type == FieldType.text) {
+    if (field.isLookup) {
+      // Already the selected option's raw id (or null) -- the select
+      // column's items are ids themselves (see _buildFieldColumn), unlike
+      // the plain-text branch below, which needs its own trim/empty->null
+      // handling because TrinaGrid's text editor hands back a raw String.
+    } else if (field.type == FieldType.text) {
       final text = (value as String? ?? '').trim();
       value = text.isEmpty ? null : text;
     }
@@ -317,8 +323,8 @@ class _GenericListScreenState extends State<GenericListScreen> {
           }
           final lookupMaps = data!.lookupMaps;
           return TrinaGrid(
-            columns: _buildColumns(rows),
-            rows: _buildRows(rows, lookupMaps),
+            columns: _buildColumns(rows, lookupMaps),
+            rows: _buildRows(rows),
             configuration: const TrinaGridConfiguration(
               columnSize: TrinaGridColumnSizeConfig(
                 autoSizeMode: TrinaAutoSizeMode.none,
