@@ -4,6 +4,7 @@ import 'package:trina_grid/trina_grid.dart';
 
 import '../db/generic_dao.dart';
 import '../models/table_config.dart';
+import '../util/links.dart';
 import '../util/strings.dart';
 import 'generic_form_screen.dart';
 
@@ -263,6 +264,46 @@ class _GenericListScreenState extends State<GenericListScreen> {
         type: TrinaColumnType.select<int?>(items, itemToString: displayFor),
         formatter: (value) => displayFor(value as int?),
         width: 160,
+      );
+    }
+
+    if (field.isLink) {
+      // Not readOnly -- double-click still enters TrinaGrid's normal text
+      // editor to type/paste a URL, same as any other text field. Only the
+      // trailing icon button is a distinct tap target for actually opening
+      // it, so a plain tap/double-tap anywhere else in the cell still hits
+      // TrinaGrid's own select/edit gesture handling rather than the icon.
+      return TrinaColumn(
+        title: field.label,
+        field: field.column,
+        type: TrinaColumnType.text(),
+        width: 220,
+        renderer: (rendererContext) {
+          final value = rendererContext.cell.value as String?;
+          if (value == null || value.isEmpty) return const SizedBox.shrink();
+          return Row(
+            children: [
+              Expanded(
+                child: Text(
+                  value,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.blue,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.open_in_new, size: 16),
+                tooltip: 'Open link',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                visualDensity: VisualDensity.compact,
+                onPressed: () => openLink(value),
+              ),
+            ],
+          );
+        },
       );
     }
 

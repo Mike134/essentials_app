@@ -106,7 +106,7 @@ TableConfig _supplierLikeConfig(String tableName) {
     fields: const [
       FieldConfig(column: 'name', label: 'Name', required: true),
       FieldConfig(column: 'description', label: 'Description'),
-      FieldConfig(column: 'hyperlink', label: 'Hyperlink'),
+      FieldConfig(column: 'hyperlink', label: 'Hyperlink', isLink: true),
       FieldConfig(
         column: 'active',
         label: 'Active',
@@ -276,14 +276,14 @@ final shipmentConfig = TableConfig(
       lookup: LookupConfig(table: 'domain'),
     ),
     FieldConfig(column: 'order_id', label: 'Order ID'),
-    FieldConfig(column: 'order_link', label: 'Order Link'),
+    FieldConfig(column: 'order_link', label: 'Order Link', isLink: true),
     FieldConfig(
       column: 'shipper_id',
       label: 'Shipper',
       lookup: LookupConfig(table: 'shipper'),
     ),
     FieldConfig(column: 'tracking_id', label: 'Tracking ID'),
-    FieldConfig(column: 'tracking_link', label: 'Tracking Link'),
+    FieldConfig(column: 'tracking_link', label: 'Tracking Link', isLink: true),
     FieldConfig(column: 'items', label: 'Items'),
     FieldConfig(column: 'note', label: 'Note'),
   ],
@@ -324,7 +324,7 @@ final journalConfig = TableConfig(
       type: FieldType.boolean,
       defaultValue: false, // schema.sql: scheduled INTEGER NOT NULL DEFAULT 0
     ),
-    FieldConfig(column: 'link', label: 'Link'),
+    FieldConfig(column: 'link', label: 'Link', isLink: true),
     FieldConfig(column: 'image', label: 'Image'),
     FieldConfig(column: 'file', label: 'File'),
     FieldConfig(column: 'latitude', label: 'Latitude', type: FieldType.real),
@@ -394,7 +394,7 @@ final subscriptionConfig = TableConfig(
     FieldConfig(column: 'start_date', label: 'Start Date'),
     FieldConfig(column: 'next_date', label: 'Next Date', readOnly: true),
     FieldConfig(column: 'last_date', label: 'Last Date'),
-    FieldConfig(column: 'link', label: 'Link'),
+    FieldConfig(column: 'link', label: 'Link', isLink: true),
     FieldConfig(
       column: 'active',
       label: 'Active',

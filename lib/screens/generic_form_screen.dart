@@ -3,6 +3,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../db/generic_dao.dart';
 import '../models/table_config.dart';
+import '../util/links.dart';
 
 /// Add/edit form for a single row, entirely driven by [config]. Renders
 /// text/number/boolean fields directly and lookup fields (batch 2+) as a
@@ -246,7 +247,16 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       child: TextFormField(
         controller: _controllers[field.column],
         focusNode: _focusNodes[field.column],
-        decoration: InputDecoration(labelText: field.label),
+        decoration: InputDecoration(
+          labelText: field.label,
+          suffixIcon: field.isLink
+              ? IconButton(
+                  icon: const Icon(Icons.open_in_new),
+                  tooltip: 'Open link',
+                  onPressed: () => openLink(_controllers[field.column]!.text),
+                )
+              : null,
+        ),
         keyboardType: switch (field.type) {
           FieldType.integer => TextInputType.number,
           FieldType.real => const TextInputType.numberWithOptions(decimal: true),

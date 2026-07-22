@@ -45,6 +45,7 @@ dependencies:
   # match what trina_grid already resolves to, so this doesn't independently
   # drag in a second, possibly-incompatible shadcn_ui version.
   shadcn_ui: ^0.43.4
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

@@ -34,6 +34,7 @@ class FieldConfig {
     this.lookup,
     this.defaultValue,
     this.readOnly = false,
+    this.isLink = false,
   });
 
   /// The literal SQLite column name.
@@ -66,6 +67,12 @@ class FieldConfig {
   /// column on [TableConfig.tableName] -- never editable in the grid or
   /// form, and never written on insert/update (there's no column to write).
   final bool readOnly;
+
+  /// True for a free-text URL field (e.g. `supplier.hyperlink`,
+  /// `journal.link`) that should get a visible link affordance and a way
+  /// to open it in the system browser -- still a plain editable text
+  /// field otherwise (this doesn't imply [readOnly]).
+  final bool isLink;
 }
 
 /// Drives the generic list + form screens for one SQLite table. One config
