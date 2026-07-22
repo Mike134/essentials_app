@@ -1,30 +1,29 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:essentials_app/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  setUpAll(() {
+    // DatabaseHelper picks databaseFactoryFfi itself on Windows (which is
+    // where `flutter test` actually runs), but sqlite3's native lib still
+    // needs this one-time init call.
+    sqfliteFfiInit();
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+  testWidgets('EssentialsApp renders the domain list', (WidgetTester tester) async {
+    // The domain query is real async DB I/O, which needs genuine wall-clock
+    // time to complete -- pumpAndSettle's fake clock never lets it resolve,
+    // so it just times out waiting on the FutureBuilder's spinner.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(const EssentialsApp());
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
     await tester.pump();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // The default test surface is wide (800x600), so both the
+    // NavigationRail's label and the list screen's AppBar title say
+    // "Domain" -- that's two matches, not a bug.
+    expect(find.text('Domain'), findsWidgets);
   });
 }

@@ -32,6 +32,14 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# permission_handler_windows (pulled in transitively for the Android-only
+# MANAGE_EXTERNAL_STORAGE check) uses <experimental/coroutine>, which the
+# STL in this VS toolchain (VS 18 / MSVC 14.51) hard-errors on via
+# static_assert unless this is defined. Scoped here (project-level, applies
+# to plugin subdirectories added below) rather than patched into the
+# vendored plugin under the pub cache, which wouldn't survive a `pub get`.
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
