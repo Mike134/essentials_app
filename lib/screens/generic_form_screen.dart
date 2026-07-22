@@ -247,6 +247,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       child: TextFormField(
         controller: _controllers[field.column],
         focusNode: _focusNodes[field.column],
+        // Same blue-underline treatment as the grid's link renderer, so a
+        // link field reads as a link here too, not just via the icon.
+        style: field.isLink
+            ? const TextStyle(color: Colors.blue, decoration: TextDecoration.underline)
+            : null,
         decoration: InputDecoration(
           labelText: field.label,
           suffixIcon: field.isLink
