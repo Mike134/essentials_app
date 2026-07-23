@@ -25,15 +25,20 @@ const String _ungroupedGroupName = 'Ungrouped';
 ///
 /// **Sidebar grouping** (see CLAUDE.md "Real-usage findings" -- Step 4):
 /// group membership (`table_group`) is shared across devices; which groups
-/// are collapsed (`device_settings`) is per-device. Long-press-drag a table
-/// onto a group header to move it there, or onto "+ New group" to create
-/// one -- there's no separate "create an empty group" action, since
-/// `table_group`'s schema (one row per table, no standalone groups table)
-/// has no way to represent a group with zero members. Group *display*
-/// order isn't a stored field either -- derived from first-appearance order
-/// among [registeredTables], which keeps every table visible even before
-/// it's ever been dragged anywhere, and gives a stable, deterministic order
-/// without a schema column dedicated to it.
+/// are collapsed (`device_settings`) is per-device. **Primary way to move a
+/// table between groups: the "..." menu on each table item** (lists every
+/// existing group plus "New group..."); `LongPressDraggable`/`DragTarget`
+/// (drag a table onto a group header) also work but aren't the only path --
+/// a held-still-then-drag gesture turned out too easy to miss/lose to the
+/// rail's own scroll gesture to be the sole mechanism, found via Mike's own
+/// testing. There's no separate "create an empty group" action either way
+/// (drag or menu) -- `table_group`'s schema (one row per table, no
+/// standalone groups table) has no way to represent a group with zero
+/// members, so a group only exists once a table's been moved into it.
+/// Group *display* order isn't a stored field either -- derived from
+/// first-appearance order among [registeredTables], which keeps every
+/// table visible even before it's ever been moved anywhere, and gives a
+/// stable, deterministic order without a schema column dedicated to it.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -81,6 +86,39 @@ class _HomeShellState extends State<HomeShell> {
       await dao.moveTableToGroup(table.tableName, groupName);
     }
     _reloadGroups();
+  }
+
+  /// The reliable, guaranteed-to-work path for moving a table between
+  /// groups -- see the `_railItem`/`_drawerItem` doc comments for why this
+  /// exists alongside (not instead of) the drag-and-drop machinery below.
+  Future<void> _showMoveToGroupMenu(
+    TableConfig table,
+    List<_SidebarGroup> groups,
+  ) async {
+    const newGroupChoice = '__new_group__';
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('Move "${titleCase(table.tableName)}" to group'),
+        children: [
+          for (final group in groups)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, group.name),
+              child: Text(group.name),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, newGroupChoice),
+            child: const Text('New group...'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    if (choice == newGroupChoice) {
+      await _promptNewGroup(table);
+    } else {
+      await _moveToGroup(table, choice);
+    }
   }
 
   Future<void> _promptNewGroup(TableConfig table) async {
@@ -181,15 +219,13 @@ class _HomeShellState extends State<HomeShell> {
   // ===================== Windows rail =====================
 
   List<Widget> _buildRailChildren(List<_SidebarGroup> groups) {
-    final children = <Widget>[
+    return [
       for (final group in groups) ...[
         _railGroupHeader(group),
         if (!_collapsedGroups.contains(group.name))
-          for (final table in group.tables) _railItem(table),
+          for (final table in group.tables) _railItem(table, groups),
       ],
-      _railNewGroupTarget(),
     ];
-    return children;
   }
 
   Widget _railGroupHeader(_SidebarGroup group) {
@@ -229,7 +265,15 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _railItem(TableConfig table) {
+  /// [groups] is threaded through purely for the "..." menu (see
+  /// [_showMoveToGroupMenu]) -- that menu, not drag-and-drop, is the
+  /// reliable way to move a table between groups. Drag-and-drop
+  /// (`LongPressDraggable` below) is kept as an additional option, not
+  /// removed, but a held-still-then-drag gesture competing with the
+  /// rail's own scrolling turned out too unreliable to be the *only* way
+  /// to do this -- found via Mike's own testing (nothing to drag onto,
+  /// "New group" not responding to a plain click since it was drop-only).
+  Widget _railItem(TableConfig table, List<_SidebarGroup> groups) {
     final selected = table.tableName == _selectedTableName;
     final colorScheme = Theme.of(context).colorScheme;
     final item = InkWell(
@@ -239,9 +283,26 @@ class _HomeShellState extends State<HomeShell> {
         color: selected ? colorScheme.secondaryContainer : null,
         child: Column(
           children: [
-            Icon(
-              selected ? Icons.table_chart : Icons.table_chart_outlined,
-              color: selected ? colorScheme.onSecondaryContainer : null,
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(
+                  selected ? Icons.table_chart : Icons.table_chart_outlined,
+                  color: selected ? colorScheme.onSecondaryContainer : null,
+                ),
+                Positioned(
+                  right: -12,
+                  top: -8,
+                  child: IconButton(
+                    icon: const Icon(Icons.more_vert, size: 14),
+                    tooltip: 'Move to group',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _showMoveToGroupMenu(table, groups),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 4),
             Text(
@@ -268,27 +329,6 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _railNewGroupTarget() {
-    return DragTarget<TableConfig>(
-      onAcceptWithDetails: (details) => _promptNewGroup(details.data),
-      builder: (context, candidateData, rejectedData) {
-        return Container(
-          color: candidateData.isNotEmpty
-              ? Theme.of(context).colorScheme.primaryContainer
-              : null,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-          child: const Row(
-            children: [
-              Icon(Icons.add, size: 16),
-              SizedBox(width: 4),
-              Text('New group', style: TextStyle(fontSize: 11)),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
   // ===================== Android drawer =====================
 
   Widget _buildDrawer(List<_SidebarGroup> groups) {
@@ -297,14 +337,16 @@ class _HomeShellState extends State<HomeShell> {
         padding: EdgeInsets.zero,
         children: [
           const DrawerHeader(child: Text('Essentials')),
-          for (final group in groups) ..._drawerGroupChildren(group),
-          _drawerNewGroupTarget(),
+          for (final group in groups) ..._drawerGroupChildren(group, groups),
         ],
       ),
     );
   }
 
-  List<Widget> _drawerGroupChildren(_SidebarGroup group) {
+  List<Widget> _drawerGroupChildren(
+    _SidebarGroup group,
+    List<_SidebarGroup> groups,
+  ) {
     final collapsed = _collapsedGroups.contains(group.name);
     return [
       DragTarget<TableConfig>(
@@ -326,15 +368,23 @@ class _HomeShellState extends State<HomeShell> {
           );
         },
       ),
-      if (!collapsed) for (final table in group.tables) _drawerItem(table),
+      if (!collapsed) for (final table in group.tables) _drawerItem(table, groups),
     ];
   }
 
-  Widget _drawerItem(TableConfig table) {
+  /// See [_railItem]'s doc comment -- same "..." menu as the rail, same
+  /// reasoning for keeping it alongside drag-and-drop rather than
+  /// replacing it.
+  Widget _drawerItem(TableConfig table, List<_SidebarGroup> groups) {
     final tile = ListTile(
       leading: const Icon(Icons.table_chart_outlined),
       title: Text(titleCase(table.tableName)),
       selected: table.tableName == _selectedTableName,
+      trailing: IconButton(
+        icon: const Icon(Icons.more_vert, size: 18),
+        tooltip: 'Move to group',
+        onPressed: () => _showMoveToGroupMenu(table, groups),
+      ),
       onTap: () {
         _select(table.tableName);
         Navigator.pop(context);
@@ -346,24 +396,6 @@ class _HomeShellState extends State<HomeShell> {
       feedback: _dragFeedback(table),
       childWhenDragging: Opacity(opacity: 0.3, child: tile),
       child: tile,
-    );
-  }
-
-  Widget _drawerNewGroupTarget() {
-    return DragTarget<TableConfig>(
-      onAcceptWithDetails: (details) => _promptNewGroup(details.data),
-      builder: (context, candidateData, rejectedData) {
-        return Container(
-          color: candidateData.isNotEmpty
-              ? Theme.of(context).colorScheme.primaryContainer
-              : null,
-          child: const ListTile(
-            dense: true,
-            leading: Icon(Icons.add),
-            title: Text('New group'),
-          ),
-        );
-      },
     );
   }
 
