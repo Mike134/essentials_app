@@ -59,7 +59,19 @@ class DatabaseHelper {
           // layer). journal_mode is a no-op to re-set when already WAL, so
           // asserting it on every connection open costs nothing and removes
           // the dependency on someone noticing via a manual Letos check.
-          await db.execute('PRAGMA journal_mode = WAL');
+          //
+          // Must be rawQuery, not execute -- unlike `PRAGMA foreign_keys`
+          // (which returns nothing), `PRAGMA journal_mode=WAL` returns the
+          // resulting mode as a row. Android's SQLiteDatabase.execSQL()
+          // (what sqflite's execute() calls into on that platform) rejects
+          // any statement that returns a result set with "Queries can be
+          // performed using SQLiteDatabase query or rawQuery methods only"
+          // -- hit exactly that on MIKE-12R, crashing the db open during
+          // app startup (which also explains the intermittent "log reader
+          // stopped unexpectedly" VS Code debug-connection failures around
+          // the same time -- the process was dying before the debugger
+          // could attach).
+          await db.rawQuery('PRAGMA journal_mode = WAL');
         },
       ),
     );
