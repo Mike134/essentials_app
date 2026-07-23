@@ -25,16 +25,19 @@ const String _ungroupedGroupName = 'Ungrouped';
 ///
 /// **Sidebar grouping** (see CLAUDE.md "Real-usage findings" -- Step 4):
 /// group membership (`table_group`) is shared across devices; which groups
-/// are collapsed (`device_settings`) is per-device. Two ways to move a
-/// table between groups, both calling the same [_showMoveToGroupMenu] /
-/// [_moveToGroup]: **right-click a table item** (lists every existing
-/// group plus "New group..." -- the reliable path, no gesture-timing
-/// dependency), or **long-press-and-drag it onto a group header**
+/// are collapsed (`device_settings`) is per-device. Multiple ways to move a
+/// table between groups, all calling the same [_showMoveToGroupMenu] /
+/// [_moveToGroup]: **right-click a rail item** (Windows/mouse -- the
+/// reliable path there, no gesture-timing dependency), **tap the drawer
+/// item's trailing icon** (Android/touch equivalent -- no secondary-tap
+/// gesture exists on touch, so this is the reliable path there instead),
+/// or **long-press-and-drag onto a group header** on either platform
 /// (`LongPressDraggable`/`DragTarget` -- the originally-intended
-/// click-and-hold-then-drag interaction, still there for that). There's no
-/// separate "create an empty group" action either way -- `table_group`'s
-/// schema (one row per table, no standalone groups table) has no way to
-/// represent a group with zero members, so a group only exists once a
+/// click-and-hold-then-drag interaction, confirmed working on both).
+/// There's no separate "create an empty group" action either way --
+/// `table_group`'s schema (one row per table, no standalone groups table)
+/// has no way to represent a group with zero members, so a group only
+/// exists once a
 /// table's been moved into it.
 /// Group *display* order isn't a stored field either -- derived from
 /// first-appearance order among [registeredTables], which keeps every
@@ -355,10 +358,18 @@ class _HomeShellState extends State<HomeShell> {
       DragTarget<TableConfig>(
         onAcceptWithDetails: (details) => _moveToGroup(details.data, group.name),
         builder: (context, candidateData, rejectedData) {
-          return Container(
+          // Material, not a plain colored Container wrapping the ListTile
+          // -- Flutter flagged this for real ("ListTile background color
+          // or ink splashes may be invisible") the first time this drag
+          // highlight actually fired on a real device: ListTile paints its
+          // own background/ink splashes on the nearest Material ancestor,
+          // so an opaque Container sitting between it and that Material
+          // hides both. Material's own `color` paints at the right depth
+          // for ListTile's splash to render on top of correctly.
+          return Material(
             color: candidateData.isNotEmpty
                 ? Theme.of(context).colorScheme.primaryContainer
-                : null,
+                : Colors.transparent,
             child: ListTile(
               dense: true,
               leading: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
@@ -375,10 +386,13 @@ class _HomeShellState extends State<HomeShell> {
     ];
   }
 
-  /// See [_railItem]'s doc comment -- same right-click -> move-to-group
-  /// menu as the rail (reaches it if a mouse is connected; on a touch-only
-  /// device there's no secondary-tap gesture to trigger it, so
-  /// long-press-drag is the only path there, same as it always was).
+  /// Trailing icon is the reliable path here, not right-click -- unlike
+  /// the rail (mouse-driven, Windows-only), the drawer runs on touch,
+  /// where there's no secondary-tap gesture at all. `onSecondaryTap` is
+  /// kept too (reaches it if a mouse happens to be connected), but a
+  /// touch-only user needs an actual tap target; a full-size `ListTile
+  /// .trailing` icon, not the cramped rail-icon Mike already flagged as
+  /// fiddly to hit, since the drawer has the room for one.
   Widget _drawerItem(TableConfig table, List<_SidebarGroup> groups) {
     final tile = GestureDetector(
       onSecondaryTap: () => _showMoveToGroupMenu(table, groups),
@@ -386,6 +400,11 @@ class _HomeShellState extends State<HomeShell> {
         leading: const Icon(Icons.table_chart_outlined),
         title: Text(titleCase(table.tableName)),
         selected: table.tableName == _selectedTableName,
+        trailing: IconButton(
+          icon: const Icon(Icons.more_vert),
+          tooltip: 'Move to group',
+          onPressed: () => _showMoveToGroupMenu(table, groups),
+        ),
         onTap: () {
           _select(table.tableName);
           Navigator.pop(context);
