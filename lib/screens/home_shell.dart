@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../config/table_configs.dart';
 import '../db/sidebar_grouping_dao.dart';
 import '../models/table_config.dart';
+import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/strings.dart';
 import 'generic_list_screen.dart';
+import 'settings_screen.dart';
 
 /// Synthetic bucket for any table with no `table_group` row yet -- not a
 /// real persisted group. Every table starts here; dragging one onto a real
@@ -63,6 +65,12 @@ class _HomeShellState extends State<HomeShell> {
   void initState() {
     super.initState();
     _groupsFuture = _loadGroups();
+    // Fire-and-forget -- see ThemeController.load's doc comment for why
+    // this is the right place to trigger it (first point the db is known
+    // reachable on both platforms) and why nothing here needs to await it:
+    // ThemeController is a ChangeNotifier main.dart already listens to, so
+    // the app-wide theme just updates live once this resolves.
+    ThemeController.instance.load();
   }
 
   Future<List<_SidebarGroup>> _loadGroups() async {
@@ -249,7 +257,27 @@ class _HomeShellState extends State<HomeShell> {
         if (!_collapsedGroups.contains(group.name))
           for (final table in group.tables) _railItem(table, groups),
       ],
+      const Divider(height: 1),
+      _railSettingsItem(),
     ];
+  }
+
+  Widget _railSettingsItem() {
+    return InkWell(
+      onTap: () => Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        child: Column(
+          children: [
+            Icon(Icons.settings_outlined),
+            SizedBox(height: 4),
+            Text('Settings', style: TextStyle(fontSize: 12)),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _railGroupHeader(_SidebarGroup group) {
@@ -344,6 +372,17 @@ class _HomeShellState extends State<HomeShell> {
         children: [
           const DrawerHeader(child: Text('Essentials')),
           for (final group in groups) ..._drawerGroupChildren(group, groups),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Settings'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+            },
+          ),
         ],
       ),
     );
