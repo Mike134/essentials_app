@@ -25,16 +25,17 @@ const String _ungroupedGroupName = 'Ungrouped';
 ///
 /// **Sidebar grouping** (see CLAUDE.md "Real-usage findings" -- Step 4):
 /// group membership (`table_group`) is shared across devices; which groups
-/// are collapsed (`device_settings`) is per-device. **Primary way to move a
-/// table between groups: the "..." menu on each table item** (lists every
-/// existing group plus "New group..."); `LongPressDraggable`/`DragTarget`
-/// (drag a table onto a group header) also work but aren't the only path --
-/// a held-still-then-drag gesture turned out too easy to miss/lose to the
-/// rail's own scroll gesture to be the sole mechanism, found via Mike's own
-/// testing. There's no separate "create an empty group" action either way
-/// (drag or menu) -- `table_group`'s schema (one row per table, no
-/// standalone groups table) has no way to represent a group with zero
-/// members, so a group only exists once a table's been moved into it.
+/// are collapsed (`device_settings`) is per-device. Two ways to move a
+/// table between groups, both calling the same [_showMoveToGroupMenu] /
+/// [_moveToGroup]: **right-click a table item** (lists every existing
+/// group plus "New group..." -- the reliable path, no gesture-timing
+/// dependency), or **long-press-and-drag it onto a group header**
+/// (`LongPressDraggable`/`DragTarget` -- the originally-intended
+/// click-and-hold-then-drag interaction, still there for that). There's no
+/// separate "create an empty group" action either way -- `table_group`'s
+/// schema (one row per table, no standalone groups table) has no way to
+/// represent a group with zero members, so a group only exists once a
+/// table's been moved into it.
 /// Group *display* order isn't a stored field either -- derived from
 /// first-appearance order among [registeredTables], which keeps every
 /// table visible even before it's ever been moved anywhere, and gives a
@@ -265,44 +266,26 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  /// [groups] is threaded through purely for the "..." menu (see
-  /// [_showMoveToGroupMenu]) -- that menu, not drag-and-drop, is the
-  /// reliable way to move a table between groups. Drag-and-drop
-  /// (`LongPressDraggable` below) is kept as an additional option, not
-  /// removed, but a held-still-then-drag gesture competing with the
-  /// rail's own scrolling turned out too unreliable to be the *only* way
-  /// to do this -- found via Mike's own testing (nothing to drag onto,
-  /// "New group" not responding to a plain click since it was drop-only).
+  /// [groups] is threaded through for right-click -> [_showMoveToGroupMenu]
+  /// -- the reliable way to move a table between groups on Windows.
+  /// Long-press-drag (`LongPressDraggable` below) is still there too, for
+  /// exactly the click-and-hold-then-drag gesture Mike originally wanted;
+  /// the earlier small "..." icon button was clutter once right-click
+  /// covers the same thing without needing its own tap target.
   Widget _railItem(TableConfig table, List<_SidebarGroup> groups) {
     final selected = table.tableName == _selectedTableName;
     final colorScheme = Theme.of(context).colorScheme;
     final item = InkWell(
       onTap: () => _select(table.tableName),
+      onSecondaryTap: () => _showMoveToGroupMenu(table, groups),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
         color: selected ? colorScheme.secondaryContainer : null,
         child: Column(
           children: [
-            Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Icon(
-                  selected ? Icons.table_chart : Icons.table_chart_outlined,
-                  color: selected ? colorScheme.onSecondaryContainer : null,
-                ),
-                Positioned(
-                  right: -12,
-                  top: -8,
-                  child: IconButton(
-                    icon: const Icon(Icons.more_vert, size: 14),
-                    tooltip: 'Move to group',
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _showMoveToGroupMenu(table, groups),
-                  ),
-                ),
-              ],
+            Icon(
+              selected ? Icons.table_chart : Icons.table_chart_outlined,
+              color: selected ? colorScheme.onSecondaryContainer : null,
             ),
             const SizedBox(height: 4),
             Text(
@@ -372,23 +355,22 @@ class _HomeShellState extends State<HomeShell> {
     ];
   }
 
-  /// See [_railItem]'s doc comment -- same "..." menu as the rail, same
-  /// reasoning for keeping it alongside drag-and-drop rather than
-  /// replacing it.
+  /// See [_railItem]'s doc comment -- same right-click -> move-to-group
+  /// menu as the rail (reaches it if a mouse is connected; on a touch-only
+  /// device there's no secondary-tap gesture to trigger it, so
+  /// long-press-drag is the only path there, same as it always was).
   Widget _drawerItem(TableConfig table, List<_SidebarGroup> groups) {
-    final tile = ListTile(
-      leading: const Icon(Icons.table_chart_outlined),
-      title: Text(titleCase(table.tableName)),
-      selected: table.tableName == _selectedTableName,
-      trailing: IconButton(
-        icon: const Icon(Icons.more_vert, size: 18),
-        tooltip: 'Move to group',
-        onPressed: () => _showMoveToGroupMenu(table, groups),
+    final tile = GestureDetector(
+      onSecondaryTap: () => _showMoveToGroupMenu(table, groups),
+      child: ListTile(
+        leading: const Icon(Icons.table_chart_outlined),
+        title: Text(titleCase(table.tableName)),
+        selected: table.tableName == _selectedTableName,
+        onTap: () {
+          _select(table.tableName);
+          Navigator.pop(context);
+        },
       ),
-      onTap: () {
-        _select(table.tableName);
-        Navigator.pop(context);
-      },
     );
 
     return LongPressDraggable<TableConfig>(
