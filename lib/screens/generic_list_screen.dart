@@ -8,6 +8,8 @@ import 'package:trina_grid/trina_grid.dart';
 import '../db/generic_dao.dart';
 import '../db/table_view_settings_dao.dart';
 import '../models/table_config.dart';
+import '../theme/theme_controller.dart';
+import '../util/color_picker.dart';
 import '../util/device_id.dart';
 import '../util/links.dart';
 import '../util/strings.dart';
@@ -576,6 +578,51 @@ class _GenericListScreenState extends State<GenericListScreen> {
                   visualDensity: VisualDensity.compact,
                   onPressed: () => openLink(value),
                 ),
+              ],
+            );
+          },
+        ),
+        setting,
+      );
+    }
+
+    if (field.isColor) {
+      // Not readOnly, same reasoning as isLink above -- the swatch is a
+      // distinct tap target that opens the picker; a plain tap/double-tap
+      // anywhere else in the cell still hits TrinaGrid's own text editor,
+      // so typing a hex value directly still works too.
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.text(),
+          width: 140,
+          renderer: (rendererContext) {
+            final value = rendererContext.cell.value as String?;
+            final color = ThemeController.parseHexColor(value);
+            return Row(
+              children: [
+                GestureDetector(
+                  onTap: () async {
+                    final picked = await pickColor(context, initial: color ?? Colors.white);
+                    if (picked == null) return;
+                    rendererContext.stateManager.changeCellValue(
+                      rendererContext.cell,
+                      ThemeController.colorToHex(picked),
+                    );
+                  },
+                  child: Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.grey),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(child: Text(value ?? '', overflow: TextOverflow.ellipsis)),
               ],
             );
           },

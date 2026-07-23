@@ -3,6 +3,8 @@ import 'package:sqflite/sqflite.dart';
 
 import '../db/generic_dao.dart';
 import '../models/table_config.dart';
+import '../theme/theme_controller.dart';
+import '../util/color_picker.dart';
 import '../util/links.dart';
 
 /// Add/edit form for a single row, entirely driven by [config]. Renders
@@ -105,6 +107,15 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       }
     }
     return values;
+  }
+
+  Future<void> _pickColorForField(FieldConfig field) async {
+    final controller = _controllers[field.column]!;
+    final current = ThemeController.parseHexColor(controller.text) ?? Colors.white;
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    setState(() => controller.text = ThemeController.colorToHex(picked));
+    _recomputePreview();
   }
 
   Future<void> _recomputePreview() async {
@@ -269,11 +280,38 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             : null,
         decoration: InputDecoration(
           labelText: field.label,
+          prefixIcon: field.isColor
+              ? Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: AnimatedBuilder(
+                    // Repaints the swatch as the user types a hex value
+                    // directly, not just after picking one.
+                    animation: _controllers[field.column]!,
+                    builder: (context, _) => Container(
+                      width: 20,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: ThemeController.parseHexColor(
+                          _controllers[field.column]!.text,
+                        ),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.grey),
+                      ),
+                    ),
+                  ),
+                )
+              : null,
           suffixIcon: field.isLink
               ? IconButton(
                   icon: const Icon(Icons.open_in_new),
                   tooltip: 'Open link',
                   onPressed: () => openLink(_controllers[field.column]!.text),
+                )
+              : field.isColor
+              ? IconButton(
+                  icon: const Icon(Icons.palette_outlined),
+                  tooltip: 'Pick a color',
+                  onPressed: () => _pickColorForField(field),
                 )
               : null,
         ),

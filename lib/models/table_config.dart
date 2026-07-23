@@ -35,6 +35,7 @@ class FieldConfig {
     this.defaultValue,
     this.readOnly = false,
     this.isLink = false,
+    this.isColor = false,
   });
 
   /// The literal SQLite column name.
@@ -73,6 +74,13 @@ class FieldConfig {
   /// to open it in the system browser -- still a plain editable text
   /// field otherwise (this doesn't imply [readOnly]).
   final bool isLink;
+
+  /// True for a hex-string color field (e.g. `domain.color`, `class.color`)
+  /// that should get a popup color-picker affordance (see CLAUDE.md
+  /// "Real-usage findings" Step 6) alongside plain hex text entry -- the
+  /// stored value is always the hex string; the picker is just a second
+  /// way to produce one, same relationship [isLink] has to plain text.
+  final bool isColor;
 }
 
 /// Drives the generic list + form screens for one SQLite table. One config

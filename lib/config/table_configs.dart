@@ -29,7 +29,7 @@ TableConfig _lookupConfig(String tableName) {
         type: FieldType.integer,
         defaultValue: 255,
       ),
-      FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+      FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
     ],
   );
 }
@@ -64,7 +64,7 @@ final unitConfig = TableConfig(
       type: FieldType.integer,
       defaultValue: 255,
     ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
   ],
 );
 
@@ -91,7 +91,7 @@ final accountTypeConfig = TableConfig(
       type: FieldType.integer,
       defaultValue: 255,
     ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
   ],
 );
 
@@ -119,7 +119,7 @@ TableConfig _supplierLikeConfig(String tableName) {
         type: FieldType.integer,
         defaultValue: 255,
       ),
-      FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+      FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
     ],
   );
 }
@@ -148,7 +148,7 @@ final personConfig = TableConfig(
       type: FieldType.integer,
       defaultValue: 255,
     ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
   ],
 );
 
@@ -176,7 +176,7 @@ final categoryConfig = TableConfig(
       type: FieldType.integer,
       defaultValue: 255,
     ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
   ],
 );
 
@@ -211,7 +211,7 @@ final timeFrameConfig = TableConfig(
       type: FieldType.integer,
       defaultValue: 255,
     ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
   ],
 );
 
@@ -246,7 +246,7 @@ final accountConfig = TableConfig(
       type: FieldType.integer,
       defaultValue: 255,
     ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF'),
+    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
   ],
 );
 
