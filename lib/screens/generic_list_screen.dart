@@ -1,9 +1,14 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:trina_grid/trina_grid.dart';
 
 import '../db/generic_dao.dart';
+import '../db/table_view_settings_dao.dart';
 import '../models/table_config.dart';
+import '../util/device_id.dart';
 import '../util/links.dart';
 import '../util/strings.dart';
 import 'generic_form_screen.dart';
@@ -27,6 +32,19 @@ import 'generic_form_screen.dart';
 /// than a double-tap -- TrinaGrid already claims double-tap for its own
 /// inline cell editing, so reusing it for "open the form" would race
 /// against that.
+///
+/// **Per-device view persistence** (column width/order/visibility/frozen
+/// state, sort, filter) -- see CLAUDE.md "Real-usage findings". `id` and
+/// the actions column are structurally fixed (never customized, never
+/// persisted) -- only [TableConfig.fields] columns are. Every column/filter
+/// affordance below (resize, drag-reorder, and the per-column header menu's
+/// freeze/hide/filter items) already comes free from TrinaGrid; this screen
+/// only adds capturing that state into `table_column_settings`/
+/// `table_view_settings` and restoring it on the next load, scoped by the
+/// live [DeviceId]. Writes are debounced (see [_scheduleSettingsSave]) --
+/// TrinaGrid fires column-width-change notifications on every drag frame,
+/// not just on release, and a settings row per table+device is a small
+/// price per write but not one worth paying every frame.
 class GenericListScreen extends StatefulWidget {
   const GenericListScreen({super.key, required this.config, this.drawer});
 
@@ -44,8 +62,28 @@ class GenericListScreen extends StatefulWidget {
 class _GenericListScreenState extends State<GenericListScreen> {
   static const String _actionsField = '_actions';
 
+  /// Debounce window between the last grid state change (resize, reorder,
+  /// sort, filter, hide, freeze) and actually writing it -- coalesces a
+  /// column drag's per-frame notifications into one write on release.
+  static const Duration _saveDebounce = Duration(milliseconds: 600);
+
   late final GenericDao _dao;
-  late Future<_ListData> _rowsFuture;
+  late Future<_ScreenData> _screenDataFuture;
+
+  TrinaGridStateManager? _stateManager;
+  Timer? _saveTimer;
+
+  /// Serialized form of the last snapshot actually written to the db --
+  /// lets [_scheduleSettingsSave] skip a write when nothing that matters
+  /// (column width/order/hide/frozen, sort, filter) actually changed, since
+  /// the same stateManager listener also fires on plain cell edits/
+  /// selection changes that this screen doesn't need to persist.
+  String? _lastPersistedSnapshot;
+
+  /// Set from the same [_ScreenData] the grid itself was built from --
+  /// [_persistGridSettings] and the Restore Defaults button need the dao,
+  /// not just the settings values.
+  TableViewSettingsDao? _settingsDao;
 
   @override
   void initState() {
@@ -64,9 +102,42 @@ class _GenericListScreenState extends State<GenericListScreen> {
   }
 
   void _reload() {
+    // The pending timer (if any) closes over the stateManager that's about
+    // to be torn down (GenericListScreen's build() below always remounts a
+    // fresh TrinaGrid on reload -- see the doc comment on _ScreenData) --
+    // cancel it rather than let it fire against a disposed stateManager.
+    _saveTimer?.cancel();
+    _stateManager = null;
+    _lastPersistedSnapshot = null;
     setState(() {
-      _rowsFuture = _loadData();
+      _screenDataFuture = _loadScreenData();
     });
+  }
+
+  /// Fetches everything one grid build needs: rows, lookup id -> text maps
+  /// (see [_loadData]'s original doc), the live per-device id, and that
+  /// device's saved column/view settings for this table (empty/null when
+  /// there's nothing saved yet, e.g. first run or just after Restore
+  /// Defaults).
+  Future<_ScreenData> _loadScreenData() async {
+    final data = await _loadData();
+    final deviceId = await DeviceId.resolve();
+    final settingsDao = TableViewSettingsDao(
+      tableName: widget.config.tableName,
+      deviceId: deviceId,
+    );
+    final columnSettings = {
+      for (final setting in await settingsDao.loadColumnSettings())
+        setting.columnName: setting,
+    };
+    final viewSetting = await settingsDao.loadViewSettings();
+    return _ScreenData(
+      rows: data.rows,
+      lookupMaps: data.lookupMaps,
+      settingsDao: settingsDao,
+      columnSettings: columnSettings,
+      viewSetting: viewSetting,
+    );
   }
 
   /// Fetches rows plus, for every lookup [FieldConfig], an id -> display-text
@@ -145,9 +216,171 @@ class _GenericListScreenState extends State<GenericListScreen> {
     }
   }
 
+  Future<void> _restoreDefaults(TableViewSettingsDao settingsDao) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Restore default view?'),
+        content: const Text(
+          'Resets column widths, order, visibility, frozen state, sort, and '
+          'filter for this table on this device. Does not affect theme, '
+          'font, or color settings, or any record data.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await settingsDao.restoreDefaults();
+    _reload();
+  }
+
+  // ===================== Per-device view state: restore =====================
+
+  /// Applies [viewSetting]'s saved sort/filter to a just-loaded grid, then
+  /// starts persisting future changes -- in that order, so restoring the
+  /// saved state doesn't immediately re-trigger a save of the same state.
+  void _onGridLoaded(TrinaGridOnLoadedEvent event, ViewSetting? viewSetting) {
+    final stateManager = event.stateManager;
+    _stateManager = stateManager;
+
+    if (viewSetting?.sortColumn != null) {
+      TrinaColumn? column;
+      for (final c in stateManager.refColumns) {
+        if (c.field == viewSetting!.sortColumn) {
+          column = c;
+          break;
+        }
+      }
+      if (column != null) {
+        if (viewSetting!.sortDirection == 'desc') {
+          stateManager.sortDescending(column);
+        } else {
+          stateManager.sortAscending(column);
+        }
+      }
+    }
+
+    final filterJson = viewSetting?.filterJson;
+    if (filterJson != null && filterJson.isNotEmpty) {
+      final decoded = jsonDecode(filterJson) as List<dynamic>;
+      final filterRows = [
+        for (final entry in decoded)
+          FilterHelper.createFilterRow(
+            columnField: entry['column'] as String?,
+            filterType:
+                _filterTypesByName[entry['type']] ??
+                const TrinaFilterTypeContains(),
+            filterValue: entry['value'],
+          ),
+      ];
+      if (filterRows.isNotEmpty) {
+        stateManager.setFilterWithFilterRows(filterRows);
+      }
+    }
+
+    stateManager.addListener(_scheduleSettingsSave);
+    stateManager.resizingChangeNotifier.addListener(_scheduleSettingsSave);
+  }
+
+  // ===================== Per-device view state: persist =====================
+
+  void _scheduleSettingsSave() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(_saveDebounce, _persistGridSettings);
+  }
+
+  Future<void> _persistGridSettings() async {
+    final stateManager = _stateManager;
+    final settingsDao = _settingsDao;
+    if (stateManager == null || settingsDao == null) return;
+
+    final fieldColumns = stateManager.columns.where(
+      (c) => c.field != 'id' && c.field != _actionsField,
+    );
+
+    final columnSettings = [
+      for (final (index, column) in fieldColumns.indexed)
+        ColumnSetting(
+          columnName: column.field,
+          width: column.width,
+          displayOrder: index,
+          visible: !column.hide,
+          frozen: switch (column.frozen) {
+            TrinaColumnFrozen.start => 'left',
+            TrinaColumnFrozen.end => 'right',
+            TrinaColumnFrozen.none => null,
+          },
+        ),
+    ];
+
+    final sortedColumn = stateManager.hasSortedColumn ? stateManager.getSortedColumn : null;
+    final filterRows = stateManager.hasFilter ? stateManager.filterRows : const <TrinaRow>[];
+    final filterJson = filterRows.isEmpty
+        ? null
+        : jsonEncode([
+            for (final row in filterRows)
+              {
+                'column': row.cells[FilterHelper.filterFieldColumn]!.value,
+                'type':
+                    (row.cells[FilterHelper.filterFieldType]!.value as TrinaFilterType)
+                        .title,
+                'value': row.cells[FilterHelper.filterFieldValue]!.value,
+              },
+          ]);
+    final viewSetting = ViewSetting(
+      sortColumn: sortedColumn?.field,
+      sortDirection: sortedColumn == null
+          ? null
+          : (sortedColumn.sort.isDescending ? 'desc' : 'asc'),
+      filterJson: filterJson,
+    );
+
+    final snapshot = jsonEncode({
+      'columns': [
+        for (final c in columnSettings)
+          [c.columnName, c.width, c.displayOrder, c.visible, c.frozen],
+      ],
+      'sortColumn': viewSetting.sortColumn,
+      'sortDirection': viewSetting.sortDirection,
+      'filterJson': viewSetting.filterJson,
+    });
+    if (snapshot == _lastPersistedSnapshot) return;
+    _lastPersistedSnapshot = snapshot;
+
+    await settingsDao.saveColumnSettings(columnSettings);
+    await settingsDao.saveViewSettings(viewSetting);
+  }
+
+  // ===================== Column building =====================
+
+  /// [TableConfig.fields] reordered per saved `display_order`, falling back
+  /// to declaration order for any field with nothing saved yet (a field
+  /// added to the config after the device last saved, for instance).
+  List<FieldConfig> _orderedFields(Map<String, ColumnSetting> columnSettings) {
+    final fields = List<FieldConfig>.from(widget.config.fields);
+    final order = [
+      for (var i = 0; i < fields.length; i++)
+        columnSettings[fields[i].column]?.displayOrder ?? i,
+    ];
+    final indexes = List<int>.generate(fields.length, (i) => i)
+      ..sort((a, b) => order[a].compareTo(order[b]));
+    return [for (final i in indexes) fields[i]];
+  }
+
   List<TrinaColumn> _buildColumns(
     List<Map<String, Object?>> rows,
     Map<String, Map<int, String>> lookupMaps,
+    Map<String, ColumnSetting> columnSettings,
   ) {
     return [
       TrinaColumn(
@@ -158,7 +391,8 @@ class _GenericListScreenState extends State<GenericListScreen> {
         frozen: TrinaColumnFrozen.start,
         width: 80,
       ),
-      for (final field in widget.config.fields) _buildFieldColumn(field, lookupMaps),
+      for (final field in _orderedFields(columnSettings))
+        _buildFieldColumn(field, lookupMaps, columnSettings[field.column]),
       TrinaColumn(
         title: '',
         field: _actionsField,
@@ -199,51 +433,77 @@ class _GenericListScreenState extends State<GenericListScreen> {
     ];
   }
 
+  /// Applies a saved [ColumnSetting]'s width/visibility/frozen override, if
+  /// any, on top of a just-built [column] -- these are all plain mutable
+  /// fields on [TrinaColumn] (the same fields TrinaGrid's own resize/hide/
+  /// freeze handlers mutate directly), so overriding post-construction is
+  /// the natural way to layer a saved override onto the field's declared
+  /// default without threading it through every branch in
+  /// [_buildFieldColumn].
+  TrinaColumn _withColumnSetting(TrinaColumn column, ColumnSetting? setting) {
+    if (setting == null) return column;
+    if (setting.width != null) column.width = setting.width!;
+    column.hide = !setting.visible;
+    column.frozen = switch (setting.frozen) {
+      'left' => TrinaColumnFrozen.start,
+      'right' => TrinaColumnFrozen.end,
+      _ => TrinaColumnFrozen.none,
+    };
+    return column;
+  }
+
   TrinaColumn _buildFieldColumn(
     FieldConfig field,
     Map<String, Map<int, String>> lookupMaps,
+    ColumnSetting? setting,
   ) {
     if (field.readOnly) {
       // Computed, query-time-only value (e.g. subscription_computed's
       // yearly_cost/next_date) -- nothing to write back, so no inline
       // editor at all, same reasoning as `id`.
-      return TrinaColumn(
-        title: field.label,
-        field: field.column,
-        type: switch (field.type) {
-          FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
-          FieldType.integer => TrinaColumnType.number(),
-          _ => TrinaColumnType.text(),
-        },
-        readOnly: true,
-        width: field.type == FieldType.text ? 220 : 110,
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: switch (field.type) {
+            FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
+            FieldType.integer => TrinaColumnType.number(),
+            _ => TrinaColumnType.text(),
+          },
+          readOnly: true,
+          width: field.type == FieldType.text ? 220 : 110,
+        ),
+        setting,
       );
     }
 
     if (field.type == FieldType.boolean) {
-      return TrinaColumn(
-        title: field.label,
-        field: field.column,
-        type: TrinaColumnType.number(),
-        // Never enters TrinaGrid's own text/number editor -- the checkbox
-        // renderer below *is* the edit, same as the original hand-rolled
-        // design's "tap toggles immediately, no separate edit mode".
-        readOnly: true,
-        width: 100,
-        renderer: (rendererContext) {
-          final value = rendererContext.cell.value == 1 || rendererContext.cell.value == true;
-          return Checkbox(
-            value: value,
-            visualDensity: VisualDensity.compact,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            onChanged: (checked) {
-              rendererContext.stateManager.changeCellValue(
-                rendererContext.cell,
-                (checked ?? false) ? 1 : 0,
-              );
-            },
-          );
-        },
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.number(),
+          // Never enters TrinaGrid's own text/number editor -- the checkbox
+          // renderer below *is* the edit, same as the original hand-rolled
+          // design's "tap toggles immediately, no separate edit mode".
+          readOnly: true,
+          width: 100,
+          renderer: (rendererContext) {
+            final value = rendererContext.cell.value == 1 || rendererContext.cell.value == true;
+            return Checkbox(
+              value: value,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              onChanged: (checked) {
+                rendererContext.stateManager.changeCellValue(
+                  rendererContext.cell,
+                  (checked ?? false) ? 1 : 0,
+                );
+              },
+            );
+          },
+        ),
+        setting,
       );
     }
 
@@ -258,12 +518,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
       final options = lookupMaps[field.column] ?? const <int, String>{};
       String displayFor(int? id) => id == null ? '' : (options[id] ?? '');
       final items = <int?>[if (!field.required) null, ...options.keys];
-      return TrinaColumn(
-        title: field.label,
-        field: field.column,
-        type: TrinaColumnType.select<int?>(items, itemToString: displayFor),
-        formatter: (value) => displayFor(value as int?),
-        width: 160,
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.select<int?>(items, itemToString: displayFor),
+          formatter: (value) => displayFor(value as int?),
+          width: 160,
+        ),
+        setting,
       );
     }
 
@@ -273,49 +536,55 @@ class _GenericListScreenState extends State<GenericListScreen> {
       // trailing icon button is a distinct tap target for actually opening
       // it, so a plain tap/double-tap anywhere else in the cell still hits
       // TrinaGrid's own select/edit gesture handling rather than the icon.
-      return TrinaColumn(
-        title: field.label,
-        field: field.column,
-        type: TrinaColumnType.text(),
-        width: 220,
-        renderer: (rendererContext) {
-          final value = rendererContext.cell.value as String?;
-          if (value == null || value.isEmpty) return const SizedBox.shrink();
-          return Row(
-            children: [
-              Expanded(
-                child: Text(
-                  value,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.blue,
-                    decoration: TextDecoration.underline,
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.text(),
+          width: 220,
+          renderer: (rendererContext) {
+            final value = rendererContext.cell.value as String?;
+            if (value == null || value.isEmpty) return const SizedBox.shrink();
+            return Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    value,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.blue,
+                      decoration: TextDecoration.underline,
+                    ),
                   ),
                 ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.open_in_new, size: 16),
-                tooltip: 'Open link',
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-                visualDensity: VisualDensity.compact,
-                onPressed: () => openLink(value),
-              ),
-            ],
-          );
-        },
+                IconButton(
+                  icon: const Icon(Icons.open_in_new, size: 16),
+                  tooltip: 'Open link',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => openLink(value),
+                ),
+              ],
+            );
+          },
+        ),
+        setting,
       );
     }
 
-    return TrinaColumn(
-      title: field.label,
-      field: field.column,
-      type: switch (field.type) {
-        FieldType.integer => TrinaColumnType.number(),
-        FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
-        _ => TrinaColumnType.text(),
-      },
-      width: field.type == FieldType.text ? 220 : 110,
+    return _withColumnSetting(
+      TrinaColumn(
+        title: field.label,
+        field: field.column,
+        type: switch (field.type) {
+          FieldType.integer => TrinaColumnType.number(),
+          FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
+          _ => TrinaColumnType.text(),
+        },
+        width: field.type == FieldType.text ? 220 : 110,
+      ),
+      setting,
     );
   }
 
@@ -376,10 +645,27 @@ class _GenericListScreenState extends State<GenericListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(titleCase(widget.config.tableName))),
+      appBar: AppBar(
+        title: Text(titleCase(widget.config.tableName)),
+        actions: [
+          FutureBuilder<_ScreenData>(
+            future: _screenDataFuture,
+            builder: (context, snapshot) {
+              final settingsDao = snapshot.data?.settingsDao;
+              return IconButton(
+                icon: const Icon(Icons.restart_alt),
+                tooltip: 'Restore default view',
+                onPressed: settingsDao == null
+                    ? null
+                    : () => _restoreDefaults(settingsDao),
+              );
+            },
+          ),
+        ],
+      ),
       drawer: widget.drawer,
-      body: FutureBuilder<_ListData>(
-        future: _rowsFuture,
+      body: FutureBuilder<_ScreenData>(
+        future: _screenDataFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -393,8 +679,9 @@ class _GenericListScreenState extends State<GenericListScreen> {
             return const Center(child: Text('No records yet.'));
           }
           final lookupMaps = data!.lookupMaps;
+          _settingsDao = data.settingsDao;
           return TrinaGrid(
-            columns: _buildColumns(rows, lookupMaps),
+            columns: _buildColumns(rows, lookupMaps, data.columnSettings),
             rows: _buildRows(rows),
             configuration: const TrinaGridConfiguration(
               columnSize: TrinaGridColumnSizeConfig(
@@ -403,6 +690,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
               ),
             ),
             onChanged: _onGridChanged,
+            onLoaded: (event) => _onGridLoaded(event, data.viewSetting),
           );
         },
       ),
@@ -413,7 +701,22 @@ class _GenericListScreenState extends State<GenericListScreen> {
       ),
     );
   }
+
+  @override
+  void dispose() {
+    _saveTimer?.cancel();
+    super.dispose();
+  }
 }
+
+/// Every default [TrinaFilterType] TrinaGrid ships with, keyed by
+/// [TrinaFilterType.title] -- used to turn a persisted filter's type name
+/// (see [_GenericListScreenState._persistGridSettings]) back into the actual
+/// instance TrinaGrid's filter row cells expect (see
+/// [_GenericListScreenState._onGridLoaded]).
+final Map<String, TrinaFilterType> _filterTypesByName = {
+  for (final filterType in FilterHelper.defaultFilters) filterType.title: filterType,
+};
 
 /// Result of [_GenericListScreenState._loadData]: the raw rows (used for
 /// editing/deleting, and for any non-lookup cell value) plus, per lookup
@@ -423,4 +726,29 @@ class _ListData {
 
   final List<Map<String, Object?>> rows;
   final Map<String, Map<int, String>> lookupMaps;
+}
+
+/// Everything one grid build needs -- [_ListData]'s rows/lookupMaps plus
+/// this device's saved column/view settings for [TableConfig.tableName].
+/// [GenericListScreen] always fully remounts TrinaGrid on reload (the
+/// FutureBuilder's `ConnectionState.waiting` branch swaps in a loading
+/// spinner in between, so the next successful build sees a widget-type
+/// change at that tree position and mounts a fresh TrinaGrid/state manager
+/// rather than updating the old one) -- that remount is exactly the hook
+/// [_GenericListScreenState._onGridLoaded] needs to reapply saved sort/
+/// filter on every load, not just the first.
+class _ScreenData {
+  const _ScreenData({
+    required this.rows,
+    required this.lookupMaps,
+    required this.settingsDao,
+    required this.columnSettings,
+    required this.viewSetting,
+  });
+
+  final List<Map<String, Object?>> rows;
+  final Map<String, Map<int, String>> lookupMaps;
+  final TableViewSettingsDao settingsDao;
+  final Map<String, ColumnSetting> columnSettings;
+  final ViewSetting? viewSetting;
 }
