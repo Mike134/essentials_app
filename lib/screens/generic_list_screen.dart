@@ -495,9 +495,20 @@ class _GenericListScreenState extends State<GenericListScreen> {
               visualDensity: VisualDensity.compact,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               onChanged: (checked) {
+                // force: true -- this column is readOnly (see above, to
+                // keep TrinaGrid's own text/number editor from opening);
+                // changeCellValue's default readOnly gate
+                // (canChangeCellValue -> column.checkReadOnly) silently
+                // no-ops the change otherwise, since it can't distinguish
+                // "readOnly so TrinaGrid's editor shouldn't open" from
+                // "readOnly so this cell can never change" -- force says
+                // the latter doesn't apply here, this renderer *is* the
+                // editor. onChanged (-> _onGridChanged -> the actual db
+                // write) still fires normally once the gate is bypassed.
                 rendererContext.stateManager.changeCellValue(
                   rendererContext.cell,
                   (checked ?? false) ? 1 : 0,
+                  force: true,
                 );
               },
             );
