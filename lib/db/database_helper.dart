@@ -52,6 +52,14 @@ class DatabaseHelper {
         // onConfigure (not onCreate), which only fires once per fresh db.
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
+          // Defensive, not just belt-and-suspenders: journal_mode=WAL has
+          // been found reverted to the default (delete) twice now with no
+          // confirmed trigger (see CLAUDE.md "Sync architecture" -- ruled
+          // out migrate.py, inconclusive on Android's scoped-storage FUSE
+          // layer). journal_mode is a no-op to re-set when already WAL, so
+          // asserting it on every connection open costs nothing and removes
+          // the dependency on someone noticing via a manual Letos check.
+          await db.execute('PRAGMA journal_mode = WAL');
         },
       ),
     );
