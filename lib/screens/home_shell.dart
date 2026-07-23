@@ -170,6 +170,26 @@ class _HomeShellState extends State<HomeShell> {
     return FutureBuilder<List<_SidebarGroup>>(
       future: _groupsFuture,
       builder: (context, snapshot) {
+        // Was `if (groups == null) return <spinner>` -- silently identical
+        // for "still loading" and "errored," so a thrown exception (e.g.
+        // DatabaseHelper's now-loud failure when essentials.db is missing
+        // or schema-less -- see CLAUDE.md "Sync architecture" incident)
+        // just spun forever with no indication anything was wrong. Exactly
+        // what happened on MIKE-12R during the empty-db incident.
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Failed to load: ${snapshot.error}',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          );
+        }
+
         final groups = snapshot.data;
         if (groups == null) {
           return const Scaffold(

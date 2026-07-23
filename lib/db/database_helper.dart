@@ -32,6 +32,29 @@ class DatabaseHelper {
   Future<Database> _open() async {
     final path = await _resolveDatabasePath();
 
+    // sqflite/sqflite_common_ffi both silently create an empty db if
+    // nothing exists at `path` -- normally a reasonable default, but wrong
+    // for this app: essentials.db is always provisioned externally (CSV/
+    // Letos into schema.sql's tables), never created by the app itself, so
+    // "nothing at path" always means something's actually wrong (most
+    // often Syncthing mid-move/mid-conflict), not "first run." Hit this
+    // exactly once already: the file was briefly missing here mid-sync,
+    // the app quietly created an empty stand-in, and Syncthing then
+    // propagated that empty db over the real one on the *other* device too
+    // -- see CLAUDE.md "Sync architecture" for the full incident writeup
+    // and recovery. Failing loudly here is what should have caught it
+    // before any data was ever at risk.
+    if (!await File(path).exists()) {
+      throw StateError(
+        'essentials.db not found at $path. Refusing to let sqflite '
+        'silently create an empty one in its place -- this almost always '
+        'means Syncthing has the real file mid-move or mid-conflict. Wait '
+        'for sync to settle (check the Syncthing UI), or look in '
+        '.stversions for a recoverable copy -- do not just relaunch '
+        'repeatedly, that is how the empty-db incident happened.',
+      );
+    }
+
     final DatabaseFactory factory;
     if (Platform.isWindows) {
       sqfliteFfiInit();
@@ -44,7 +67,7 @@ class DatabaseHelper {
       );
     }
 
-    return factory.openDatabase(
+    final db = await factory.openDatabase(
       path,
       options: OpenDatabaseOptions(
         // Every connection must re-assert this -- SQLite does not persist
@@ -75,6 +98,33 @@ class DatabaseHelper {
         },
       ),
     );
+
+    await _verifyRealSchema(db, path);
+
+    return db;
+  }
+
+  /// Defense in depth alongside the file-existence check above: even if a
+  /// file exists at [path], confirm it actually has the app's real schema
+  /// (checked via one known core table) before handing the connection
+  /// back. Catches the same underlying failure a different way -- e.g. a
+  /// still-empty file that already existed at the moment of the exists()
+  /// check above (the empty stub itself, once created, does exist).
+  Future<void> _verifyRealSchema(Database db, String path) async {
+    final tables = await db.query(
+      'sqlite_master',
+      where: 'type = ? AND name = ?',
+      whereArgs: ['table', 'domain'],
+    );
+    if (tables.isEmpty) {
+      await db.close();
+      throw StateError(
+        'essentials.db at $path exists but has no real schema (missing '
+        'the domain table) -- refusing to use it. Same underlying issue '
+        'as the file-not-found check above: do not delete or reset this '
+        'file, check Syncthing / .stversions for a recoverable copy.',
+      );
+    }
   }
 
   Future<String> _resolveDatabasePath() async {

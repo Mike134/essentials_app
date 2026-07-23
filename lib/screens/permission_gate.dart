@@ -37,6 +37,23 @@ class _PermissionGateState extends State<PermissionGate> {
     return FutureBuilder<bool>(
       future: _needsPermission,
       builder: (context, snapshot) {
+        // See CLAUDE.md "Sync architecture" incident writeup / home_shell
+        // .dart's matching fix -- `!snapshot.hasData` alone can't tell
+        // "still loading" from "errored," so a thrown exception here would
+        // otherwise spin forever with no indication anything was wrong.
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Failed to load: ${snapshot.error}',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          );
+        }
         if (!snapshot.hasData) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
