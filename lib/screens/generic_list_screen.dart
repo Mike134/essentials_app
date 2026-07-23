@@ -694,11 +694,12 @@ class _GenericListScreenState extends State<GenericListScreen> {
           return TrinaGrid(
             columns: _buildColumns(rows, lookupMaps, data.columnSettings),
             rows: _buildRows(rows),
-            configuration: const TrinaGridConfiguration(
-              columnSize: TrinaGridColumnSizeConfig(
+            configuration: TrinaGridConfiguration(
+              columnSize: const TrinaGridColumnSizeConfig(
                 autoSizeMode: TrinaAutoSizeMode.none,
                 resizeMode: TrinaResizeMode.normal,
               ),
+              style: _trinaGridStyle(context),
             ),
             onChanged: _onGridChanged,
             onLoaded: (event) => _onGridLoaded(event, data.viewSetting),
@@ -710,6 +711,36 @@ class _GenericListScreenState extends State<GenericListScreen> {
         tooltip: 'Add',
         child: const Icon(Icons.add),
       ),
+    );
+  }
+
+  /// TrinaGrid has its own independent theming (`TrinaGridStyleConfig`) --
+  /// it does not read the ambient Flutter [Theme] at all, so without this
+  /// the grid stayed hardcoded light regardless of what
+  /// [ThemeController]/the Settings screen (CLAUDE.md "Real-usage
+  /// findings" Step 5) set everything else to. Found by Mike switching to
+  /// Dark and noticing the window chrome and form followed but the grid
+  /// didn't. Starts from TrinaGrid's own light/dark preset (closest
+  /// built-in match for borders/hover/selection colors, which this app
+  /// doesn't have its own opinion on) and overrides just the background
+  /// and text color/size to match the resolved theme exactly.
+  TrinaGridStyleConfig _trinaGridStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final backgroundColor = theme.scaffoldBackgroundColor;
+    final textStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: theme.colorScheme.onSurface,
+    );
+
+    final base = isDark
+        ? const TrinaGridStyleConfig.dark()
+        : const TrinaGridStyleConfig();
+
+    return base.copyWith(
+      gridBackgroundColor: backgroundColor,
+      rowColor: backgroundColor,
+      cellTextStyle: textStyle,
+      columnTextStyle: textStyle.copyWith(fontWeight: FontWeight.w600),
     );
   }
 

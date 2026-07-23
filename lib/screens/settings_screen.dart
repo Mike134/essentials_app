@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
+import '../util/color_picker.dart';
 
 /// Reads/writes `app_settings` (theme, font family, font color, background
 /// color -- shared) and `device_settings` (font size -- per-device) via
@@ -84,6 +85,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _showInvalidHexMessage() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Not a valid hex color (e.g. #1A73E8).')),
+    );
+  }
+
+  Future<void> _pickFontColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _fontColorController.text = ThemeController.colorToHex(picked);
+    await controller.setFontColorOverride(picked);
+  }
+
+  Future<void> _pickBackgroundColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _backgroundColorController.text = ThemeController.colorToHex(picked);
+    await controller.setBackgroundColorOverride(picked);
+  }
+
+  Widget _colorSwatch(Color color) {
+    return Container(
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.grey),
+      ),
     );
   }
 
@@ -173,8 +200,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 8),
               TextField(
                 controller: _fontColorController,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   hintText: '#RRGGBB -- blank to use the theme default',
+                  suffixIcon: IconButton(
+                    icon: _colorSwatch(
+                      controller.fontColorOverride ?? Theme.of(context).colorScheme.onSurface,
+                    ),
+                    tooltip: 'Pick a color',
+                    onPressed: () => _pickFontColor(
+                      controller,
+                      controller.fontColorOverride ?? Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
                 ),
                 onSubmitted: (text) => _applyFontColor(controller, text),
                 onTapOutside: (_) => _applyFontColor(controller, _fontColorController.text),
@@ -197,8 +234,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 8),
               TextField(
                 controller: _backgroundColorController,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   hintText: '#RRGGBB -- blank to use the theme default',
+                  suffixIcon: IconButton(
+                    icon: _colorSwatch(
+                      controller.backgroundColorOverride ?? Theme.of(context).scaffoldBackgroundColor,
+                    ),
+                    tooltip: 'Pick a color',
+                    onPressed: () => _pickBackgroundColor(
+                      controller,
+                      controller.backgroundColorOverride ??
+                          Theme.of(context).scaffoldBackgroundColor,
+                    ),
+                  ),
                 ),
                 onSubmitted: (text) => _applyBackgroundColor(controller, text),
                 onTapOutside: (_) => _applyBackgroundColor(controller, _backgroundColorController.text),
