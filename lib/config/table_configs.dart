@@ -1,4 +1,5 @@
 import '../db/database_helper.dart';
+import '../db/table_discovery_service.dart';
 import '../models/table_config.dart';
 
 /// Batch 1 (`domain`, `priority`, `gender`, `status`, `quality`,
@@ -40,82 +41,50 @@ import '../models/table_config.dart';
 /// the real db); see `test/batch2_conversion_regression_test.dart` for the
 /// full comparison against this file's pre-conversion shape.
 
-/// Batch 3 -- 7 FK fields, but by this point that's just a longer config on
-/// the same lookup-field shape batch 2 already proved, not new architecture.
-/// `readSource` points reads at the `subscription_computed` view (see
-/// schema.sql) instead of the bare table, so `yearly_cost`/`next_date` --
-/// computed at query time, never stored -- come back alongside the real
-/// columns; both are marked `readOnly` since there's no column to write.
-final subscriptionConfig = TableConfig(
-  tableName: 'subscription',
-  displayColumn: 'name',
-  readSource: 'subscription_computed',
-  computePreview: _computeSubscriptionPreview,
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(
-      column: 'domain_id',
-      label: 'Domain',
-      lookup: LookupConfig(table: 'domain'),
-    ),
-    FieldConfig(
-      column: 'used_by_id',
-      label: 'Used By',
-      lookup: LookupConfig(table: 'person'),
-    ),
-    FieldConfig(
-      column: 'class_id',
-      label: 'Class',
-      lookup: LookupConfig(table: 'class'),
-    ),
-    FieldConfig(
-      column: 'renewal_period_id',
-      label: 'Renewal Period',
-      lookup: LookupConfig(table: 'time_frame'),
-    ),
-    FieldConfig(column: 'cost', label: 'Cost', type: FieldType.real),
-    FieldConfig(
-      column: 'yearly_cost',
-      label: 'Yearly Cost',
-      type: FieldType.real,
-      readOnly: true,
-    ),
-    FieldConfig(
-      column: 'payment_method_id',
-      label: 'Payment Method',
-      // account.code (e.g. "CAPONE MC (7072)"), not account.name -- see
-      // CLAUDE.md "Known data quirks": this FK was always resolved against
-      // code in the source workbook, not the account's display name.
-      lookup: LookupConfig(table: 'account', displayColumn: 'code'),
-    ),
-    FieldConfig(
-      column: 'importance_id',
-      label: 'Importance',
-      lookup: LookupConfig(table: 'importance'),
-    ),
-    FieldConfig(
-      column: 'disposition_id',
-      label: 'Disposition',
-      lookup: LookupConfig(table: 'disposition'),
-    ),
-    FieldConfig(column: 'start_date', label: 'Start Date', type: FieldType.date),
-    FieldConfig(
-      column: 'next_date',
-      label: 'Next Date',
-      type: FieldType.date,
-      readOnly: true,
-    ),
-    FieldConfig(column: 'last_date', label: 'Last Date', type: FieldType.date),
-    FieldConfig(column: 'link', label: 'Link', isLink: true),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true, // schema.sql: active INTEGER NOT NULL DEFAULT 1
-    ),
-    FieldConfig(column: 'note', label: 'Note'),
-  ],
-);
+/// `subscription` -- CLAUDE.md "Table Discovery phase" Part E.3, the last
+/// table converted and the only one that keeps *any* hand-written Dart,
+/// for its two genuine exceptions (neither expressible as data):
+///
+/// 1. `payment_method_id` resolves against `account.code`, not the
+///    default-heuristic `account.name` -- a real `field_metadata` row
+///    (`tool/seed_field_metadata_subscription.dart`, already run), same as
+///    `shipment`'s reserved-sentinel rows, not Dart. Every other field
+///    (labels including `used_by_id` -> "Used By" and `renewal_period_id`
+///    -> "Renewal Period", `active`'s real `DEFAULT 1`, displayColumn/
+///    orderBy both resolving to `name`) already matches introspection's
+///    heuristics -- see `test/subscription_conversion_regression_test.dart`.
+/// 2. `yearly_cost`/`next_date` are query-time-only columns on the
+///    `subscription_computed` VIEW (schema.sql) -- `PRAGMA
+///    table_info(subscription)` can never see them, since they don't exist
+///    on the real table. [buildSubscriptionConfig] introspects the real
+///    `subscription` table for everything else, then injects these two as
+///    hand-written `readOnly` [FieldConfig]s at the same position they
+///    held before conversion (right after `cost`/`start_date`, matching
+///    `subscription_computed`'s column order) and points [TableConfig
+///    .readSource] at the view. [_computeSubscriptionPreview] (Dart code,
+///    inherently not data) still supplies the form's live pre-save preview.
+const String subscriptionTableName = 'subscription';
+
+Future<TableConfig> buildSubscriptionConfig(TableDiscoveryService discovery) async {
+  final base = await discovery.buildConfig(subscriptionTableName);
+  final fields = [
+    for (final field in base.fields) ...[
+      field,
+      if (field.column == 'cost')
+        const FieldConfig(column: 'yearly_cost', label: 'Yearly Cost', type: FieldType.real, readOnly: true),
+      if (field.column == 'start_date')
+        const FieldConfig(column: 'next_date', label: 'Next Date', type: FieldType.date, readOnly: true),
+    ],
+  ];
+  return TableConfig(
+    tableName: base.tableName,
+    displayColumn: base.displayColumn,
+    orderBy: base.orderBy,
+    readSource: 'subscription_computed',
+    computePreview: _computeSubscriptionPreview,
+    fields: fields,
+  );
+}
 
 /// Mirrors `subscription_computed`'s formula (schema.sql) in Dart, for the
 /// form's live pre-save preview only -- see [TableConfig.computePreview]'s
@@ -183,11 +152,3 @@ DateTime _addMonthsClamped(DateTime start, int months) {
   return DateTime(year, month, day);
 }
 
-/// Tables that still have a hand-written [TableConfig] -- just
-/// `subscription` now (batches 1 and 2 are both gone, see this file's
-/// top-of-file comments), and only for its two genuine exceptions (the
-/// `subscription_computed` read source and `computePreview`), not because
-/// its fields need hand-writing. `lib/config/table_registry.dart`'s
-/// `loadEffectiveTables` is what actually resolves the full nav list, this
-/// entry plus everything discovered.
-final List<TableConfig> registeredTables = [subscriptionConfig];
