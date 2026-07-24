@@ -227,15 +227,26 @@ class _GenericListScreenState extends State<GenericListScreen> {
   Future<void> _saveCellEdit(int id, String column, Object? value) async {
     try {
       await _dao.update(id, {column: value});
-      // A computed field (e.g. subscription_computed's yearly_cost) can
-      // depend on whatever column just changed -- cost affects yearly_cost,
-      // start_date/renewal_period_id affect next_date, etc. Rather than
-      // hardcode that dependency graph in Dart (a second place the SQL
-      // formula in schema.sql would need to stay in sync with), just
-      // re-fetch whenever the table has any readOnly field at all. TrinaGrid
-      // otherwise keeps showing whatever value a computed cell held at the
-      // last full load, since editing a different cell doesn't touch it.
-      if (widget.config.fields.any((f) => f.readOnly)) _reload();
+      // Always reload, not just when the table has a computed (readOnly)
+      // field. Two independent reasons this matters, not just the
+      // originally-scoped one:
+      // 1. A computed field (e.g. subscription_computed's yearly_cost) can
+      //    depend on whatever column just changed -- cost affects
+      //    yearly_cost, start_date/renewal_period_id affect next_date, etc.
+      //    Re-fetching sidesteps hardcoding that dependency graph in Dart
+      //    (a second place schema.sql's formula would need to stay in sync
+      //    with). TrinaGrid otherwise keeps showing whatever value a
+      //    computed cell held at the last full load.
+      // 2. The actions column's edit button (and delete's confirmation
+      //    label) read from the `rows` list captured when this screen last
+      //    loaded, not from TrinaGrid's own live cell state -- without a
+      //    reload here, that list goes stale the instant any cell is
+      //    edited, and the form opened from the pencil icon shows the
+      //    pre-edit value even after backing out of the cell and back in
+      //    (that only touches TrinaGrid's own selection, not this list).
+      //    Found via a real repro: editing a lookup cell in the grid, then
+      //    immediately opening that row's form, showed the old value.
+      _reload();
     } on DatabaseException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e')));
