@@ -33,6 +33,21 @@ bool isInfraTable(String tableName) {
       tableName == 'android_metadata';
 }
 
+/// Reserved `field_metadata.field_name` values that don't refer to a real
+/// column -- table-level overrides for [TableConfig.displayColumn]/
+/// [TableConfig.orderBy], stored in the existing `field_metadata` table's
+/// `display_label` cell rather than adding a new schema table for
+/// something needed by exactly one table so far. **Deliberately narrow,
+/// last-resort convention**, not a general mechanism: only used when a
+/// table has neither a `name` column nor any `NOT NULL` column for
+/// [TableDiscoveryService._deriveDisplayColumn]'s heuristic to land on --
+/// `shipment` is the one table this applies to today (CLAUDE.md "Table
+/// Discovery phase" Part E.2). A row present here always wins over the
+/// heuristic, same override-precedence rule as every other
+/// `field_metadata` row.
+const String reservedDisplayColumnFieldName = '_display_column';
+const String reservedOrderByFieldName = '_order_by';
+
 /// Introspects `essentials.db` at startup and builds a [TableConfig] for
 /// every real table, with no hand-written Dart config required. See
 /// CLAUDE.md "Table Discovery phase" for the full design -- this is Parts
@@ -101,11 +116,14 @@ class TableDiscoveryService {
       );
     }
 
-    final displayColumn = _deriveDisplayColumn(columns);
+    final displayColumn =
+        overrides[reservedDisplayColumnFieldName]?.displayLabel ?? _deriveDisplayColumn(columns);
+    final orderBy = overrides[reservedOrderByFieldName]?.displayLabel ??
+        _deriveOrderBy(columns, displayColumn, fields);
     return TableConfig(
       tableName: tableName,
       displayColumn: displayColumn,
-      orderBy: _deriveOrderBy(columns, displayColumn, fields),
+      orderBy: orderBy,
       fields: fields,
     );
   }
@@ -135,7 +153,14 @@ class TableDiscoveryService {
       column: column.name,
       label: label,
       type: type,
-      required: required && lookup == null,
+      // Required is purely about nullability (NOT NULL, no SQL default) --
+      // applies just as much to a lookup FK column (e.g. time_frame.unit_id)
+      // as a plain one. Was previously forced false for every lookup
+      // regardless of nullability -- a real bug, caught before it shipped:
+      // a required FK left optional lets the form submit a null id, which
+      // then fails at the SQL layer with a raw NOT NULL constraint error
+      // instead of the form's own friendlier required-field validation.
+      required: required,
       lookup: lookup,
       defaultValue: _deriveDefaultValue(column, type, override),
       isLink: isLink,

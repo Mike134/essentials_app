@@ -17,275 +17,28 @@ import '../models/table_config.dart';
 /// `test/batch1_conversion_regression_test.dart` for the full comparison
 /// against this file's pre-conversion shape.
 
-/// account_type shares `unit`'s exact shape (abbreviation/definition, no
-/// FK) -- still hand-written for now, batch 2's turn to convert
-/// (CLAUDE.md "Table Discovery phase" Part E.2), not this pass.
-final accountTypeConfig = TableConfig(
-  tableName: 'account_type',
-  displayColumn: 'name',
-  orderBy: 'position, name',
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(column: 'abbreviation', label: 'Abbreviation'),
-    FieldConfig(column: 'definition', label: 'Definition'),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true,
-    ),
-    FieldConfig(
-      column: 'position',
-      label: 'Position',
-      type: FieldType.integer,
-      defaultValue: 255,
-    ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-  ],
-);
-
-/// Batch 2 -- introduces the lookup-field variant of [FieldConfig]/
-/// [LookupConfig] for the first time. See CLAUDE.md "Build sequence" for
-/// the deliberate easiest-first ordering within the batch.
-TableConfig _supplierLikeConfig(String tableName) {
-  return TableConfig(
-    tableName: tableName,
-    displayColumn: 'name',
-    orderBy: 'position, name',
-    fields: const [
-      FieldConfig(column: 'name', label: 'Name', required: true),
-      FieldConfig(column: 'description', label: 'Description'),
-      FieldConfig(column: 'hyperlink', label: 'Hyperlink', isLink: true),
-      FieldConfig(
-        column: 'active',
-        label: 'Active',
-        type: FieldType.boolean,
-        defaultValue: true,
-      ),
-      FieldConfig(
-        column: 'position',
-        label: 'Position',
-        type: FieldType.integer,
-        defaultValue: 255,
-      ),
-      FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-    ],
-  );
-}
-
-final personConfig = TableConfig(
-  tableName: 'person',
-  displayColumn: 'name',
-  orderBy: 'position, name',
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(column: 'description', label: 'Description'),
-    FieldConfig(
-      column: 'gender_id',
-      label: 'Gender',
-      lookup: LookupConfig(table: 'gender'),
-    ),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true,
-    ),
-    FieldConfig(
-      column: 'position',
-      label: 'Position',
-      type: FieldType.integer,
-      defaultValue: 255,
-    ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-  ],
-);
-
-final categoryConfig = TableConfig(
-  tableName: 'category',
-  displayColumn: 'name',
-  orderBy: 'position, name',
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(
-      column: 'class_id',
-      label: 'Class',
-      lookup: LookupConfig(table: 'class'),
-    ),
-    FieldConfig(column: 'description', label: 'Description'),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true,
-    ),
-    FieldConfig(
-      column: 'position',
-      label: 'Position',
-      type: FieldType.integer,
-      defaultValue: 255,
-    ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-  ],
-);
-
-final timeFrameConfig = TableConfig(
-  tableName: 'time_frame',
-  displayColumn: 'name',
-  orderBy: 'position, name',
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(
-      column: 'unit_id',
-      label: 'Unit',
-      required: true, // schema.sql: unit_id INTEGER NOT NULL
-      lookup: LookupConfig(table: 'unit'),
-    ),
-    FieldConfig(
-      column: 'multiplier',
-      label: 'Multiplier',
-      type: FieldType.integer,
-      required: true, // schema.sql: multiplier INTEGER NOT NULL
-    ),
-    FieldConfig(column: 'description', label: 'Description'),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true,
-    ),
-    FieldConfig(
-      column: 'position',
-      label: 'Position',
-      type: FieldType.integer,
-      defaultValue: 255,
-    ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-  ],
-);
-
-final accountConfig = TableConfig(
-  tableName: 'account',
-  displayColumn: 'name',
-  orderBy: 'position, name',
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(column: 'code', label: 'Code'),
-    FieldConfig(column: 'institution', label: 'Institution'),
-    FieldConfig(
-      column: 'account_type_id',
-      label: 'Account Type',
-      lookup: LookupConfig(table: 'account_type'),
-    ),
-    FieldConfig(
-      column: 'domain_id',
-      label: 'Domain',
-      lookup: LookupConfig(table: 'domain'),
-    ),
-    FieldConfig(column: 'notes', label: 'Notes'),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true,
-    ),
-    FieldConfig(
-      column: 'position',
-      label: 'Position',
-      type: FieldType.integer,
-      defaultValue: 255,
-    ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-  ],
-);
-
-final supplierConfig = _supplierLikeConfig('supplier');
-final shipperConfig = _supplierLikeConfig('shipper');
-
-/// No `name`/`active`/`position`/`color` triple -- `shipment` is a
-/// transactional table, not a lookup, so [TableConfig.displayColumn] falls
-/// back to `order_id` (the closest thing to a human-readable identifier)
-/// even though it isn't unique or required.
-final shipmentConfig = TableConfig(
-  tableName: 'shipment',
-  displayColumn: 'order_id',
-  orderBy: 'order_date DESC, id DESC',
-  fields: const [
-    FieldConfig(
-      column: 'supplier_id',
-      label: 'Supplier',
-      lookup: LookupConfig(table: 'supplier'),
-    ),
-    FieldConfig(column: 'order_date', label: 'Order Date', type: FieldType.date),
-    FieldConfig(column: 'due_date', label: 'Due Date', type: FieldType.date),
-    FieldConfig(column: 'received_date', label: 'Received Date', type: FieldType.date),
-    FieldConfig(
-      column: 'domain_id',
-      label: 'Domain',
-      lookup: LookupConfig(table: 'domain'),
-    ),
-    FieldConfig(column: 'order_id', label: 'Order ID'),
-    FieldConfig(column: 'order_link', label: 'Order Link', isLink: true),
-    FieldConfig(
-      column: 'shipper_id',
-      label: 'Shipper',
-      lookup: LookupConfig(table: 'shipper'),
-    ),
-    FieldConfig(column: 'tracking_id', label: 'Tracking ID'),
-    FieldConfig(column: 'tracking_link', label: 'Tracking Link', isLink: true),
-    FieldConfig(column: 'items', label: 'Items'),
-    FieldConfig(column: 'note', label: 'Note'),
-  ],
-);
-
-/// `entry_time` (not `entry`, which can be long free text) is the
-/// [TableConfig.displayColumn] here -- concise and effectively unique
-/// enough for the delete-confirmation label even though schema.sql doesn't
-/// enforce uniqueness on it.
-final journalConfig = TableConfig(
-  tableName: 'journal',
-  displayColumn: 'entry_time',
-  orderBy: 'entry_time DESC',
-  fields: const [
-    FieldConfig(
-      column: 'entry_time',
-      label: 'Entry Time',
-      type: FieldType.dateTime,
-      required: true,
-    ),
-    FieldConfig(column: 'entry', label: 'Entry', required: true),
-    FieldConfig(column: 'tag', label: 'Tag'),
-    FieldConfig(
-      column: 'status_id',
-      label: 'Status',
-      lookup: LookupConfig(table: 'status'),
-    ),
-    FieldConfig(column: 'location', label: 'Location'),
-    FieldConfig(
-      column: 'who_id',
-      label: 'Who',
-      lookup: LookupConfig(table: 'person'),
-    ),
-    FieldConfig(
-      column: 'domain_id',
-      label: 'Domain',
-      lookup: LookupConfig(table: 'domain'),
-    ),
-    FieldConfig(column: 'follow_up', label: 'Follow Up'),
-    FieldConfig(
-      column: 'scheduled',
-      label: 'Scheduled',
-      type: FieldType.boolean,
-      defaultValue: false, // schema.sql: scheduled INTEGER NOT NULL DEFAULT 0
-    ),
-    FieldConfig(column: 'link', label: 'Link', isLink: true),
-    FieldConfig(column: 'image', label: 'Image'),
-    FieldConfig(column: 'file', label: 'File'),
-    FieldConfig(column: 'latitude', label: 'Latitude', type: FieldType.real),
-    FieldConfig(column: 'longitude', label: 'Longitude', type: FieldType.real),
-    FieldConfig(column: 'notes', label: 'Notes'),
-  ],
-);
+/// Batch 2 (`person`, `category`, `time_frame`, `account_type`, `account`,
+/// `supplier`, `shipper`, `shipment`, `journal`) retired onto the discovery
+/// mechanism -- CLAUDE.md "Table Discovery phase" Part E.2. Exercised the
+/// FK lookup-display-column logic for real (every lookup here resolves
+/// against the referenced table's own `name` column, discovered live via
+/// `PRAGMA foreign_key_list` -- no hand-written `LookupConfig` needed for
+/// any of them) and caught a real bug before it shipped: the discovery
+/// service was forcing every lookup field to `required: false` regardless
+/// of nullability, which would have silently dropped `time_frame.unit_id`'s
+/// required validation.
+///
+/// `journal` needed zero `field_metadata` overrides -- every heuristic
+/// (including `entry_time` as displayColumn and `entry_time DESC` as
+/// orderBy, since journal has no `name` column) already reproduced its
+/// exact pre-conversion shape. `shipment` is the one real exception: no
+/// `name` column and no `NOT NULL` column at all, so its displayColumn/
+/// orderBy use the reserved `field_metadata` sentinel field names
+/// (`_display_column`/`_order_by` -- see `table_discovery_service.dart`)
+/// to carry the original `order_id`/`order_date DESC, id DESC` forward.
+/// Seeded via `tool/seed_field_metadata_batch2.dart` (already run against
+/// the real db); see `test/batch2_conversion_regression_test.dart` for the
+/// full comparison against this file's pre-conversion shape.
 
 /// Batch 3 -- 7 FK fields, but by this point that's just a longer config on
 /// the same lookup-field shape batch 2 already proved, not new architecture.
@@ -430,20 +183,11 @@ DateTime _addMonthsClamped(DateTime start, int months) {
   return DateTime(year, month, day);
 }
 
-/// Tables that still have a hand-written [TableConfig], in nav-menu order
-/// -- matches CLAUDE.md's batch-2/batch-3 ordering (batch 1 is gone, see
-/// this file's top-of-file comment; `lib/config/table_registry.dart`'s
-/// `loadEffectiveTables` is what actually resolves the full nav list, hand-
-/// written entries plus everything discovered).
-final List<TableConfig> registeredTables = [
-  personConfig,
-  categoryConfig,
-  timeFrameConfig,
-  accountTypeConfig,
-  accountConfig,
-  supplierConfig,
-  shipperConfig,
-  shipmentConfig,
-  journalConfig,
-  subscriptionConfig,
-];
+/// Tables that still have a hand-written [TableConfig] -- just
+/// `subscription` now (batches 1 and 2 are both gone, see this file's
+/// top-of-file comments), and only for its two genuine exceptions (the
+/// `subscription_computed` read source and `computePreview`), not because
+/// its fields need hand-writing. `lib/config/table_registry.dart`'s
+/// `loadEffectiveTables` is what actually resolves the full nav list, this
+/// entry plus everything discovered.
+final List<TableConfig> registeredTables = [subscriptionConfig];
