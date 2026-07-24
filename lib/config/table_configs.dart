@@ -1,76 +1,25 @@
 import '../db/database_helper.dart';
 import '../models/table_config.dart';
 
-/// Batch 1 configs -- no lookups, prove the base template + navigation.
-/// See CLAUDE.md "Build sequence" for the full batch-1/2/3 ordering.
-///
-/// Eight of the nine batch-1 tables share the exact same shape in
-/// schema.sql: `name`, a free-text `description`, and the same
-/// `active`/`position`/`color` triple. `unit` is the one exception
-/// (`abbreviation`/`definition` instead of `description`) and is defined
-/// separately below.
-TableConfig _lookupConfig(String tableName) {
-  return TableConfig(
-    tableName: tableName,
-    displayColumn: 'name',
-    orderBy: 'position, name',
-    fields: const [
-      FieldConfig(column: 'name', label: 'Name', required: true),
-      FieldConfig(column: 'description', label: 'Description'),
-      FieldConfig(
-        column: 'active',
-        label: 'Active',
-        type: FieldType.boolean,
-        defaultValue: true, // schema.sql: active INTEGER NOT NULL DEFAULT 1
-      ),
-      FieldConfig(
-        column: 'position',
-        label: 'Position',
-        type: FieldType.integer,
-        defaultValue: 255,
-      ),
-      FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-    ],
-  );
-}
+/// Batch 1 (`domain`, `priority`, `gender`, `status`, `quality`,
+/// `condition`, `unit`, `importance`, `disposition`, `class`) retired onto
+/// the discovery mechanism -- CLAUDE.md "Table Discovery phase" Part E.1.
+/// `TableDiscoveryService`'s introspection heuristics reproduce every one
+/// of these tables' shape exactly with zero hand-written config: `name`/
+/// `description`/`abbreviation`/`definition` labels title-case correctly,
+/// `active`'s boolean default comes straight from its real SQL `DEFAULT 1`,
+/// `displayColumn`/`orderBy` both resolve to `name`/`position, name` via
+/// the `position`-column heuristic. Only `position` and `color` needed a
+/// seeded `field_metadata` row each (`tool/seed_field_metadata_batch1.dart`,
+/// already run against the real db) -- neither has a real SQL `DEFAULT` in
+/// schema.sql, so introspection alone would leave them null instead of the
+/// `255`/`#FFFFFF` these tables always started new rows at. See
+/// `test/batch1_conversion_regression_test.dart` for the full comparison
+/// against this file's pre-conversion shape.
 
-final domainConfig = _lookupConfig('domain');
-final priorityConfig = _lookupConfig('priority');
-final genderConfig = _lookupConfig('gender');
-final statusConfig = _lookupConfig('status');
-final qualityConfig = _lookupConfig('quality');
-final conditionConfig = _lookupConfig('condition');
-final importanceConfig = _lookupConfig('importance');
-final dispositionConfig = _lookupConfig('disposition');
-final classConfig = _lookupConfig('class');
-
-final unitConfig = TableConfig(
-  tableName: 'unit',
-  displayColumn: 'name',
-  orderBy: 'position, name',
-  fields: const [
-    FieldConfig(column: 'name', label: 'Name', required: true),
-    FieldConfig(column: 'abbreviation', label: 'Abbreviation'),
-    FieldConfig(column: 'definition', label: 'Definition'),
-    FieldConfig(
-      column: 'active',
-      label: 'Active',
-      type: FieldType.boolean,
-      defaultValue: true,
-    ),
-    FieldConfig(
-      column: 'position',
-      label: 'Position',
-      type: FieldType.integer,
-      defaultValue: 255,
-    ),
-    FieldConfig(column: 'color', label: 'Color', defaultValue: '#FFFFFF', isColor: true),
-  ],
-);
-
-/// account_type shares unit's exact shape (abbreviation/definition, no FK)
-/// -- kept separate rather than folded into [unitConfig] since it's a
-/// distinct table, not a variant of `unit` itself.
+/// account_type shares `unit`'s exact shape (abbreviation/definition, no
+/// FK) -- still hand-written for now, batch 2's turn to convert
+/// (CLAUDE.md "Table Discovery phase" Part E.2), not this pass.
 final accountTypeConfig = TableConfig(
   tableName: 'account_type',
   displayColumn: 'name',
@@ -481,19 +430,12 @@ DateTime _addMonthsClamped(DateTime start, int months) {
   return DateTime(year, month, day);
 }
 
-/// All tables with a registered [TableConfig], in nav-menu order --
-/// matches CLAUDE.md's batch-1/batch-2/batch-3 ordering exactly.
+/// Tables that still have a hand-written [TableConfig], in nav-menu order
+/// -- matches CLAUDE.md's batch-2/batch-3 ordering (batch 1 is gone, see
+/// this file's top-of-file comment; `lib/config/table_registry.dart`'s
+/// `loadEffectiveTables` is what actually resolves the full nav list, hand-
+/// written entries plus everything discovered).
 final List<TableConfig> registeredTables = [
-  domainConfig,
-  priorityConfig,
-  genderConfig,
-  statusConfig,
-  qualityConfig,
-  conditionConfig,
-  unitConfig,
-  importanceConfig,
-  dispositionConfig,
-  classConfig,
   personConfig,
   categoryConfig,
   timeFrameConfig,
