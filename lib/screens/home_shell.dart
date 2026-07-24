@@ -103,10 +103,23 @@ class _HomeShellState extends State<HomeShell> {
     // already needs to run once at launch, rather than a separate hook.
     final tables = await loadEffectiveTables();
     _tables = tables;
-    _selectedTableName ??= tables.isEmpty ? null : tables.first.tableName;
 
     final deviceId = await DeviceId.resolve();
     final dao = _groupingDao ??= SidebarGroupingDao(deviceId: deviceId);
+
+    if (_selectedTableName == null) {
+      // Per-device (CLAUDE.md governing rule -- "annoyed if it did match
+      // across devices" would apply here, since each device's own last-open
+      // table is what a user expects to come back to). Falls back to the
+      // first table in nav order if the saved one has since been dropped
+      // or renamed -- same defensive-nav reasoning as everywhere else in
+      // this file.
+      final lastActive = await dao.loadLastActiveTable();
+      _selectedTableName = (lastActive != null && tables.any((t) => t.tableName == lastActive))
+          ? lastActive
+          : (tables.isEmpty ? null : tables.first.tableName);
+    }
+
     final membership = await dao.loadMembership();
     _collapsedGroups = await dao.loadCollapsedGroups();
     return _buildGroups(tables, membership);
@@ -128,7 +141,10 @@ class _HomeShellState extends State<HomeShell> {
     return _buildGroups(_tables, membership);
   }
 
-  void _select(String tableName) => setState(() => _selectedTableName = tableName);
+  void _select(String tableName) {
+    setState(() => _selectedTableName = tableName);
+    _groupingDao?.setLastActiveTable(tableName);
+  }
 
   Future<void> _moveToGroup(TableConfig table, String groupName) async {
     final dao = _groupingDao;

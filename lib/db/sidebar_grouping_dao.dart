@@ -124,4 +124,31 @@ class SidebarGroupingDao {
       'value': collapsed ? '1' : '0',
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
+
+  static const String _lastActiveTableKey = 'last_active_table';
+
+  /// Which table this device had open when the app was last closed --
+  /// per-device by the same governing rule as collapsed groups above (Mike
+  /// would be annoyed if opening the app on one device jumped him to
+  /// whatever table he last had open on a *different* device). `HomeShell`
+  /// falls back to the first table in nav order if this table has since
+  /// been dropped or renamed.
+  Future<String?> loadLastActiveTable() async {
+    final db = await _db;
+    final rows = await db.query(
+      'device_settings',
+      where: 'device_id = ? AND key = ?',
+      whereArgs: [deviceId, _lastActiveTableKey],
+    );
+    return rows.isEmpty ? null : rows.first['value'] as String?;
+  }
+
+  Future<void> setLastActiveTable(String tableName) async {
+    final db = await _db;
+    await db.insert('device_settings', {
+      'device_id': deviceId,
+      'key': _lastActiveTableKey,
+      'value': tableName,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
 }
