@@ -5,11 +5,14 @@ import '../db/generic_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
+import '../util/date_format.dart';
 import '../util/links.dart';
 
 /// Add/edit form for a single row, entirely driven by [config]. Renders
-/// text/number/boolean fields directly and lookup fields (batch 2+) as a
-/// dropdown populated from the referenced table.
+/// text/number/boolean fields directly, lookup fields (batch 2+) as a
+/// dropdown populated from the referenced table, and date/dateTime fields
+/// as a plain text box (still directly editable, same as color/link) plus
+/// a calendar icon that opens the native date/time picker.
 class GenericFormScreen extends StatefulWidget {
   const GenericFormScreen({super.key, required this.config, this.existing});
 
@@ -115,6 +118,57 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     final picked = await pickColor(context, initial: current);
     if (picked == null) return;
     setState(() => controller.text = ThemeController.colorToHex(picked));
+    _recomputePreview();
+  }
+
+  /// Date-only field (schema.sql's `order_date`/`start_date`/etc.) --
+  /// [DateTime.tryParse] happily parses the field's own `yyyy-MM-dd` text
+  /// back for [initialDate], so re-opening the picker on an already-filled
+  /// field starts on the right day rather than always today.
+  Future<void> _pickDateForField(FieldConfig field) async {
+    final controller = _controllers[field.column]!;
+    final current = DateTime.tryParse(controller.text) ?? DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(1900),
+      lastDate: DateTime(2100),
+    );
+    if (picked == null) return;
+    setState(() => controller.text = isoDate(picked));
+    _recomputePreview();
+  }
+
+  /// Combined date+time field (schema.sql's `journal.entry_time`, the only
+  /// one so far) -- date first, then time, matching how Android/iOS's own
+  /// native pickers sequence the two rather than a single custom combined
+  /// widget. Seconds aren't user-editable through either native picker, so
+  /// they're carried over from whatever [current] already had (0 for a
+  /// brand-new row) rather than always reset to 0 on every edit.
+  Future<void> _pickDateTimeForField(FieldConfig field) async {
+    final controller = _controllers[field.column]!;
+    final current = DateTime.tryParse(controller.text) ?? DateTime.now();
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(1900),
+      lastDate: DateTime(2100),
+    );
+    if (pickedDate == null) return;
+    if (!mounted) return;
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(current),
+    );
+    final combined = DateTime(
+      pickedDate.year,
+      pickedDate.month,
+      pickedDate.day,
+      pickedTime?.hour ?? current.hour,
+      pickedTime?.minute ?? current.minute,
+      current.second,
+    );
+    setState(() => controller.text = isoDateTime(combined));
     _recomputePreview();
   }
 
@@ -312,6 +366,18 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                   icon: const Icon(Icons.palette_outlined),
                   tooltip: 'Pick a color',
                   onPressed: () => _pickColorForField(field),
+                )
+              : field.type == FieldType.date
+              ? IconButton(
+                  icon: const Icon(Icons.calendar_today_outlined),
+                  tooltip: 'Pick a date',
+                  onPressed: () => _pickDateForField(field),
+                )
+              : field.type == FieldType.dateTime
+              ? IconButton(
+                  icon: const Icon(Icons.event_outlined),
+                  tooltip: 'Pick a date and time',
+                  onPressed: () => _pickDateTimeForField(field),
                 )
               : null,
         ),

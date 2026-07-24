@@ -29,6 +29,20 @@ class ThemeController extends ChangeNotifier {
   Color? fontColorOverride;
   Color? backgroundColorOverride;
 
+  /// Defaults matching TrinaGrid's own out-of-the-box row height
+  /// (`TrinaGridSettings.rowHeight`) and this app's original fixed 3x
+  /// multiplier for wrapped rows -- unlike the four theme attributes above,
+  /// neither has a [ThemePreset] to fall back to, there's no "row height"
+  /// concept in a theme, so these fall back straight to a literal default.
+  static const double defaultRowHeight = 45.0;
+  static const double defaultWrapRowHeight = defaultRowHeight * 3;
+
+  double? rowHeightOverride;
+  double? wrapRowHeightOverride;
+
+  double get rowHeight => rowHeightOverride ?? defaultRowHeight;
+  double get wrapRowHeight => wrapRowHeightOverride ?? defaultWrapRowHeight;
+
   ThemeSettingsDao? _dao;
   bool _loaded = false;
   bool get loaded => _loaded;
@@ -47,6 +61,12 @@ class ThemeController extends ChangeNotifier {
 
     final fontSizeText = await dao.loadDeviceFontSize();
     fontSizeOverride = fontSizeText == null ? null : double.tryParse(fontSizeText);
+
+    final rowHeightText = await dao.loadDeviceSetting(ThemeSettingsDao.noWrapRowHeightKey);
+    rowHeightOverride = rowHeightText == null ? null : double.tryParse(rowHeightText);
+
+    final wrapRowHeightText = await dao.loadDeviceSetting(ThemeSettingsDao.wrapRowHeightKey);
+    wrapRowHeightOverride = wrapRowHeightText == null ? null : double.tryParse(wrapRowHeightText);
 
     _loaded = true;
     notifyListeners();
@@ -82,6 +102,18 @@ class ThemeController extends ChangeNotifier {
   Future<void> setFontSizeOverride(double? size) async {
     fontSizeOverride = size;
     await _dao?.setDeviceFontSize(size?.toString());
+    notifyListeners();
+  }
+
+  Future<void> setRowHeightOverride(double? height) async {
+    rowHeightOverride = height;
+    await _dao?.setDeviceSetting(ThemeSettingsDao.noWrapRowHeightKey, height?.toString());
+    notifyListeners();
+  }
+
+  Future<void> setWrapRowHeightOverride(double? height) async {
+    wrapRowHeightOverride = height;
+    await _dao?.setDeviceSetting(ThemeSettingsDao.wrapRowHeightKey, height?.toString());
     notifyListeners();
   }
 

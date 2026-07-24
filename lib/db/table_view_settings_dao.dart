@@ -11,6 +11,7 @@ class ColumnSetting {
     this.displayOrder,
     this.visible = true,
     this.frozen,
+    this.wrapText = false,
   });
 
   final String columnName;
@@ -18,6 +19,7 @@ class ColumnSetting {
   final int? displayOrder;
   final bool visible;
   final String? frozen;
+  final bool wrapText;
 }
 
 /// One saved table's per-device sort/filter state -- mirrors the single row
@@ -58,6 +60,7 @@ class TableViewSettingsDao {
           displayOrder: row['display_order'] as int?,
           visible: (row['visible'] as int? ?? 1) == 1,
           frozen: row['frozen'] as String?,
+          wrapText: (row['wrap_text'] as int? ?? 0) == 1,
         ),
     ];
   }
@@ -100,6 +103,7 @@ class TableViewSettingsDao {
           'display_order': setting.displayOrder,
           'visible': setting.visible ? 1 : 0,
           'frozen': setting.frozen,
+          'wrap_text': setting.wrapText ? 1 : 0,
         });
       }
     });

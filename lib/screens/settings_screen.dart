@@ -183,6 +183,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => controller.setFontSizeOverride(value),
               ),
               const SizedBox(height: 24),
+              const Text(
+                'Grid row height (this device)',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('No wrap: ${controller.rowHeight.toStringAsFixed(0)}px'),
+                  if (controller.rowHeightOverride != null)
+                    TextButton(
+                      onPressed: () => controller.setRowHeightOverride(null),
+                      child: const Text('Reset to default'),
+                    ),
+                ],
+              ),
+              Slider(
+                value: controller.rowHeight,
+                min: 30,
+                max: 80,
+                divisions: 50, // 1px steps -- (max - min) / divisions
+                label: controller.rowHeight.toStringAsFixed(0),
+                onChanged: (value) => controller.setRowHeightOverride(value),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Wrapped: ${controller.wrapRowHeight.toStringAsFixed(0)}px'),
+                  if (controller.wrapRowHeightOverride != null)
+                    TextButton(
+                      onPressed: () => controller.setWrapRowHeightOverride(null),
+                      child: const Text('Reset to default'),
+                    ),
+                ],
+              ),
+              Slider(
+                value: controller.wrapRowHeight,
+                min: 60,
+                max: 300,
+                divisions: 120, // 2px steps -- (max - min) / divisions
+                label: controller.wrapRowHeight.toStringAsFixed(0),
+                onChanged: (value) => controller.setWrapRowHeightOverride(value),
+              ),
+              const SizedBox(height: 24),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [

@@ -1,5 +1,9 @@
 /// How a [FieldConfig]'s raw SQLite column value should be edited/parsed.
-enum FieldType { text, integer, real, boolean }
+/// [date]/[dateTime] are still stored as plain ISO8601 `TEXT` (schema.sql's
+/// convention -- `YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS`), same as [text];
+/// the distinct type only exists so the list/form screens know to offer a
+/// picker instead of a bare text box.
+enum FieldType { text, integer, real, boolean, date, dateTime }
 
 /// Describes a field that is really a foreign key into another table --
 /// the form should render it as a dropdown of that table's rows rather

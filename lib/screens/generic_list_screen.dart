@@ -10,6 +10,7 @@ import '../db/table_view_settings_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
+import '../util/date_format.dart';
 import '../util/device_id.dart';
 import '../util/links.dart';
 import '../util/strings.dart';
@@ -74,6 +75,29 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   TrinaGridStateManager? _stateManager;
   Timer? _saveTimer;
+
+  /// Live wrap-text state per field column, keyed the same as
+  /// [ColumnSetting.columnName] -- read by [_wrapAwareCellRenderer] on every
+  /// cell repaint (so toggling it doesn't need TrinaGrid to rebuild the
+  /// column/renderer itself, just repaint) and written by
+  /// [_toggleWrapText]. Populated fresh from the saved [ColumnSetting]s on
+  /// every grid (re)build in [build] -- only fields the plain/readOnly
+  /// branches of [_buildFieldColumn] actually render through
+  /// [_wrapAwareCellRenderer] get an entry, since that's the only renderer
+  /// that reads this map; lookup/boolean/link/color columns keep their own
+  /// dedicated renderers and never appear here.
+  final Map<String, bool> _wrapTextColumns = {};
+
+  /// Height applied to every row once at least one column has wrap enabled
+  /// -- TrinaGrid has no per-column row-height concept, only per-row (see
+  /// [TrinaGridStateManager.setRowHeight]), so this is a single height
+  /// shared by the whole grid rather than something computed per cell's
+  /// actual wrapped line count. Read live from [ThemeController] (a user
+  /// setting, not a hardcoded constant -- see Settings' "Grid row height")
+  /// each time it's needed rather than cached, so a change made in Settings
+  /// takes effect the next time wrap is toggled without this screen needing
+  /// its own listener on the controller.
+  double get _wrappedRowHeight => ThemeController.instance.wrapRowHeight;
 
   /// Serialized form of the last snapshot actually written to the db --
   /// lets [_scheduleSettingsSave] skip a write when nothing that matters
@@ -255,6 +279,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final stateManager = event.stateManager;
     _stateManager = stateManager;
 
+    // Restore tall rows if a previous session left any column wrapped --
+    // otherwise the saved wrap flag would be honored by the cell renderer
+    // (still wraps the text) but clipped to a single normal-height row until
+    // the user re-toggled it.
+    if (_wrapTextColumns.values.any((wrapped) => wrapped)) {
+      _applyRowHeights(stateManager);
+    }
+
     if (viewSetting?.sortColumn != null) {
       TrinaColumn? column;
       for (final c in stateManager.refColumns) {
@@ -294,6 +326,36 @@ class _GenericListScreenState extends State<GenericListScreen> {
     stateManager.resizingChangeNotifier.addListener(_scheduleSettingsSave);
   }
 
+  /// Sets every row to [_wrappedRowHeight] (wrap enabled somewhere) or back
+  /// to the grid's normal default (nothing wrapped anymore) -- row height in
+  /// TrinaGrid is per-row, not per-column, so this is shared across the
+  /// whole grid rather than sized to any one column's content.
+  void _applyRowHeights(TrinaGridStateManager stateManager) {
+    final anyWrapped = _wrapTextColumns.values.any((wrapped) => wrapped);
+    for (var i = 0; i < stateManager.refRows.length; i++) {
+      if (anyWrapped) {
+        stateManager.setRowHeight(i, _wrappedRowHeight);
+      } else {
+        stateManager.resetRowHeight(i);
+      }
+    }
+  }
+
+  /// Column-menu "Wrap text" handler (see [_ColumnMenuDelegate]) -- flips
+  /// this column's entry in [_wrapTextColumns] (read live by
+  /// [_wrapAwareCellRenderer] on every repaint) and recomputes row heights.
+  /// [_applyRowHeights]'s `setRowHeight`/`resetRowHeight` calls already
+  /// notify the grid's listeners, which is what actually triggers both the
+  /// repaint and (via the same listener [_onGridLoaded] wired up to
+  /// [_scheduleSettingsSave]) persisting the new flag -- no separate
+  /// setState or save call needed here.
+  void _toggleWrapText(TrinaColumn column) {
+    final stateManager = _stateManager;
+    if (stateManager == null) return;
+    _wrapTextColumns[column.field] = !(_wrapTextColumns[column.field] ?? false);
+    _applyRowHeights(stateManager);
+  }
+
   // ===================== Per-device view state: persist =====================
 
   void _scheduleSettingsSave() {
@@ -322,6 +384,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
             TrinaColumnFrozen.end => 'right',
             TrinaColumnFrozen.none => null,
           },
+          // Not a TrinaColumn property (TrinaGrid has no native wrap-text
+          // concept) -- sourced from the separately-tracked _wrapTextColumns
+          // map instead of the column itself, unlike width/hide/frozen above.
+          wrapText: _wrapTextColumns[column.field] ?? false,
         ),
     ];
 
@@ -350,7 +416,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final snapshot = jsonEncode({
       'columns': [
         for (final c in columnSettings)
-          [c.columnName, c.width, c.displayOrder, c.visible, c.frozen],
+          [c.columnName, c.width, c.displayOrder, c.visible, c.frozen, c.wrapText],
       ],
       'sortColumn': viewSetting.sortColumn,
       'sortDirection': viewSetting.sortDirection,
@@ -462,7 +528,26 @@ class _GenericListScreenState extends State<GenericListScreen> {
     if (field.readOnly) {
       // Computed, query-time-only value (e.g. subscription_computed's
       // yearly_cost/next_date) -- nothing to write back, so no inline
-      // editor at all, same reasoning as `id`.
+      // editor at all, same reasoning as `id`. Date/dateTime fields skip
+      // _wrapAwareCellRenderer (and so never get a _wrapTextColumns entry,
+      // same as lookup/boolean/link/color below) -- a single formatted date
+      // never wraps, and TrinaColumnType.date/dateTime already formats it
+      // via `column.formatter`-equivalent display logic without a renderer.
+      if (field.type == FieldType.date || field.type == FieldType.dateTime) {
+        return _withColumnSetting(
+          TrinaColumn(
+            title: field.label,
+            field: field.column,
+            type: field.type == FieldType.dateTime
+                ? TrinaColumnType.dateTime(format: 'yyyy-MM-dd HH:mm:ss')
+                : TrinaColumnType.date(format: 'yyyy-MM-dd'),
+            readOnly: true,
+            width: field.type == FieldType.dateTime ? 170 : 120,
+          ),
+          setting,
+        );
+      }
+      _wrapTextColumns[field.column] = setting?.wrapText ?? false;
       return _withColumnSetting(
         TrinaColumn(
           title: field.label,
@@ -474,6 +559,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
           },
           readOnly: true,
           width: field.type == FieldType.text ? 220 : 110,
+          renderer: _wrapAwareCellRenderer,
         ),
         setting,
       );
@@ -631,6 +717,27 @@ class _GenericListScreenState extends State<GenericListScreen> {
       );
     }
 
+    if (field.type == FieldType.date || field.type == FieldType.dateTime) {
+      // TrinaColumnType.date/dateTime's own popup (calendar, or calendar +
+      // time) opens on TrinaGrid's normal double-click-to-edit gesture --
+      // no custom renderer/interaction wiring needed, same as the select
+      // dropdown lookup columns above. No _wrapTextColumns entry either,
+      // same reasoning as the readOnly date branch above -- a single
+      // formatted date never wraps.
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: field.type == FieldType.dateTime
+              ? TrinaColumnType.dateTime(format: 'yyyy-MM-dd HH:mm:ss')
+              : TrinaColumnType.date(format: 'yyyy-MM-dd'),
+          width: field.type == FieldType.dateTime ? 170 : 120,
+        ),
+        setting,
+      );
+    }
+
+    _wrapTextColumns[field.column] = setting?.wrapText ?? false;
     return _withColumnSetting(
       TrinaColumn(
         title: field.label,
@@ -641,9 +748,30 @@ class _GenericListScreenState extends State<GenericListScreen> {
           _ => TrinaColumnType.text(),
         },
         width: field.type == FieldType.text ? 220 : 110,
+        renderer: _wrapAwareCellRenderer,
       ),
       setting,
     );
+  }
+
+  /// Replaces TrinaGrid's own default single-line-ellipsis cell text for
+  /// plain/readOnly columns -- reads [_wrapTextColumns] live on every
+  /// repaint (rather than baking a fixed renderer in at column-build time)
+  /// so [_toggleWrapText] can flip behavior without rebuilding the column.
+  /// `ClipRect` matters once wrapped: an unbounded `maxLines` inside a fixed-
+  /// height row would otherwise paint past the row's bounds and bleed into
+  /// the row above/below instead of just being cut off at [_wrappedRowHeight].
+  Widget _wrapAwareCellRenderer(TrinaColumnRendererContext rendererContext) {
+    final wrapped = _wrapTextColumns[rendererContext.column.field] ?? false;
+    final text = Text(
+      rendererContext.column.formattedValueForDisplay(rendererContext.cell.value),
+      style: rendererContext.stateManager.style.cellTextStyle,
+      textAlign: rendererContext.column.textAlign.value,
+      overflow: wrapped ? TextOverflow.clip : TextOverflow.ellipsis,
+      softWrap: wrapped,
+      maxLines: wrapped ? null : 1,
+    );
+    return wrapped ? ClipRect(child: text) : text;
   }
 
   Object? _cellValueFor(FieldConfig field, Object? raw) {
@@ -696,6 +824,18 @@ class _GenericListScreenState extends State<GenericListScreen> {
     } else if (field.type == FieldType.text) {
       final text = (value as String? ?? '').trim();
       value = text.isEmpty ? null : text;
+    } else if (field.type == FieldType.date || field.type == FieldType.dateTime) {
+      // TrinaGrid's date/dateTime column hands back a raw DateTime when
+      // picked via its popup calendar, but a plain String when typed
+      // directly into the same cell's text-entry fallback -- schema.sql
+      // stores these as plain ISO8601 TEXT either way, so both paths need
+      // normalizing to that exact string shape before the write.
+      if (value is DateTime) {
+        value = field.type == FieldType.dateTime ? isoDateTime(value) : isoDate(value);
+      } else {
+        final text = (value as String? ?? '').trim();
+        value = text.isEmpty ? null : text;
+      }
     }
     _saveCellEdit(id, event.column.field, value);
   }
@@ -750,6 +890,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
             ),
             onChanged: _onGridChanged,
             onLoaded: (event) => _onGridLoaded(event, data.viewSetting),
+            columnMenuDelegate: _ColumnMenuDelegate(
+              wrapTextColumns: _wrapTextColumns,
+              onToggleWrapText: _toggleWrapText,
+            ),
           );
         },
       ),
@@ -788,6 +932,11 @@ class _GenericListScreenState extends State<GenericListScreen> {
       rowColor: backgroundColor,
       cellTextStyle: textStyle,
       columnTextStyle: textStyle.copyWith(fontWeight: FontWeight.w600),
+      // The grid's *default* row height (i.e. what an un-wrapped row, or a
+      // row [_applyRowHeights] has reset via resetRowHeight, falls back to)
+      // -- also a Settings-driven override rather than TrinaGrid's own
+      // hardcoded default, same reasoning as [_wrappedRowHeight] above.
+      rowHeight: ThemeController.instance.rowHeight,
     );
   }
 
@@ -840,4 +989,75 @@ class _ScreenData {
   final TableViewSettingsDao settingsDao;
   final Map<String, ColumnSetting> columnSettings;
   final ViewSetting? viewSetting;
+}
+
+/// Wraps TrinaGrid's own column header menu (freeze/hide/autofit/filter --
+/// [TrinaColumnMenuDelegateDefault]) to add one more entry, "Wrap text",
+/// rather than replacing the menu wholesale. Only shown for a column that
+/// actually has an entry in [wrapTextColumns] -- populated exclusively by
+/// the plain/readOnly branches of
+/// [_GenericListScreenState._buildFieldColumn] that render through
+/// [_GenericListScreenState._wrapAwareCellRenderer], so lookup/boolean/
+/// link/color columns (each with their own dedicated renderer that doesn't
+/// consult wrap state) never get the item at all.
+class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
+  const _ColumnMenuDelegate({
+    required this.wrapTextColumns,
+    required this.onToggleWrapText,
+  });
+
+  static const String _menuWrapText = 'wrapText';
+  static const TrinaColumnMenuDelegateDefault _defaultDelegate =
+      TrinaColumnMenuDelegateDefault();
+
+  final Map<String, bool> wrapTextColumns;
+  final void Function(TrinaColumn column) onToggleWrapText;
+
+  @override
+  List<PopupMenuEntry<dynamic>> buildMenuItems({
+    required TrinaGridStateManager stateManager,
+    required TrinaColumn column,
+  }) {
+    final defaultItems = _defaultDelegate.buildMenuItems(
+      stateManager: stateManager,
+      column: column,
+    );
+    if (!wrapTextColumns.containsKey(column.field)) return defaultItems;
+
+    final textColor = stateManager.style.isDarkStyle
+        ? TrinaGridStyleConfig.defaultDarkCellTextStyle.color
+        : TrinaGridStyleConfig.defaultLightCellTextStyle.color;
+
+    return [
+      ...defaultItems,
+      const PopupMenuDivider(),
+      CheckedPopupMenuItem<dynamic>(
+        value: _menuWrapText,
+        checked: wrapTextColumns[column.field] ?? false,
+        height: 36,
+        child: Text('Wrap text', style: TextStyle(color: textColor, fontSize: 13)),
+      ),
+    ];
+  }
+
+  @override
+  void onSelected({
+    required BuildContext context,
+    required TrinaGridStateManager stateManager,
+    required TrinaColumn column,
+    required bool mounted,
+    required dynamic selected,
+  }) {
+    if (selected == _menuWrapText) {
+      onToggleWrapText(column);
+      return;
+    }
+    _defaultDelegate.onSelected(
+      context: context,
+      stateManager: stateManager,
+      column: column,
+      mounted: mounted,
+      selected: selected,
+    );
+  }
 }

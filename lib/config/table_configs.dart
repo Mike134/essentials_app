@@ -267,9 +267,9 @@ final shipmentConfig = TableConfig(
       label: 'Supplier',
       lookup: LookupConfig(table: 'supplier'),
     ),
-    FieldConfig(column: 'order_date', label: 'Order Date'),
-    FieldConfig(column: 'due_date', label: 'Due Date'),
-    FieldConfig(column: 'received_date', label: 'Received Date'),
+    FieldConfig(column: 'order_date', label: 'Order Date', type: FieldType.date),
+    FieldConfig(column: 'due_date', label: 'Due Date', type: FieldType.date),
+    FieldConfig(column: 'received_date', label: 'Received Date', type: FieldType.date),
     FieldConfig(
       column: 'domain_id',
       label: 'Domain',
@@ -298,7 +298,12 @@ final journalConfig = TableConfig(
   displayColumn: 'entry_time',
   orderBy: 'entry_time DESC',
   fields: const [
-    FieldConfig(column: 'entry_time', label: 'Entry Time', required: true),
+    FieldConfig(
+      column: 'entry_time',
+      label: 'Entry Time',
+      type: FieldType.dateTime,
+      required: true,
+    ),
     FieldConfig(column: 'entry', label: 'Entry', required: true),
     FieldConfig(column: 'tag', label: 'Tag'),
     FieldConfig(
@@ -391,9 +396,14 @@ final subscriptionConfig = TableConfig(
       label: 'Disposition',
       lookup: LookupConfig(table: 'disposition'),
     ),
-    FieldConfig(column: 'start_date', label: 'Start Date'),
-    FieldConfig(column: 'next_date', label: 'Next Date', readOnly: true),
-    FieldConfig(column: 'last_date', label: 'Last Date'),
+    FieldConfig(column: 'start_date', label: 'Start Date', type: FieldType.date),
+    FieldConfig(
+      column: 'next_date',
+      label: 'Next Date',
+      type: FieldType.date,
+      readOnly: true,
+    ),
+    FieldConfig(column: 'last_date', label: 'Last Date', type: FieldType.date),
     FieldConfig(column: 'link', label: 'Link', isLink: true),
     FieldConfig(
       column: 'active',
