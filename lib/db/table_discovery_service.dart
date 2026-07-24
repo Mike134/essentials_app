@@ -1,0 +1,327 @@
+import 'package:sqflite/sqflite.dart';
+
+import '../models/table_config.dart';
+import '../util/strings.dart';
+import 'database_helper.dart';
+import 'field_metadata_dao.dart';
+
+/// Tables that exist in `essentials.db` but should never appear as a
+/// discovered "library" table in the nav -- this app's own settings/
+/// persistence machinery, not user data. **Maintenance note:** update this
+/// set the one time a new infra table is ever added (see CLAUDE.md "Table
+/// Discovery phase") -- forgetting to would make the new table show up as
+/// a normal (nonsensical) nav entry rather than erroring, so it's worth
+/// remembering deliberately rather than relying on it being obvious later.
+///
+/// `sqlite_sequence` (auto-created by any `AUTOINCREMENT` column) and
+/// `android_metadata` (an Android/sqflite system table -- see
+/// `database_helper.dart`'s `_verifyRealSchema` doc comment) are excluded
+/// by the `sqlite_`-prefix / literal-name checks in [isInfraTable] rather
+/// than listed here, since they're SQLite/platform-level, not this app's.
+const Set<String> infraTables = {
+  'table_column_settings',
+  'table_view_settings',
+  'app_settings',
+  'device_settings',
+  'field_metadata',
+  'table_group',
+};
+
+bool isInfraTable(String tableName) {
+  return infraTables.contains(tableName) ||
+      tableName.startsWith('sqlite_') ||
+      tableName == 'android_metadata';
+}
+
+/// Introspects `essentials.db` at startup and builds a [TableConfig] for
+/// every real table, with no hand-written Dart config required. See
+/// CLAUDE.md "Table Discovery phase" for the full design -- this is Parts
+/// A/B: discovery + the `field_metadata` override layer. Runs once, at
+/// launch, not live -- a table added in Letos mid-session shows up the
+/// next time the app opens, matching how [FieldMetadataDao] overrides are
+/// deliberately edited out-of-band (Letos), not through this app's own UI.
+class TableDiscoveryService {
+  TableDiscoveryService({FieldMetadataDao? fieldMetadataDao})
+    : _fieldMetadataDao = fieldMetadataDao ?? FieldMetadataDao();
+
+  final FieldMetadataDao _fieldMetadataDao;
+
+  Future<Database> get _db async => DatabaseHelper.instance.database;
+
+  /// Every real, non-infra table currently in the database, alphabetically
+  /// -- `sqlite_master`'s own row order isn't a meaningful nav order (it's
+  /// creation order), so callers needing a stable base order should sort;
+  /// alphabetical is as good a base as any before `table_group`/`position`
+  /// layering (see `home_shell.dart`) takes over. `type = 'table'` already
+  /// excludes views (e.g. `subscription_computed`) with no extra filtering
+  /// needed -- see CLAUDE.md Part A's scope note on views staying excluded.
+  Future<List<String>> discoverTableNames() async {
+    final db = await _db;
+    final rows = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: 'type = ?',
+      whereArgs: ['table'],
+      orderBy: 'name',
+    );
+    return [
+      for (final row in rows)
+        if (!isInfraTable(row['name'] as String)) row['name'] as String,
+    ];
+  }
+
+  Future<bool> tableExists(String tableName) async {
+    final db = await _db;
+    final rows = await db.query(
+      'sqlite_master',
+      where: 'type = ? AND name = ?',
+      whereArgs: ['table', tableName],
+    );
+    return rows.isNotEmpty;
+  }
+
+  /// Builds a [TableConfig] for [tableName] purely from `PRAGMA
+  /// table_info`/`PRAGMA foreign_key_list` plus any `field_metadata`
+  /// overrides -- no hand-written Dart config for this table is consulted
+  /// or required. Callers needing the two subscription-specific exceptions
+  /// (`subscription_computed` as the read source, the extra view-only
+  /// `yearly_cost`/`next_date` columns, `computePreview`) layer those on
+  /// top of the result -- see `table_configs.dart`.
+  Future<TableConfig> buildConfig(String tableName) async {
+    final db = await _db;
+    final columns = await _columnInfo(db, tableName);
+    final foreignKeys = await _foreignKeyMap(db, tableName);
+    final overrides = await _fieldMetadataDao.loadForTable(tableName);
+
+    final fields = <FieldConfig>[];
+    for (final column in columns) {
+      if (column.isPrimaryKey) continue; // `id` -- structurally handled, never a FieldConfig.
+      fields.add(
+        await _buildField(db, column, foreignKeys[column.name], overrides[column.name]),
+      );
+    }
+
+    final displayColumn = _deriveDisplayColumn(columns);
+    return TableConfig(
+      tableName: tableName,
+      displayColumn: displayColumn,
+      orderBy: _deriveOrderBy(columns, displayColumn, fields),
+      fields: fields,
+    );
+  }
+
+  Future<FieldConfig> _buildField(
+    Database db,
+    _ColumnInfo column,
+    String? fkTable,
+    FieldMetadata? override,
+  ) async {
+    final required = column.notNull && column.defaultValue == null;
+
+    LookupConfig? lookup;
+    if (fkTable != null) {
+      lookup = LookupConfig(
+        table: fkTable,
+        displayColumn: override?.lookupDisplayColumn ?? await _lookupDisplayColumnFor(db, fkTable),
+      );
+    }
+
+    final type = lookup != null ? FieldType.text : _deriveType(column);
+    final label = override?.displayLabel ?? _deriveLabel(column.name, isLookup: lookup != null);
+    final isLink = override?.isLink ?? (lookup == null && _looksLikeLink(column.name));
+    final isColor = lookup == null && column.name.toLowerCase() == 'color';
+
+    return FieldConfig(
+      column: column.name,
+      label: label,
+      type: type,
+      required: required && lookup == null,
+      lookup: lookup,
+      defaultValue: _deriveDefaultValue(column, type, override),
+      isLink: isLink,
+      isColor: isColor,
+    );
+  }
+
+  /// A referenced table's own display column, for a lookup that has no
+  /// `field_metadata.lookup_display_column` override -- CLAUDE.md Part A's
+  /// heuristic: assume a column literally named `name`; if the referenced
+  /// table doesn't have one, fall back to showing the raw id rather than
+  /// guessing further (`'id'` here, since [LookupConfig.displayColumn]
+  /// `'id'` against `valueColumn` `'id'` is literally the id value).
+  Future<String> _lookupDisplayColumnFor(Database db, String referencedTable) async {
+    final columns = await _columnInfo(db, referencedTable);
+    final hasName = columns.any((c) => c.name.toLowerCase() == 'name');
+    return hasName ? 'name' : 'id';
+  }
+
+  /// Prefer a column literally named `name`; else the first `NOT NULL`
+  /// text-affinity column in declaration order (excluding FK columns,
+  /// which hold ids, not human-readable text); else `id` itself -- same
+  /// "don't guess further, fall back to the id" philosophy as the lookup
+  /// heuristic above. Verified against every hand-written config this
+  /// reproduces: matches all 18 of 19 exactly (the one exception,
+  /// `shipment`, has no `name` and no `NOT NULL` column at all -- see
+  /// CLAUDE.md "Table Discovery phase" for that known, accepted gap).
+  String _deriveDisplayColumn(List<_ColumnInfo> columns) {
+    for (final column in columns) {
+      if (column.isPrimaryKey) continue;
+      if (column.name.toLowerCase() == 'name') return column.name;
+    }
+    for (final column in columns) {
+      if (column.isPrimaryKey || column.isForeignKeyLike) continue;
+      if (column.notNull && column.sqlType.toUpperCase() == 'TEXT') return column.name;
+    }
+    return 'id';
+  }
+
+  /// `position, <displayColumn>` when the table has a `position` column
+  /// (every batch-1/2 lookup-shaped table) -- matches
+  /// `TableConfig._lookupConfig`'s hand-written `orderBy` exactly.
+  /// Otherwise, `<displayColumn> DESC` when [displayColumn] resolved to a
+  /// date/dateTime field (a chronological log naturally reads newest-first
+  /// -- matches `journal`'s hand-written `entry_time DESC` exactly).
+  /// Otherwise plain `<displayColumn>` ascending.
+  String _deriveOrderBy(List<_ColumnInfo> columns, String displayColumn, List<FieldConfig> fields) {
+    final hasPosition = columns.any((c) => c.name.toLowerCase() == 'position');
+    if (hasPosition) return 'position, $displayColumn';
+
+    for (final field in fields) {
+      if (field.column != displayColumn) continue;
+      if (field.type == FieldType.date || field.type == FieldType.dateTime) {
+        return '$displayColumn DESC';
+      }
+      break;
+    }
+    return displayColumn;
+  }
+
+  /// FK-column label derivation strips a trailing `_id` before
+  /// title-casing (`used_by_id` -> "Used By", `who_id` -> "Who") --
+  /// verified against every hand-written batch-2/3 lookup label. Plain
+  /// columns are title-cased directly, matching CLAUDE.md Part B's
+  /// "display label = title-cased column name."
+  String _deriveLabel(String column, {required bool isLookup}) {
+    if (isLookup && column.toLowerCase().endsWith('_id')) {
+      return titleCase(column.substring(0, column.length - 3));
+    }
+    return titleCase(column);
+  }
+
+  /// Non-FK type/flag derivation. Boolean has no distinct SQLite type
+  /// (SQLite stores it as an `INTEGER` regardless of the declared type
+  /// text) -- heuristic: an `INTEGER` column that's `NOT NULL` with a SQL
+  /// default of literally `0` or `1` (this schema's actual convention for
+  /// `active`/`scheduled`, the only two `INTEGER NOT NULL DEFAULT` columns
+  /// in the whole schema) is treated as boolean. Date/dateTime/link/color
+  /// have no SQLite type either -- name-suffix/exact-name heuristics, same
+  /// spirit as the lookup-display-column fallback: a real signal (the
+  /// column's own name, following this project's naming convention) rather
+  /// than a guess.
+  FieldType _deriveType(_ColumnInfo column) {
+    final sqlType = column.sqlType.toUpperCase();
+    final name = column.name.toLowerCase();
+
+    if (sqlType.contains('INT')) {
+      final isZeroOrOneDefault = column.defaultValue == '0' || column.defaultValue == '1';
+      if (column.notNull && isZeroOrOneDefault) return FieldType.boolean;
+      return FieldType.integer;
+    }
+    if (sqlType.contains('REAL') || sqlType.contains('FLOA') || sqlType.contains('DOUB')) {
+      return FieldType.real;
+    }
+    // TEXT (or blank/other -- SQLite is dynamically typed; anything not
+    // recognized above falls through to text, the safest default).
+    if (name.endsWith('_date')) return FieldType.date;
+    if (name.endsWith('_time') || name == 'entry_time') return FieldType.dateTime;
+    return FieldType.text;
+  }
+
+  bool _looksLikeLink(String column) => column.toLowerCase().contains('link');
+
+  /// [override] (parsed as text, per [FieldMetadata.defaultValue]'s own
+  /// doc comment) wins when present -- this is how a value that was only
+  /// ever a hardcoded Dart constant before (e.g. `position: 255`,
+  /// `color: '#FFFFFF'` -- neither is a real SQL-level `DEFAULT` in
+  /// schema.sql) gets preserved across conversion, via the one-time
+  /// seeding pass into `field_metadata` (CLAUDE.md Part E). Absent an
+  /// override, fall back to the column's own SQL `DEFAULT` clause, parsed
+  /// per [type].
+  Object? _deriveDefaultValue(_ColumnInfo column, FieldType type, FieldMetadata? override) {
+    final raw = override?.defaultValue ?? column.defaultValue;
+    if (raw == null) return null;
+    return switch (type) {
+      FieldType.boolean => raw == '1' || raw.toLowerCase() == 'true',
+      FieldType.integer => int.tryParse(raw),
+      FieldType.real => double.tryParse(raw),
+      FieldType.text || FieldType.date || FieldType.dateTime => _unquoteSqlLiteral(raw),
+    };
+  }
+
+  /// `PRAGMA table_info`'s `dflt_value` returns a SQL string default
+  /// (e.g. `'#FFFFFF'`) with its quotes still attached, unlike a
+  /// `field_metadata` override (already plain text) -- strip them so both
+  /// sources end up as the same plain Dart string either way.
+  String _unquoteSqlLiteral(String raw) {
+    if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+      return raw.substring(1, raw.length - 1);
+    }
+    return raw;
+  }
+
+  Future<List<_ColumnInfo>> _columnInfo(Database db, String tableName) async {
+    // PRAGMA doesn't accept bound parameters for its target -- tableName
+    // always comes from sqlite_master itself (see discoverTableNames), not
+    // external input, but the identifier-shape check below is cheap
+    // insurance against a stray quote in a maliciously- or accidentally-
+    // named table breaking this into a different statement.
+    _assertSafeIdentifier(tableName);
+    final rows = await db.rawQuery('PRAGMA table_info("$tableName")');
+    return [
+      for (final row in rows)
+        _ColumnInfo(
+          name: row['name'] as String,
+          sqlType: row['type'] as String? ?? '',
+          notNull: (row['notnull'] as int) == 1,
+          defaultValue: row['dflt_value'] as String?,
+          isPrimaryKey: (row['pk'] as int) > 0,
+        ),
+    ];
+  }
+
+  /// Local column name -> referenced table name, for every FK on
+  /// [tableName].
+  Future<Map<String, String>> _foreignKeyMap(Database db, String tableName) async {
+    _assertSafeIdentifier(tableName);
+    final rows = await db.rawQuery('PRAGMA foreign_key_list("$tableName")');
+    return {for (final row in rows) row['from'] as String: row['table'] as String};
+  }
+
+  void _assertSafeIdentifier(String identifier) {
+    if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(identifier)) {
+      throw ArgumentError('Refusing to introspect suspicious identifier: $identifier');
+    }
+  }
+}
+
+class _ColumnInfo {
+  const _ColumnInfo({
+    required this.name,
+    required this.sqlType,
+    required this.notNull,
+    required this.defaultValue,
+    required this.isPrimaryKey,
+  });
+
+  final String name;
+  final String sqlType;
+  final bool notNull;
+  final String? defaultValue;
+  final bool isPrimaryKey;
+
+  /// Heuristic used only by [TableDiscoveryService._deriveDisplayColumn]
+  /// to skip obvious id-holding columns when a table has no `name` -- an
+  /// `INTEGER` column whose name ends `_id` reads as a FK id even without
+  /// consulting `PRAGMA foreign_key_list` again.
+  bool get isForeignKeyLike => sqlType.toUpperCase().contains('INT') && name.toLowerCase().endsWith('_id');
+}
