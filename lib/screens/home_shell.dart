@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../config/table_configs.dart';
+import '../config/table_registry.dart';
 import '../db/sidebar_grouping_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
@@ -21,9 +21,12 @@ const String _ungroupedGroupName = 'Ungrouped';
 /// [NavigationRail]-style scrollable rail on wide (Windows desktop)
 /// layouts, [Drawer] on narrow (Android) layouts -- one [LayoutBuilder]
 /// switch, not two separate implementations, per CLAUDE.md's "one
-/// codebase, no native control mapping" decision. Every registered table
-/// shares this same nav shell -- new tables are just additions to
-/// [registeredTables].
+/// codebase, no native control mapping" decision. Every table shares this
+/// same nav shell -- [_tables] is resolved once at launch by
+/// [loadEffectiveTables] (hand-written configs plus anything discovered
+/// via SQLite introspection that isn't already hand-written -- see
+/// CLAUDE.md "Table Discovery phase"), so a table added directly in
+/// Letos/DBeaver needs no code change to show up here.
 ///
 /// **Sidebar grouping** (see CLAUDE.md "Real-usage findings" -- Step 4):
 /// group membership (`table_group`) is shared across devices; which groups
@@ -42,9 +45,9 @@ const String _ungroupedGroupName = 'Ungrouped';
 /// exists once a
 /// table's been moved into it.
 /// Group *display* order isn't a stored field either -- derived from
-/// first-appearance order among [registeredTables], which keeps every
-/// table visible even before it's ever been moved anywhere, and gives a
-/// stable, deterministic order without a schema column dedicated to it.
+/// first-appearance order among [_tables], which keeps every table visible
+/// even before it's ever been moved anywhere, and gives a stable,
+/// deterministic order without a schema column dedicated to it.
 ///
 /// **Ordering tables within a group** (Mike's follow-up ask once Step 4
 /// was otherwise done): every table item is *also* a `DragTarget` now, not
@@ -66,7 +69,17 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   static const double _wideBreakpoint = 600;
 
-  String _selectedTableName = registeredTables.first.tableName;
+  String? _selectedTableName;
+
+  /// Resolved once, at launch -- discovery is deliberately "at launch, not
+  /// live" (CLAUDE.md "Table Discovery phase" Part A), so this isn't
+  /// re-fetched by [_reloadGroups]/group operations; those only need to
+  /// re-read grouping state for the same, already-resolved table list.
+  /// Populated as a side effect of [_loadGroups] (same pattern already used
+  /// for [_collapsedGroups]) rather than its own separate FutureBuilder, so
+  /// [build] has a synchronously-readable list once [_groupsFuture]
+  /// resolves.
+  List<TableConfig> _tables = const [];
 
   SidebarGroupingDao? _groupingDao;
   Set<String> _collapsedGroups = {};
@@ -85,17 +98,34 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Future<List<_SidebarGroup>> _loadGroups() async {
+    // loadEffectiveTables() also runs the startup orphan-cleanup pass (see
+    // CLAUDE.md Part D) -- deliberately bundled into the one thing that
+    // already needs to run once at launch, rather than a separate hook.
+    final tables = await loadEffectiveTables();
+    _tables = tables;
+    _selectedTableName ??= tables.isEmpty ? null : tables.first.tableName;
+
     final deviceId = await DeviceId.resolve();
     final dao = _groupingDao ??= SidebarGroupingDao(deviceId: deviceId);
     final membership = await dao.loadMembership();
     _collapsedGroups = await dao.loadCollapsedGroups();
-    return _buildGroups(registeredTables, membership);
+    return _buildGroups(tables, membership);
   }
 
+  /// Only re-derives *grouping* state (membership/collapse), not the table
+  /// list itself -- see [_tables]' doc comment.
   void _reloadGroups() {
     setState(() {
-      _groupsFuture = _loadGroups();
+      _groupsFuture = _loadGroupingOnly();
     });
+  }
+
+  Future<List<_SidebarGroup>> _loadGroupingOnly() async {
+    final dao = _groupingDao;
+    if (dao == null) return _loadGroups();
+    final membership = await dao.loadMembership();
+    _collapsedGroups = await dao.loadCollapsedGroups();
+    return _buildGroups(_tables, membership);
   }
 
   void _select(String tableName) => setState(() => _selectedTableName = tableName);
@@ -262,10 +292,22 @@ class _HomeShellState extends State<HomeShell> {
           );
         }
 
-        final selected = registeredTables.firstWhere(
-          (t) => t.tableName == _selectedTableName,
-          orElse: () => registeredTables.first,
-        );
+        if (_tables.isEmpty) {
+          // Every table has been dropped, or discovery genuinely found
+          // nothing -- rare, but should degrade to a message, not a crash
+          // trying to index into an empty list.
+          return const Scaffold(
+            body: Center(child: Text('No tables found in essentials.db.')),
+          );
+        }
+
+        TableConfig selected = _tables.first;
+        for (final table in _tables) {
+          if (table.tableName == _selectedTableName) {
+            selected = table;
+            break;
+          }
+        }
 
         return LayoutBuilder(
           builder: (context, constraints) {
