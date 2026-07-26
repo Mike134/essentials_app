@@ -620,7 +620,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
           title: field.label,
           field: field.column,
           type: switch (field.type) {
-            FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
+            FieldType.real => TrinaColumnType.number(format: '0.##'),
             FieldType.integer => TrinaColumnType.number(),
             _ => TrinaColumnType.text(),
           },
@@ -811,7 +811,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
         field: field.column,
         type: switch (field.type) {
           FieldType.integer => TrinaColumnType.number(),
-          FieldType.real => TrinaColumnType.number(format: '#,##0.##'),
+          FieldType.real => TrinaColumnType.number(format: '0.##'),
           _ => TrinaColumnType.text(),
         },
         width: field.type == FieldType.text ? 220 : 110,
