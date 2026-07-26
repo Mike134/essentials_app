@@ -22,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart';
 
 const String _testTable = 'discovery_smoke_test_widget';
+const String _uniqueTestTable = 'discovery_smoke_test_unique';
 
 void main() {
   late Database db;
@@ -36,6 +37,8 @@ void main() {
     // Idempotent -- safe even if a test already dropped/deleted these.
     await db.execute('DROP TABLE IF EXISTS $_testTable');
     await fieldMetadata.deleteForTable(_testTable);
+    await db.execute('DROP TABLE IF EXISTS $_uniqueTestTable');
+    await fieldMetadata.deleteForTable(_uniqueTestTable);
   });
 
   tearDownAll(() async {
@@ -99,6 +102,31 @@ void main() {
     final fallenBack = await discovery.buildConfig(_testTable);
     final descriptionAfter = fallenBack.fields.firstWhere((f) => f.column == 'description');
     expect(descriptionAfter.label, 'Description', reason: 'removing the override should restore the heuristic');
+  });
+
+  test('a single-column UNIQUE text field wins the displayColumn heuristic over the bare id', () async {
+    await db.execute('DROP TABLE IF EXISTS $_uniqueTestTable');
+    await db.execute('''
+      CREATE TABLE $_uniqueTestTable (
+        id            INTEGER UNIQUE NOT NULL DEFAULT (
+          CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+          + (abs(random()) % 1000)
+        ),
+        code          TEXT UNIQUE,
+        description   TEXT
+      )
+    ''');
+    // No `name` column and no `NOT NULL` column at all (both `code` and
+    // `description` are nullable) -- same shape `orders`/`order_items`
+    // actually hit this session. Before this heuristic existed, this would
+    // fall all the way through to the bare `id`.
+    final config = await discovery.buildConfig(_uniqueTestTable);
+    expect(config.displayColumn, 'code');
+    expect(
+      config.fields.any((f) => f.column == 'id'),
+      isFalse,
+      reason: 'id must never become a FieldConfig, even with the new id-by-name pk fallback',
+    );
   });
 
   test('dropping the table removes it from discovery; field_metadata is left orphaned for cleanup', () async {

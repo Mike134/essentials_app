@@ -107,6 +107,7 @@ class TableDiscoveryService {
     final columns = await _columnInfo(db, tableName);
     final foreignKeys = await _foreignKeyMap(db, tableName);
     final overrides = await _fieldMetadataDao.loadForTable(tableName);
+    final uniqueColumns = await _singleColumnUniques(db, tableName);
 
     final fields = <FieldConfig>[];
     for (final column in columns) {
@@ -116,8 +117,8 @@ class TableDiscoveryService {
       );
     }
 
-    final displayColumn =
-        overrides[reservedDisplayColumnFieldName]?.displayLabel ?? _deriveDisplayColumn(columns);
+    final displayColumn = overrides[reservedDisplayColumnFieldName]?.displayLabel ??
+        _deriveDisplayColumn(columns, uniqueColumns);
     final orderBy = overrides[reservedOrderByFieldName]?.displayLabel ??
         _deriveOrderBy(columns, displayColumn, fields);
     return TableConfig(
@@ -180,24 +181,56 @@ class TableDiscoveryService {
     return hasName ? 'name' : 'id';
   }
 
-  /// Prefer a column literally named `name`; else the first `NOT NULL`
-  /// text-affinity column in declaration order (excluding FK columns,
+  /// Prefer a column literally named `name`; else the first single-column
+  /// `UNIQUE`-constrained text-affinity column in declaration order (a
+  /// real schema-level signal that this column identifies the row to a
+  /// human -- e.g. `orders.order_number`, once it's actually declared
+  /// `UNIQUE`; added CLAUDE.md "Split-Pane Layout" session, Mike's
+  /// suggestion after noticing `orders` fell all the way through to `id`);
+  /// else the first `NOT NULL` text-affinity column (excluding FK columns,
   /// which hold ids, not human-readable text); else `id` itself -- same
-  /// "don't guess further, fall back to the id" philosophy as the lookup
-  /// heuristic above. Verified against every hand-written config this
-  /// reproduces: matches all 18 of 19 exactly (the one exception,
-  /// `shipment`, has no `name` and no `NOT NULL` column at all -- see
-  /// CLAUDE.md "Table Discovery phase" for that known, accepted gap).
-  String _deriveDisplayColumn(List<_ColumnInfo> columns) {
+  /// "don't guess further, fall back to the id" philosophy throughout.
+  /// Verified against every hand-written config this reproduces before the
+  /// `UNIQUE` step existed: matches all 18 of 19 exactly (the one
+  /// exception, `shipment`, has no `name` and no `NOT NULL` column at all
+  /// -- see CLAUDE.md "Table Discovery phase" for that known, accepted
+  /// gap, still handled via its `field_metadata` sentinel override, which
+  /// wins over every heuristic step here regardless).
+  String _deriveDisplayColumn(List<_ColumnInfo> columns, Set<String> uniqueColumns) {
     for (final column in columns) {
       if (column.isPrimaryKey) continue;
       if (column.name.toLowerCase() == 'name') return column.name;
     }
     for (final column in columns) {
       if (column.isPrimaryKey || column.isForeignKeyLike) continue;
+      if (uniqueColumns.contains(column.name) && column.sqlType.toUpperCase() == 'TEXT') {
+        return column.name;
+      }
+    }
+    for (final column in columns) {
+      if (column.isPrimaryKey || column.isForeignKeyLike) continue;
       if (column.notNull && column.sqlType.toUpperCase() == 'TEXT') return column.name;
     }
     return 'id';
+  }
+
+  /// Column names covered by a single-column `UNIQUE` constraint (SQLite
+  /// auto-creates one of these, `origin = 'u'`, for a column declared
+  /// `UNIQUE` in `CREATE TABLE`) -- a composite unique index across
+  /// multiple columns doesn't identify any one of them as a display
+  /// column, so those are deliberately excluded (`index_info` length > 1).
+  Future<Set<String>> _singleColumnUniques(Database db, String tableName) async {
+    _assertSafeIdentifier(tableName);
+    final indexes = await db.rawQuery('PRAGMA index_list("$tableName")');
+    final result = <String>{};
+    for (final index in indexes) {
+      if ((index['unique'] as int) != 1) continue;
+      final indexName = index['name'] as String;
+      _assertSafeIdentifier(indexName);
+      final info = await db.rawQuery('PRAGMA index_info("$indexName")');
+      if (info.length == 1) result.add(info.first['name'] as String);
+    }
+    return result;
   }
 
   /// `position, <displayColumn>` when the table has a `position` column
