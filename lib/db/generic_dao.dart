@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 
 import '../models/table_config.dart';
+import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
 
 /// Thrown by [GenericDao.delete] when the row is still referenced by an
@@ -60,6 +61,60 @@ class GenericDao {
       }
       rethrow;
     }
+  }
+
+  /// Every other real table that still holds at least one row referencing
+  /// (this row's id) via a non-`CASCADE` foreign key -- i.e. exactly what
+  /// would block [delete] today via SQLite's own `RESTRICT` enforcement.
+  /// `CASCADE` FKs are deliberately excluded (e.g. `order_items.order_id`
+  /// -> `orders`) -- those are expected to cascade, not a reason to block
+  /// (see CLAUDE.md "Parent-child (one-to-many) relationships").
+  ///
+  /// Checked by [GenericListScreen] *before* showing a delete confirmation,
+  /// rather than only discovering the block after the user already clicked
+  /// Delete (the [StillInUseException] path above, still kept as a
+  /// defensive fallback for a same-instant race -- e.g. another device
+  /// syncing in a new referencing row between this check and the actual
+  /// delete). A confirm dialog that implies success is possible when it
+  /// structurally isn't is worse than no upfront confirmation at all --
+  /// found by Mike deleting a `supplier` still referenced by `shipment`/
+  /// `orders`.
+  Future<List<String>> findBlockingReferences(int id) async {
+    final db = await _db;
+    final tableName = config.tableName;
+    final allTables = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: 'type = ?',
+      whereArgs: ['table'],
+    );
+
+    final blockers = <String>{};
+    for (final row in allTables) {
+      final otherTable = row['name'] as String;
+      if (otherTable == tableName) continue;
+      assertSafeSqlIdentifier(otherTable);
+
+      final foreignKeys = await db.rawQuery('PRAGMA foreign_key_list("$otherTable")');
+      for (final fk in foreignKeys) {
+        if (fk['table'] != tableName) continue;
+        if ((fk['on_delete'] as String).toUpperCase() == 'CASCADE') continue;
+
+        final fromColumn = fk['from'] as String;
+        assertSafeSqlIdentifier(fromColumn);
+        final count = Sqflite.firstIntValue(
+          await db.rawQuery(
+            'SELECT COUNT(*) FROM "$otherTable" WHERE "$fromColumn" = ?',
+            [id],
+          ),
+        );
+        if ((count ?? 0) > 0) {
+          blockers.add(otherTable);
+          break;
+        }
+      }
+    }
+    return blockers.toList()..sort();
   }
 
   Future<List<Map<String, Object?>>> getLookupOptions(LookupConfig lookup) async {

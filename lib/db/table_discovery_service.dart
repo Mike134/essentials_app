@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 
 import '../models/table_config.dart';
+import '../util/sql_identifiers.dart';
 import '../util/strings.dart';
 import 'database_helper.dart';
 import 'field_metadata_dao.dart';
@@ -220,13 +221,13 @@ class TableDiscoveryService {
   /// multiple columns doesn't identify any one of them as a display
   /// column, so those are deliberately excluded (`index_info` length > 1).
   Future<Set<String>> _singleColumnUniques(Database db, String tableName) async {
-    _assertSafeIdentifier(tableName);
+    assertSafeSqlIdentifier(tableName);
     final indexes = await db.rawQuery('PRAGMA index_list("$tableName")');
     final result = <String>{};
     for (final index in indexes) {
       if ((index['unique'] as int) != 1) continue;
       final indexName = index['name'] as String;
-      _assertSafeIdentifier(indexName);
+      assertSafeSqlIdentifier(indexName);
       final info = await db.rawQuery('PRAGMA index_info("$indexName")');
       if (info.length == 1) result.add(info.first['name'] as String);
     }
@@ -333,7 +334,7 @@ class TableDiscoveryService {
     // external input, but the identifier-shape check below is cheap
     // insurance against a stray quote in a maliciously- or accidentally-
     // named table breaking this into a different statement.
-    _assertSafeIdentifier(tableName);
+    assertSafeSqlIdentifier(tableName);
     final rows = await db.rawQuery('PRAGMA table_info("$tableName")');
     return [
       for (final row in rows)
@@ -360,15 +361,9 @@ class TableDiscoveryService {
   /// Local column name -> referenced table name, for every FK on
   /// [tableName].
   Future<Map<String, String>> _foreignKeyMap(Database db, String tableName) async {
-    _assertSafeIdentifier(tableName);
+    assertSafeSqlIdentifier(tableName);
     final rows = await db.rawQuery('PRAGMA foreign_key_list("$tableName")');
     return {for (final row in rows) row['from'] as String: row['table'] as String};
-  }
-
-  void _assertSafeIdentifier(String identifier) {
-    if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(identifier)) {
-      throw ArgumentError('Refusing to introspect suspicious identifier: $identifier');
-    }
   }
 }
 

@@ -224,6 +224,32 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   Future<void> _delete(Map<String, Object?> row) async {
     final label = '${row[widget.config.displayColumn] ?? ''}';
+    final id = row['id'] as int;
+
+    // Checked *before* any confirm dialog -- a "Delete"/"Cancel" choice
+    // implies deletion might succeed, which it structurally can't while a
+    // RESTRICT reference exists elsewhere. Found by Mike attempting to
+    // delete a supplier still referenced by shipment/orders: the generic
+    // confirm dialog invited a click that could only ever fail.
+    final blockers = await _dao.findBlockingReferences(id);
+    if (!mounted) return;
+    if (blockers.isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Can't delete"),
+          content: Text(
+            'Still referenced by ${blockers.map(titleCase).join(', ')}. '
+            'Deleting "$label" isn\'t possible until those references are removed.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
+
     final customWarning = await widget.config.deleteWarning?.call(row);
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
@@ -246,7 +272,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
     if (confirmed != true) return;
 
     try {
-      await _dao.delete(row['id'] as int);
+      await _dao.delete(id);
       _reload();
     } on StillInUseException catch (e) {
       if (!mounted) return;
