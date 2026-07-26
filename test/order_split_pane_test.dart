@@ -51,6 +51,19 @@ void main() {
     expect(itemsConfig.fields.any((f) => f.column == 'id'), isFalse);
   });
 
+  test('orders.order_number is UNIQUE, and its displayColumn resolves to it rather than the bare id', () async {
+    // orders has no `name` column and (before order_number was made
+    // UNIQUE) no NOT NULL column either -- displayColumn fell all the way
+    // through to `id` until this session's UNIQUE-column heuristic
+    // (table_discovery_service.dart) and this schema fix landed together.
+    final indexes = await db.rawQuery('PRAGMA index_list("orders")');
+    final orderNumberIsUnique = indexes.any((i) => (i['unique'] as int) == 1);
+    expect(orderNumberIsUnique, isTrue, reason: 'expected order_number TEXT UNIQUE');
+
+    final ordersConfig = await buildOrdersConfig(discovery);
+    expect(ordersConfig.displayColumn, 'order_number');
+  });
+
   test('buildOrdersConfig sets openRowDetail and deleteWarning, standalone order_items does not', () async {
     final ordersConfig = await buildOrdersConfig(discovery);
     expect(ordersConfig.openRowDetail, isNotNull);
