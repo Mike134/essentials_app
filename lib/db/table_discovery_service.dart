@@ -309,7 +309,17 @@ class TableDiscoveryService {
           sqlType: row['type'] as String? ?? '',
           notNull: (row['notnull'] as int) == 1,
           defaultValue: row['dflt_value'] as String?,
-          isPrimaryKey: (row['pk'] as int) > 0,
+          // Normally `pk > 0` alone is enough (every batch-1/2/3 table
+          // declares `id INTEGER PRIMARY KEY AUTOINCREMENT`). `orders`/
+          // `order_items` are the first exception: their `id` uses a
+          // timestamp+random SQL default instead, deliberately not
+          // declared SQL `PRIMARY KEY`, to avoid collisions between
+          // offline Windows/Android inserts ahead of a Syncthing sync --
+          // AUTOINCREMENT's simple counter can't guarantee that across two
+          // independently-writing devices. A literal `id` column is always
+          // this app's structural surrogate key regardless of how it
+          // resolves its default, so match by name too.
+          isPrimaryKey: (row['pk'] as int) > 0 || (row['name'] as String).toLowerCase() == 'id',
         ),
     ];
   }

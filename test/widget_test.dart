@@ -34,7 +34,13 @@ void main() {
     // appeared (catches the exact failure mode the empty-db incident
     // exposed -- see CLAUDE.md "Sync architecture" -- a thrown exception
     // silently read as "still loading" instead of a visible error).
-    expect(find.text('Settings'), findsWidgets);
+    // `skipOffstage: false`: the real table count has grown enough
+    // (`orders`/`order_items` pushed it over) that "Settings", pinned to
+    // the bottom of the rail's `ListView`, now lays out below the fixed
+    // test-surface viewport -- still genuinely built, just not within the
+    // default finder's onstage bounds. Same list a real window scrolls to
+    // see; nothing wrong with the render, just this fixed-size test host.
+    expect(find.text('Settings', skipOffstage: false), findsWidgets);
     expect(find.textContaining('Failed to load'), findsNothing);
     expect(find.textContaining('Error:'), findsNothing);
   });
