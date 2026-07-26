@@ -1,6 +1,7 @@
 import '../db/database_helper.dart';
 import '../db/table_discovery_service.dart';
 import '../models/table_config.dart';
+import '../screens/order_split_pane_screen.dart';
 
 /// Batch 1 (`domain`, `priority`, `gender`, `status`, `quality`,
 /// `condition`, `unit`, `importance`, `disposition`, `class`) retired onto
@@ -150,5 +151,80 @@ DateTime _addMonthsClamped(DateTime start, int months) {
   final lastDayOfMonth = DateTime(year, month + 1, 0).day;
   final day = start.day > lastDayOfMonth ? lastDayOfMonth : start.day;
   return DateTime(year, month, day);
+}
+
+/// `orders`/`order_items` -- CLAUDE.md "Split-Pane Layout" session, Part C.
+/// Both tables were created directly in `essentials.db` via Letos (Table
+/// Discovery's own precedent target) and resolve through the same
+/// introspection + `field_metadata` mechanism as every other table --
+/// `order_items` needs no hand-written Dart at all (its two overrides,
+/// `order_id`'s `lookup_display_column` and its `_display_column`
+/// sentinel, are pure `field_metadata` data, seeded by
+/// `tool/seed_field_metadata_order_items.dart`). `orders` keeps exactly
+/// two small, explicitly-documented exceptions layered on top of
+/// discovery, same category as `subscription`'s two (`readSource`/
+/// `computePreview`) -- not a return to hand-written per-table configs:
+///
+/// 1. [TableConfig.openRowDetail] -- opening an existing order shows
+///    [OrderSplitPaneScreen] (order form + its items grid, side-by-side or
+///    push-navigated depending on layout width) instead of the default
+///    plain form.
+/// 2. [TableConfig.deleteWarning] -- names the real cascade consequence
+///    (`order_items.order_id` is `ON DELETE CASCADE`) before deleting an
+///    order that still has items, rather than a generic "Are you sure?"
+///    that hides it.
+const String ordersTableName = 'orders';
+const String orderItemsTableName = 'order_items';
+
+Future<TableConfig> buildOrdersConfig(TableDiscoveryService discovery) async {
+  final base = await discovery.buildConfig(ordersTableName);
+  return TableConfig(
+    tableName: base.tableName,
+    displayColumn: base.displayColumn,
+    orderBy: base.orderBy,
+    fields: base.fields,
+    openRowDetail: (context, config, row) =>
+        OrderSplitPaneScreen(orderConfig: config, order: row),
+    deleteWarning: _orderDeleteWarning,
+  );
+}
+
+/// `null` (falls back to [GenericListScreen]'s default "Delete X?" message)
+/// when the order has no items -- nothing hidden to call out in that case.
+Future<String?> _orderDeleteWarning(Map<String, Object?> row) async {
+  final db = await DatabaseHelper.instance.database;
+  final result = await db.rawQuery(
+    'SELECT COUNT(*) AS count FROM order_items WHERE order_id = ?',
+    [row['id']],
+  );
+  final count = result.first['count'] as int;
+  if (count == 0) return null;
+  final itemWord = count == 1 ? 'item' : 'items';
+  return 'This order has $count $itemWord. Deleting it will delete them too.';
+}
+
+/// Builds `order_items`' config scoped to one parent [orderId] -- reused
+/// for both [OrderSplitPaneScreen] layouts (the wide-mode embedded grid and
+/// the narrow-mode pushed full-screen list). `order_id` is stripped from
+/// [TableConfig.fields] entirely (Part B: never a user-facing field in this
+/// embedded context, unlike the standalone `order_items` screen reached
+/// via direct nav) -- [GenericListScreen.formExtraValues] supplies it
+/// silently on insert instead.
+Future<TableConfig> buildOrderItemsConfigForOrder(
+  TableDiscoveryService discovery,
+  int orderId,
+) async {
+  final base = await discovery.buildConfig(orderItemsTableName);
+  final fields = [
+    for (final field in base.fields) if (field.column != 'order_id') field,
+  ];
+  return TableConfig(
+    tableName: base.tableName,
+    displayColumn: base.displayColumn,
+    orderBy: base.orderBy,
+    fields: fields,
+    filterWhere: 'order_id = ?',
+    filterArgs: [orderId],
+  );
 }
 

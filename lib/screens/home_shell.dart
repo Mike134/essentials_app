@@ -5,6 +5,7 @@ import '../db/sidebar_grouping_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
+import '../util/layout.dart';
 import '../util/strings.dart';
 import 'generic_list_screen.dart';
 import 'settings_screen.dart';
@@ -67,8 +68,6 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  static const double _wideBreakpoint = 600;
-
   String? _selectedTableName;
 
   /// Resolved once, at launch -- discovery is deliberately "at launch, not
@@ -327,7 +326,7 @@ class _HomeShellState extends State<HomeShell> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final isWide = constraints.maxWidth >= _wideBreakpoint;
+            final isWide = constraints.maxWidth >= wideLayoutBreakpoint;
             final content = GenericListScreen(
               key: ValueKey(selected.tableName),
               config: selected,

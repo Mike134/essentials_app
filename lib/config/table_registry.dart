@@ -5,16 +5,16 @@ import 'table_configs.dart';
 
 /// Startup entry point for CLAUDE.md "Table Discovery phase": runs orphan
 /// cleanup once, then returns the effective nav table list for [HomeShell]
-/// to build groups from. As of Part E.3, every table -- all 19 original
-/// plus anything added directly in Letos/DBeaver -- resolves through
-/// [TableDiscoveryService.buildConfig], with exactly one special case:
-/// [subscriptionTableName] goes through [buildSubscriptionConfig] instead,
-/// which layers `subscription`'s two genuine exceptions (the
+/// to build groups from. As of the "Split-Pane Layout" session, every table
+/// -- all 21, plus anything added directly in Letos/DBeaver -- resolves
+/// through [TableDiscoveryService.buildConfig], with two special cases:
+/// [subscriptionTableName] goes through [buildSubscriptionConfig] (the
 /// `subscription_computed` read source, the view-only `yearly_cost`/
-/// `next_date` columns, and `computePreview`) on top of the same
-/// introspection everything else uses. `table_configs.dart` has no
-/// hand-written [TableConfig] left at all -- not even `subscription`'s
-/// fields are hand-written anymore, only its two structural exceptions.
+/// `next_date` columns, and `computePreview`), and [ordersTableName] goes
+/// through [buildOrdersConfig] (the split-pane detail view, the
+/// items-cascade delete warning). `table_configs.dart` has no hand-written
+/// [TableConfig] left at all -- not even these two tables' fields are
+/// hand-written, only their small structural exceptions.
 ///
 /// This is also what satisfies Part D's defensive-nav requirement: a
 /// table that's been dropped is never looked up at all, because the
@@ -37,9 +37,11 @@ Future<List<TableConfig>> loadEffectiveTables() async {
   final result = <TableConfig>[];
   for (final name in liveTableNames) {
     result.add(
-      name == subscriptionTableName
-          ? await buildSubscriptionConfig(discovery)
-          : await discovery.buildConfig(name),
+      await switch (name) {
+        subscriptionTableName => buildSubscriptionConfig(discovery),
+        ordersTableName => buildOrdersConfig(discovery),
+        _ => discovery.buildConfig(name),
+      },
     );
   }
   return result;

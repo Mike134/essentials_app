@@ -49,7 +49,12 @@ import 'generic_form_screen.dart';
 /// not just on release, and a settings row per table+device is a small
 /// price per write but not one worth paying every frame.
 class GenericListScreen extends StatefulWidget {
-  const GenericListScreen({super.key, required this.config, this.drawer});
+  const GenericListScreen({
+    super.key,
+    required this.config,
+    this.drawer,
+    this.formExtraValues,
+  });
 
   final TableConfig config;
 
@@ -57,6 +62,13 @@ class GenericListScreen extends StatefulWidget {
   /// responsive nav shell attach the app's navigation [Drawer] on narrow
   /// (Android) layouts without this screen knowing about app-level nav.
   final Widget? drawer;
+
+  /// Forwarded straight into [GenericFormScreen.extraValues] for the
+  /// add/edit form this screen opens -- only current use: the embedded
+  /// `order_items` grid inside [OrderSplitPaneScreen] passes the parent
+  /// order's id here, so a new item silently gets the right `order_id`
+  /// without it ever appearing as a field. `null` everywhere else.
+  final Map<String, Object?>? formExtraValues;
 
   @override
   State<GenericListScreen> createState() => _GenericListScreenState();
@@ -186,9 +198,25 @@ class _GenericListScreenState extends State<GenericListScreen> {
   }
 
   Future<void> _openForm({Map<String, Object?>? row}) async {
+    final openRowDetail = widget.config.openRowDetail;
+    if (row != null && openRowDetail != null) {
+      // A parent-child detail view (e.g. orders -> OrderSplitPaneScreen)
+      // rather than the plain form -- it manages its own saves internally
+      // (embedded forms save in place, no pop), so there's no `changed`
+      // pop value to gate the reload on; always reload, cheap either way.
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (context) => openRowDetail(context, widget.config, row)));
+      _reload();
+      return;
+    }
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => GenericFormScreen(config: widget.config, existing: row),
+        builder: (_) => GenericFormScreen(
+          config: widget.config,
+          existing: row,
+          extraValues: widget.formExtraValues,
+        ),
       ),
     );
     if (changed == true) _reload();
@@ -196,11 +224,13 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   Future<void> _delete(Map<String, Object?> row) async {
     final label = '${row[widget.config.displayColumn] ?? ''}';
+    final customWarning = await widget.config.deleteWarning?.call(row);
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete record?'),
-        content: Text('Delete "$label"? This cannot be undone.'),
+        content: Text(customWarning ?? 'Delete "$label"? This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),

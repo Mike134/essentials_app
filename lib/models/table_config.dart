@@ -1,3 +1,5 @@
+import 'package:flutter/widgets.dart' show BuildContext, Widget;
+
 /// How a [FieldConfig]'s raw SQLite column value should be edited/parsed.
 /// [date]/[dateTime] are still stored as plain ISO8601 `TEXT` (schema.sql's
 /// convention -- `YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS`), same as [text];
@@ -99,6 +101,10 @@ class TableConfig {
     this.orderBy,
     this.readSource,
     this.computePreview,
+    this.filterWhere,
+    this.filterArgs,
+    this.openRowDetail,
+    this.deleteWarning,
   });
 
   final String tableName;
@@ -137,4 +143,29 @@ class TableConfig {
   /// this and schema.sql's formula is cosmetic, not a data-correctness
   /// risk -- it self-corrects the moment the row is saved and reloaded.
   final Future<Map<String, Object?>> Function(Map<String, Object?> values)? computePreview;
+
+  /// SQL `WHERE` clause (no leading `WHERE`, `?` placeholders) restricting
+  /// [GenericDao.getAll] to a subset of [tableName]'s rows -- e.g. an
+  /// order's own `order_items`, `order_id = ?`. `null` reads every row,
+  /// same as before this existed. Paired with [filterArgs].
+  final String? filterWhere;
+
+  final List<Object?>? filterArgs;
+
+  /// Overrides what opens when an existing row's edit icon is tapped in
+  /// [GenericListScreen] -- e.g. `orders` opens [OrderSplitPaneScreen]
+  /// instead of the default [GenericFormScreen]. `null` (every table but
+  /// `orders`) keeps the default. Never consulted for the "Add" flow (no
+  /// [row] to show a parent-child detail view for yet) -- that always goes
+  /// through the plain form, same as every other table.
+  final Widget Function(BuildContext context, TableConfig config, Map<String, Object?> row)?
+  openRowDetail;
+
+  /// Replaces [GenericListScreen]'s default "Delete "X"? This cannot be
+  /// undone." confirmation content for a specific row -- e.g. `orders`
+  /// names the real consequence of its `order_items` `ON DELETE CASCADE`
+  /// ("This order has 5 items..."). Returning `null` (every table but
+  /// `orders`, or an `orders` row with zero items) falls back to the
+  /// default message -- there's nothing hidden to call out in that case.
+  final Future<String?> Function(Map<String, Object?> row)? deleteWarning;
 }

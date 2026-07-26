@@ -14,12 +14,47 @@ import '../util/links.dart';
 /// as a plain text box (still directly editable, same as color/link) plus
 /// a calendar icon that opens the native date/time picker.
 class GenericFormScreen extends StatefulWidget {
-  const GenericFormScreen({super.key, required this.config, this.existing});
+  const GenericFormScreen({
+    super.key,
+    required this.config,
+    this.existing,
+    this.extraValues,
+    this.popOnSave = true,
+    this.onSaved,
+    this.appBarActions,
+  });
 
   final TableConfig config;
 
   /// The row being edited, or null when adding a new row.
   final Map<String, Object?>? existing;
+
+  /// Merged into the write on save, on top of whatever the form's own
+  /// fields collected -- for a value that's real on the table but
+  /// deliberately not a [TableConfig.fields] entry here, so the user never
+  /// sees or edits it directly. Only current use: the embedded `order_items`
+  /// form inside [OrderSplitPaneScreen] silently writes `order_id` from the
+  /// currently-open parent order, never shown as a field (CLAUDE.md's Part
+  /// B requirement -- the standalone `order_items` screen's generic FK
+  /// dropdown for `order_id` is for direct nav only).
+  final Map<String, Object?>? extraValues;
+
+  /// `false` for the order form embedded in [OrderSplitPaneScreen]'s wide
+  /// layout -- Save there should write and stay in place (both panes stay
+  /// live side-by-side, "no navigation between them" per CLAUDE.md), not
+  /// pop back to whatever pushed this screen. Every other caller keeps the
+  /// default `true` (Save returns to the previous screen, same as always).
+  final bool popOnSave;
+
+  /// Fires after a successful save when [popOnSave] is `false`, since
+  /// there's no pop for a caller to await instead.
+  final VoidCallback? onSaved;
+
+  /// Extra `AppBar.actions` -- only current use: the narrow-layout order
+  /// form's "Items" button in [OrderSplitPaneScreen], pushing the full-screen
+  /// `order_items` list. `null` for every other table, same bare AppBar as
+  /// before this existed.
+  final List<Widget>? appBarActions;
 
   bool get isEditing => existing != null;
 
@@ -189,7 +224,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
 
     setState(() => _saving = true);
 
-    final values = _currentValues();
+    final values = {..._currentValues(), ...?widget.extraValues};
 
     try {
       if (widget.isEditing) {
@@ -198,7 +233,13 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         await _dao.insert(values);
       }
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      if (widget.popOnSave) {
+        Navigator.of(context).pop(true);
+      } else {
+        setState(() => _saving = false);
+        widget.onSaved?.call();
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+      }
     } on DatabaseException catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -211,7 +252,10 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.isEditing ? 'Edit' : 'Add')),
+      appBar: AppBar(
+        title: Text(widget.isEditing ? 'Edit' : 'Add'),
+        actions: widget.appBarActions,
+      ),
       body: Form(
         key: _formKey,
         child: ListView(

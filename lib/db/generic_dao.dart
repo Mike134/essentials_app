@@ -31,6 +31,8 @@ class GenericDao {
     final db = await _db;
     return db.query(
       config.readSource ?? config.tableName,
+      where: config.filterWhere,
+      whereArgs: config.filterArgs,
       orderBy: config.orderBy ?? config.displayColumn,
     );
   }
