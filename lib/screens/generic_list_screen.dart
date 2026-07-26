@@ -521,7 +521,11 @@ class _GenericListScreenState extends State<GenericListScreen> {
       TrinaColumn(
         title: 'ID',
         field: 'id',
-        type: TrinaColumnType.number(),
+        // No grouping -- the new timestamp+random id scheme (see
+        // CLAUDE.md "id convention changed") produces ~16-digit values,
+        // and TrinaColumnType.number()'s default format ('#,###') would
+        // otherwise comma-group those into something unreadable.
+        type: TrinaColumnType.number(format: '0'),
         readOnly: true,
         frozen: TrinaColumnFrozen.start,
         width: 80,
@@ -620,7 +624,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
           title: field.label,
           field: field.column,
           type: switch (field.type) {
-            FieldType.real => TrinaColumnType.number(format: '0.##'),
+            FieldType.real => TrinaColumnType.number(format: '#,##0.00;-#,##0.00'),
             FieldType.integer => TrinaColumnType.number(),
             _ => TrinaColumnType.text(),
           },
@@ -811,7 +815,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
         field: field.column,
         type: switch (field.type) {
           FieldType.integer => TrinaColumnType.number(),
-          FieldType.real => TrinaColumnType.number(format: '0.##'),
+          FieldType.real => TrinaColumnType.number(format: '#,##0.00;-#,##0.00'),
           _ => TrinaColumnType.text(),
         },
         width: field.type == FieldType.text ? 220 : 110,
