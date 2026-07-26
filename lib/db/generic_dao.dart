@@ -38,9 +38,28 @@ class GenericDao {
     );
   }
 
+  /// Inserts a new row and returns its real `id` column value. Not simply
+  /// [Database.insert]'s own return value -- that's the internal SQLite
+  /// rowid, which only equals `id` for the older `id INTEGER PRIMARY KEY
+  /// AUTOINCREMENT` tables (where `id` is a rowid alias). For the newer
+  /// timestamp+random `id` scheme (`orders`/`order_items`, and now
+  /// `journal`/`shipment`/`subscription` -- see CLAUDE.md "id convention
+  /// changed"), `id` is declared UNIQUE, not PRIMARY KEY, so it is *not* a
+  /// rowid alias and the two values diverge. Re-reading `id` by rowid
+  /// immediately after the insert, inside the same transaction, gives the
+  /// real value under either scheme.
   Future<int> insert(Map<String, Object?> values) async {
     final db = await _db;
-    return db.insert(config.tableName, values);
+    return db.transaction((txn) async {
+      final rowId = await txn.insert(config.tableName, values);
+      final result = await txn.query(
+        config.tableName,
+        columns: ['id'],
+        where: 'rowid = ?',
+        whereArgs: [rowId],
+      );
+      return result.first['id'] as int;
+    });
   }
 
   Future<int> update(int id, Map<String, Object?> values) async {
