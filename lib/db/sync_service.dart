@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:crdt_sync/crdt_sync.dart';
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
@@ -15,6 +17,12 @@ const int compileTimeDefaultServerPort = 1340;
 
 const String _serverAddressKey = 'sync_server_address';
 
+/// How often to force a fresh reconnect on an already-healthy connection --
+/// see [_schedulePeriodicReconnect]'s doc comment for why this exists at
+/// all. Not tuned precisely; just short enough to bound the worst case to
+/// something reasonable without being wasteful.
+const Duration periodicReconnectInterval = Duration(minutes: 5);
+
 /// Owns this device's outward connection to the crdt_sync coordinator
 /// running on MIKE-CU (`essentials_app/server/`). Every device, including
 /// MIKE-CU's own Flutter app instance, connects as a plain network client
@@ -25,6 +33,7 @@ class SyncService {
   SyncService._(this._client);
 
   final CrdtSyncClient _client;
+  Timer? _reconnectTimer;
 
   static SyncService? _instance;
 
@@ -47,11 +56,39 @@ class SyncService {
     client.connect();
 
     final service = SyncService._(client);
+    service._schedulePeriodicReconnect();
     _instance = service;
     return service;
   }
 
-  Future<void> disconnect() => _client.disconnect();
+  /// crdt_sync has no acknowledgment/retry mechanism -- if a changeset
+  /// fails to merge on the receiving side (a real, confirmed failure mode:
+  /// see CLAUDE.md "Syncing at the Record Level" -- a live test hit a real
+  /// FOREIGN KEY failure this way), the sender is never told, and nothing
+  /// resends it automatically within one continuously-healthy connection.
+  /// The only thing that actually re-triggers a resend is a fresh
+  /// handshake, which only happens on (re)connect -- confirmed directly:
+  /// that same failed write only recovered because the connection happened
+  /// to drop and reconnect on its own afterward, not because of any
+  /// built-in retry. This timer makes that recovery path deliberate
+  /// instead of incidental, by periodically forcing a disconnect+reconnect
+  /// even on an already-healthy connection -- cheap on a local network,
+  /// and bounds how long a silently-failed write could stay stuck to
+  /// roughly one interval instead of "however long until something else
+  /// happens to drop the connection."
+  void _schedulePeriodicReconnect() {
+    _reconnectTimer = Timer.periodic(periodicReconnectInterval, (_) async {
+      _log('periodic reconnect (forces a fresh handshake so any '
+          'previously-failed merge gets re-evaluated and resent)');
+      await _client.disconnect();
+      _client.connect();
+    });
+  }
+
+  Future<void> disconnect() {
+    _reconnectTimer?.cancel();
+    return _client.disconnect();
+  }
 
   SocketState get state => _client.state;
 
