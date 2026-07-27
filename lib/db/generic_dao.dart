@@ -172,8 +172,13 @@ class GenericDao {
     final crdt = await _crdt;
     try {
       await crdt.transaction((txn) async {
+        // Deliberately queries via txn, not the parent crdt -- sql_crdt's
+        // own transaction() doc comment warns that calling back into the
+        // parent crdt from inside a transaction deadlocks. Hit this for
+        // real: a live CASCADE delete against actual synced data hung for
+        // 30+ seconds and timed out before this fix.
         final cascadeRefs = await _foreignKeyRefs(
-          crdt,
+          txn,
           onDeleteFilter: (onDelete) => onDelete == 'CASCADE',
         );
         for (final ref in cascadeRefs) {
@@ -229,8 +234,13 @@ class GenericDao {
 
   /// Every FK across every real table pointing at [config.tableName],
   /// filtered by [onDeleteFilter] on the FK's declared `on_delete` action.
+  /// Takes [CrdtApi] (implemented by both [SqliteCrdt] itself and the
+  /// [CrdtExecutor] a transaction hands its callback) rather than
+  /// concretely [SqliteCrdt], so [delete] can pass its transaction's `txn`
+  /// instead of the parent `crdt` -- required, not just tidier, per the
+  /// deadlock note on [delete].
   Future<List<_ForeignKeyRef>> _foreignKeyRefs(
-    SqliteCrdt crdt, {
+    CrdtApi crdt, {
     required bool Function(String onDelete) onDeleteFilter,
   }) async {
     final tableName = config.tableName;
