@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../config/table_registry.dart';
 import '../db/sidebar_grouping_dao.dart';
+import '../db/sync_service.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
@@ -94,6 +95,12 @@ class _HomeShellState extends State<HomeShell> {
     // ThemeController is a ChangeNotifier main.dart already listens to, so
     // the app-wide theme just updates live once this resolves.
     ThemeController.instance.load();
+    // Same reasoning -- SyncService.connect() resolves the server address
+    // (compile-time default, or app_settings once this device has synced
+    // before) and starts CrdtSyncClient's own connect-with-backoff loop.
+    // Nothing here needs the result; sync happens in the background for
+    // the lifetime of the app. See CLAUDE.md "Syncing at the Record Level".
+    SyncService.connect();
   }
 
   Future<List<_SidebarGroup>> _loadGroups() async {
