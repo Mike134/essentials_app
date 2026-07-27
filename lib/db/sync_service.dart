@@ -66,7 +66,7 @@ class SyncService {
   /// "Server-address bootstrapping."
   static Future<Uri> _resolveServerUri(SqliteCrdt crdt) async {
     final rows = await crdt.query(
-      'SELECT value FROM app_settings WHERE key = ?1 AND is_deleted = 0',
+      'SELECT value FROM app_settings WHERE setting_key = ?1 AND is_deleted = 0',
       [_serverAddressKey],
     );
     final stored = rows.isEmpty ? null : rows.first['value'] as String?;
@@ -76,7 +76,7 @@ class SyncService {
     }
 
     final defaultAddress = '$compileTimeDefaultServerHost:$compileTimeDefaultServerPort';
-    await crdt.upsert('app_settings', {'key': _serverAddressKey, 'value': defaultAddress});
+    await crdt.upsert('app_settings', {'setting_key': _serverAddressKey, 'value': defaultAddress});
     return Uri.parse('ws://$defaultAddress');
   }
 

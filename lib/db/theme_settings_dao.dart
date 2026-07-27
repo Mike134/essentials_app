@@ -26,18 +26,18 @@ class ThemeSettingsDao {
     final db = await _db;
     final rows = await db.query('SELECT * FROM app_settings WHERE is_deleted = 0');
     return {
-      for (final row in rows) row['key'] as String: row['value'] as String? ?? '',
+      for (final row in rows) row['setting_key'] as String: row['value'] as String? ?? '',
     };
   }
 
   /// Generic per-device key/value read -- backs [loadDeviceFontSize] and the
   /// grid row-height settings ([GenericListScreen]'s wrap-text feature)
-  /// alike, same `device_settings` table (`device_id`, `key`) -> `value`,
-  /// no schema change needed per new setting.
+  /// alike, same `device_settings` table (`device_id`, `setting_key`) ->
+  /// `value`, no schema change needed per new setting.
   Future<String?> loadDeviceSetting(String key) async {
     final db = await _db;
     final rows = await db.query(
-      'SELECT * FROM device_settings WHERE device_id = ?1 AND key = ?2 AND is_deleted = 0',
+      'SELECT * FROM device_settings WHERE device_id = ?1 AND setting_key = ?2 AND is_deleted = 0',
       [deviceId, key],
     );
     return rows.isEmpty ? null : rows.first['value'] as String?;
@@ -46,11 +46,11 @@ class ThemeSettingsDao {
   Future<void> setDeviceSetting(String key, String? value) async {
     final db = await _db;
     if (value == null) {
-      await db.deleteWhere('device_settings', {'device_id': deviceId, 'key': key});
+      await db.deleteWhere('device_settings', {'device_id': deviceId, 'setting_key': key});
     } else {
       await db.upsert('device_settings', {
         'device_id': deviceId,
-        'key': key,
+        'setting_key': key,
         'value': value,
       });
     }
@@ -63,9 +63,9 @@ class ThemeSettingsDao {
   Future<void> setAppSetting(String key, String? value) async {
     final db = await _db;
     if (value == null) {
-      await db.deleteWhere('app_settings', {'key': key});
+      await db.deleteWhere('app_settings', {'setting_key': key});
     } else {
-      await db.upsert('app_settings', {'key': key, 'value': value});
+      await db.upsert('app_settings', {'setting_key': key, 'value': value});
     }
   }
 

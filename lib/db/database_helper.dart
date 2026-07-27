@@ -32,11 +32,23 @@ class DatabaseHelper {
       '/storage/emulated/0/Databases/essentials_app';
   static const String _fileName = 'essentials.db';
 
-  SqliteCrdt? _crdt;
+  // Caches the in-flight Future itself, not just the resolved value --
+  // deliberately NOT `Future<SqliteCrdt> get crdt async { return _crdt ??=
+  // await _open(); }`. That pattern only serializes *sequential* calls: an
+  // async getter's body runs synchronously up to its first `await` on
+  // *every* invocation, so several near-simultaneous unawaited callers (as
+  // of this session, HomeShell.initState fires three: _loadGroups(),
+  // ThemeController.load(), SyncService.connect()) would all see `_crdt ==
+  // null` and each independently call _open(), racing each other's
+  // connection lifecycle. Caching the Future in a plain (non-async) getter
+  // makes the `??=` assignment happen synchronously on the very first call,
+  // so every concurrent caller awaits the one shared in-flight Future
+  // instead. Caught by this exact race actually happening: a real
+  // "Bad state: This database has already been closed" crash during live
+  // verification against the real, built app.
+  Future<SqliteCrdt>? _openFuture;
 
-  Future<SqliteCrdt> get crdt async {
-    return _crdt ??= await _open();
-  }
+  Future<SqliteCrdt> get crdt => _openFuture ??= _open();
 
   Future<SqliteCrdt> _open() async {
     final path = await _resolveDatabasePath();
@@ -160,10 +172,10 @@ class DatabaseHelper {
   }
 
   Future<void> close() async {
-    final c = _crdt;
-    if (c != null) {
-      await c.close();
-      _crdt = null;
+    final future = _openFuture;
+    if (future != null) {
+      await (await future).close();
+      _openFuture = null;
     }
   }
 }

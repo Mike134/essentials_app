@@ -29,6 +29,23 @@ const dbPath = r'C:\Databases\essentials_app\server\hub.db';
 // same fix needs to land in schema.sql and the real essentials.db in Part C
 // so client and server schemas match exactly.
 const schemaStatements = <String>[
+  // sqflite_common_ffi's own internal table -- not part of this app's
+  // design (schema.sql doesn't document it), but every real client has it
+  // and the sync layer doesn't distinguish "business tables" from
+  // anything else: it tries to merge whatever changesets a client sends,
+  // for every table name it mentions. Without a structural counterpart
+  // here, merging this table's changeset fails (found live, against the
+  // real server, not assumed) -- `pragma_table_info` on a table the
+  // server doesn't have at all returns zero rows same as "table exists
+  // but has no PRIMARY KEY," so sqlite_crdt's merge() builds the same
+  // broken `ON CONFLICT ()` either way. Shape matches the client's
+  // (post-migrations/006 -- `locale` as a real PRIMARY KEY, not bare).
+  '''
+    CREATE TABLE android_metadata (
+      locale TEXT PRIMARY KEY
+    )
+  ''',
+
   // ===================== LOOKUP / DOMAIN TABLES =====================
   '''
     CREATE TABLE domain (
@@ -354,16 +371,16 @@ const schemaStatements = <String>[
   // ===================== APP/DEVICE SETTINGS, FIELD METADATA, GROUPS =======
   '''
     CREATE TABLE app_settings (
-      key   TEXT PRIMARY KEY,
-      value TEXT
+      setting_key TEXT PRIMARY KEY,
+      value       TEXT
     )
   ''',
   '''
     CREATE TABLE device_settings (
-      device_id TEXT NOT NULL,
-      key       TEXT NOT NULL,
-      value     TEXT,
-      PRIMARY KEY (device_id, key)
+      device_id   TEXT NOT NULL,
+      setting_key TEXT NOT NULL,
+      value       TEXT,
+      PRIMARY KEY (device_id, setting_key)
     )
   ''',
   '''

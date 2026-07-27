@@ -104,13 +104,13 @@ class SidebarGroupingDao {
   Future<Set<String>> loadCollapsedGroups() async {
     final db = await _db;
     final rows = await db.query(
-      "SELECT * FROM device_settings WHERE device_id = ?1 AND key LIKE ?2 AND is_deleted = 0",
+      "SELECT * FROM device_settings WHERE device_id = ?1 AND setting_key LIKE ?2 AND is_deleted = 0",
       [deviceId, '$_collapsedKeyPrefix%'],
     );
     return {
       for (final row in rows)
         if (row['value'] == '1')
-          (row['key'] as String).substring(_collapsedKeyPrefix.length),
+          (row['setting_key'] as String).substring(_collapsedKeyPrefix.length),
     };
   }
 
@@ -118,7 +118,7 @@ class SidebarGroupingDao {
     final db = await _db;
     await db.upsert('device_settings', {
       'device_id': deviceId,
-      'key': '$_collapsedKeyPrefix$groupName',
+      'setting_key': '$_collapsedKeyPrefix$groupName',
       'value': collapsed ? '1' : '0',
     });
   }
@@ -134,7 +134,7 @@ class SidebarGroupingDao {
   Future<String?> loadLastActiveTable() async {
     final db = await _db;
     final rows = await db.query(
-      'SELECT * FROM device_settings WHERE device_id = ?1 AND key = ?2 AND is_deleted = 0',
+      'SELECT * FROM device_settings WHERE device_id = ?1 AND setting_key = ?2 AND is_deleted = 0',
       [deviceId, _lastActiveTableKey],
     );
     return rows.isEmpty ? null : rows.first['value'] as String?;
@@ -144,7 +144,7 @@ class SidebarGroupingDao {
     final db = await _db;
     await db.upsert('device_settings', {
       'device_id': deviceId,
-      'key': _lastActiveTableKey,
+      'setting_key': _lastActiveTableKey,
       'value': tableName,
     });
   }
