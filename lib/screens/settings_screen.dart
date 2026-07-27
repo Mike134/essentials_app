@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
 import '../util/color_picker.dart';
+import 'field_metadata_screen.dart';
 
 /// Reads/writes `app_settings` (theme, font family, font color, background
 /// color -- shared) and `device_settings` (font size -- per-device) via
@@ -295,6 +296,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 onSubmitted: (text) => _applyBackgroundColor(controller, text),
                 onTapOutside: (_) => _applyBackgroundColor(controller, _backgroundColorController.text),
+              ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text('Field Labels & Defaults', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text(
+                'Overrides a table\'s auto-derived field labels, insert '
+                'defaults, lookup display columns, and link-field flags. Was '
+                'edited via Letos; now lives here instead so changes actually '
+                'sync to other devices.',
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: () => Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const FieldMetadataScreen())),
+                child: const Text('Edit field overrides'),
               ),
             ],
           );

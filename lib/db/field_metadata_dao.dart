@@ -37,13 +37,50 @@ class FieldMetadata {
   final bool? isLink;
 }
 
-/// Reads `field_metadata`, keyed by `(table_name, field_name)` -- the
-/// runtime override layer for [TableDiscoveryService]'s introspection
-/// heuristics. Edited via Letos, same tool Mike already uses daily; this
-/// app never writes to it itself (see CLAUDE.md "Part B" -- "external tool
-/// does the polish" is the deliberate boundary here).
+/// Reads and writes `field_metadata`, keyed by `(table_name, field_name)`
+/// -- the runtime override layer for [TableDiscoveryService]'s
+/// introspection heuristics. Was "edited via Letos" only -- see
+/// [FieldMetadataScreen] and CLAUDE.md "Syncing at the Record Level" for
+/// why that stopped being safe once sync moved to the record level: a
+/// Letos edit never touches sqlite_crdt's bookkeeping columns, so it
+/// silently never syncs. This app writes to it now through the same
+/// crdt.execute() path every other table uses.
 class FieldMetadataDao {
   Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
+
+  /// Every row across every table, for [FieldMetadataScreen]'s list view --
+  /// unlike [loadForTable], not scoped to one table.
+  Future<List<FieldMetadata>> loadAll() async {
+    final db = await _db;
+    final rows = await db.query(
+      'SELECT * FROM field_metadata WHERE is_deleted = 0 '
+      'ORDER BY table_name, field_name',
+    );
+    return [
+      for (final row in rows)
+        FieldMetadata(
+          tableName: row['table_name'] as String,
+          fieldName: row['field_name'] as String,
+          displayLabel: row['display_label'] as String?,
+          defaultValue: row['default_value'] as String?,
+          lookupDisplayColumn: row['lookup_display_column'] as String?,
+          isLink: switch (row['is_link'] as int?) {
+            null => null,
+            0 => false,
+            _ => true,
+          },
+        ),
+    ];
+  }
+
+  /// Removes a single override, leaving every other row for [tableName]
+  /// alone -- distinct from [deleteForTable], which clears all of them
+  /// (used by the startup orphan-cleanup pass for a table that no longer
+  /// exists at all, not a targeted single-field removal).
+  Future<void> deleteOne(String tableName, String fieldName) async {
+    final db = await _db;
+    await db.deleteWhere('field_metadata', {'table_name': tableName, 'field_name': fieldName});
+  }
 
   /// All rows for [tableName], keyed by `field_name` -- one query per table
   /// per discovery pass rather than one query per field.
@@ -85,9 +122,11 @@ class FieldMetadataDao {
     await db.deleteWhere('field_metadata', {'table_name': tableName});
   }
 
-  /// Used by the one-time `table_configs.dart` -> `field_metadata` seeding
-  /// pass (see CLAUDE.md "Part E") -- upsert rather than plain insert so
-  /// re-running the seed (e.g. after fixing a mistake) is idempotent.
+  /// [FieldMetadataScreen]'s save action, and originally the one-time
+  /// `table_configs.dart` -> `field_metadata` seeding pass (see CLAUDE.md
+  /// "Part E") -- upsert rather than plain insert so both re-running the
+  /// old seed and editing an existing override through the screen are
+  /// idempotent either way.
   Future<void> upsert({
     required String tableName,
     required String fieldName,

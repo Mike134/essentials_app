@@ -106,6 +106,17 @@ class TableDiscoveryService {
     return rows.isNotEmpty;
   }
 
+  /// [tableName]'s real column names, excluding the primary key and
+  /// sqlite_crdt's bookkeeping columns -- i.e. exactly the set a
+  /// `field_metadata` override could sensibly target. Used by
+  /// [FieldMetadataScreen]'s field picker, so a new override can only ever
+  /// be created against a column that actually exists.
+  Future<List<String>> editableColumnNames(String tableName) async {
+    final db = await _db;
+    final columns = await _columnInfo(db, tableName);
+    return [for (final c in columns) if (!c.isPrimaryKey) c.name];
+  }
+
   /// Builds a [TableConfig] for [tableName] purely from `PRAGMA
   /// table_info`/`PRAGMA foreign_key_list` plus any `field_metadata`
   /// overrides -- no hand-written Dart config for this table is consulted
