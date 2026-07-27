@@ -1,10 +1,25 @@
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import '../models/table_config.dart';
 import '../util/sql_identifiers.dart';
 import '../util/strings.dart';
 import 'database_helper.dart';
 import 'field_metadata_dao.dart';
+
+/// sqlite_crdt's own bookkeeping columns, added to every real table by the
+/// "Syncing at the Record Level" migration (see CLAUDE.md) -- structural
+/// implementation detail of the sync layer, never a real business field.
+/// Excluded at the source, in [TableDiscoveryService._columnInfo], so every
+/// heuristic below (display column, order by, field list) never sees them
+/// -- without this, they'd show up as live, editable grid columns and form
+/// fields on every table in the app, since nothing else here filters by
+/// column name, only by table name ([isInfraTable]).
+const Set<String> crdtBookkeepingColumns = {
+  'is_deleted',
+  'hlc',
+  'node_id',
+  'modified',
+};
 
 /// Tables that exist in `essentials.db` but should never appear as a
 /// discovered "library" table in the nav -- this app's own settings/
@@ -62,7 +77,7 @@ class TableDiscoveryService {
 
   final FieldMetadataDao _fieldMetadataDao;
 
-  Future<Database> get _db async => DatabaseHelper.instance.database;
+  Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 
   /// Every real, non-infra table currently in the database, alphabetically
   /// -- `sqlite_master`'s own row order isn't a meaningful nav order (it's
@@ -74,11 +89,7 @@ class TableDiscoveryService {
   Future<List<String>> discoverTableNames() async {
     final db = await _db;
     final rows = await db.query(
-      'sqlite_master',
-      columns: ['name'],
-      where: 'type = ?',
-      whereArgs: ['table'],
-      orderBy: 'name',
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
     );
     return [
       for (final row in rows)
@@ -89,9 +100,8 @@ class TableDiscoveryService {
   Future<bool> tableExists(String tableName) async {
     final db = await _db;
     final rows = await db.query(
-      'sqlite_master',
-      where: 'type = ? AND name = ?',
-      whereArgs: ['table', tableName],
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+      [tableName],
     );
     return rows.isNotEmpty;
   }
@@ -131,7 +141,7 @@ class TableDiscoveryService {
   }
 
   Future<FieldConfig> _buildField(
-    Database db,
+    SqliteCrdt db,
     _ColumnInfo column,
     String? fkTable,
     FieldMetadata? override,
@@ -176,7 +186,7 @@ class TableDiscoveryService {
   /// table doesn't have one, fall back to showing the raw id rather than
   /// guessing further (`'id'` here, since [LookupConfig.displayColumn]
   /// `'id'` against `valueColumn` `'id'` is literally the id value).
-  Future<String> _lookupDisplayColumnFor(Database db, String referencedTable) async {
+  Future<String> _lookupDisplayColumnFor(SqliteCrdt db, String referencedTable) async {
     final columns = await _columnInfo(db, referencedTable);
     final hasName = columns.any((c) => c.name.toLowerCase() == 'name');
     return hasName ? 'name' : 'id';
@@ -220,15 +230,15 @@ class TableDiscoveryService {
   /// `UNIQUE` in `CREATE TABLE`) -- a composite unique index across
   /// multiple columns doesn't identify any one of them as a display
   /// column, so those are deliberately excluded (`index_info` length > 1).
-  Future<Set<String>> _singleColumnUniques(Database db, String tableName) async {
+  Future<Set<String>> _singleColumnUniques(SqliteCrdt db, String tableName) async {
     assertSafeSqlIdentifier(tableName);
-    final indexes = await db.rawQuery('PRAGMA index_list("$tableName")');
+    final indexes = await db.query('PRAGMA index_list("$tableName")');
     final result = <String>{};
     for (final index in indexes) {
       if ((index['unique'] as int) != 1) continue;
       final indexName = index['name'] as String;
       assertSafeSqlIdentifier(indexName);
-      final info = await db.rawQuery('PRAGMA index_info("$indexName")');
+      final info = await db.query('PRAGMA index_info("$indexName")');
       if (info.length == 1) result.add(info.first['name'] as String);
     }
     return result;
@@ -328,41 +338,42 @@ class TableDiscoveryService {
     return raw;
   }
 
-  Future<List<_ColumnInfo>> _columnInfo(Database db, String tableName) async {
+  Future<List<_ColumnInfo>> _columnInfo(SqliteCrdt db, String tableName) async {
     // PRAGMA doesn't accept bound parameters for its target -- tableName
     // always comes from sqlite_master itself (see discoverTableNames), not
     // external input, but the identifier-shape check below is cheap
     // insurance against a stray quote in a maliciously- or accidentally-
     // named table breaking this into a different statement.
     assertSafeSqlIdentifier(tableName);
-    final rows = await db.rawQuery('PRAGMA table_info("$tableName")');
+    final rows = await db.query('PRAGMA table_info("$tableName")');
     return [
       for (final row in rows)
-        _ColumnInfo(
-          name: row['name'] as String,
-          sqlType: row['type'] as String? ?? '',
-          notNull: (row['notnull'] as int) == 1,
-          defaultValue: row['dflt_value'] as String?,
-          // Normally `pk > 0` alone is enough (every batch-1/2/3 table
-          // declares `id INTEGER PRIMARY KEY AUTOINCREMENT`). `orders`/
-          // `order_items` are the first exception: their `id` uses a
-          // timestamp+random SQL default instead, deliberately not
-          // declared SQL `PRIMARY KEY`, to avoid collisions between
-          // offline Windows/Android inserts ahead of a Syncthing sync --
-          // AUTOINCREMENT's simple counter can't guarantee that across two
-          // independently-writing devices. A literal `id` column is always
-          // this app's structural surrogate key regardless of how it
-          // resolves its default, so match by name too.
-          isPrimaryKey: (row['pk'] as int) > 0 || (row['name'] as String).toLowerCase() == 'id',
-        ),
+        if (!crdtBookkeepingColumns.contains(row['name'] as String))
+          _ColumnInfo(
+            name: row['name'] as String,
+            sqlType: row['type'] as String? ?? '',
+            notNull: (row['notnull'] as int) == 1,
+            defaultValue: row['dflt_value'] as String?,
+            // Normally `pk > 0` alone is enough (every lookup table
+            // declares `id INTEGER PRIMARY KEY AUTOINCREMENT`, and every
+            // entity table declares `id INTEGER PRIMARY KEY DEFAULT (...)`
+            // as of the "Syncing at the Record Level" id-scheme migration
+            // -- see migrations/005). Matching by name too is now mostly
+            // redundant with that, but kept as a second, independent
+            // signal rather than assuming the PK declaration is always
+            // correct -- a literal `id` column is always this app's
+            // structural surrogate key regardless of how it resolves its
+            // default.
+            isPrimaryKey: (row['pk'] as int) > 0 || (row['name'] as String).toLowerCase() == 'id',
+          ),
     ];
   }
 
   /// Local column name -> referenced table name, for every FK on
   /// [tableName].
-  Future<Map<String, String>> _foreignKeyMap(Database db, String tableName) async {
+  Future<Map<String, String>> _foreignKeyMap(SqliteCrdt db, String tableName) async {
     assertSafeSqlIdentifier(tableName);
-    final rows = await db.rawQuery('PRAGMA foreign_key_list("$tableName")');
+    final rows = await db.query('PRAGMA foreign_key_list("$tableName")');
     return {for (final row in rows) row['from'] as String: row['table'] as String};
   }
 }

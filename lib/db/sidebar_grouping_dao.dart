@@ -1,6 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
+import 'sql_helpers.dart';
 
 /// One row of `table_group` -- which named group a table belongs to, and
 /// its position within that group. Membership is shared (same on every
@@ -29,11 +30,11 @@ class SidebarGroupingDao {
 
   static const String _collapsedKeyPrefix = 'sidebar_collapsed:';
 
-  Future<Database> get _db async => DatabaseHelper.instance.database;
+  Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 
   Future<List<TableGroupMembership>> loadMembership() async {
     final db = await _db;
-    final rows = await db.query('table_group');
+    final rows = await db.query('SELECT * FROM table_group WHERE is_deleted = 0');
     return [
       for (final row in rows)
         TableGroupMembership(
@@ -52,10 +53,8 @@ class SidebarGroupingDao {
   Future<void> moveTableToGroup(String tableName, String groupName) async {
     final db = await _db;
     final existing = await db.query(
-      'table_group',
-      columns: ['group_position'],
-      where: 'group_name = ?',
-      whereArgs: [groupName],
+      'SELECT group_position FROM table_group WHERE group_name = ?1 AND is_deleted = 0',
+      [groupName],
     );
     var maxPosition = -1;
     for (final row in existing) {
@@ -63,11 +62,11 @@ class SidebarGroupingDao {
       if (position != null && position > maxPosition) maxPosition = position;
     }
 
-    await db.insert('table_group', {
+    await db.upsert('table_group', {
       'table_name': tableName,
       'group_name': groupName,
       'group_position': maxPosition + 1,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 
   /// Replaces [groupName]'s member ordering wholesale -- every table in
@@ -84,11 +83,11 @@ class SidebarGroupingDao {
     final db = await _db;
     await db.transaction((txn) async {
       for (var i = 0; i < orderedTableNames.length; i++) {
-        await txn.insert('table_group', {
-          'table_name': orderedTableNames[i],
-          'group_name': groupName,
-          'group_position': i,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
+        await txn.execute(
+          'INSERT OR REPLACE INTO table_group (table_name, group_name, group_position) '
+          'VALUES (?1, ?2, ?3)',
+          [orderedTableNames[i], groupName, i],
+        );
       }
     });
   }
@@ -99,15 +98,14 @@ class SidebarGroupingDao {
   /// row," not "a group literally named Ungrouped."
   Future<void> removeFromGroup(String tableName) async {
     final db = await _db;
-    await db.delete('table_group', where: 'table_name = ?', whereArgs: [tableName]);
+    await db.deleteWhere('table_group', {'table_name': tableName});
   }
 
   Future<Set<String>> loadCollapsedGroups() async {
     final db = await _db;
     final rows = await db.query(
-      'device_settings',
-      where: 'device_id = ? AND key LIKE ?',
-      whereArgs: [deviceId, '$_collapsedKeyPrefix%'],
+      "SELECT * FROM device_settings WHERE device_id = ?1 AND key LIKE ?2 AND is_deleted = 0",
+      [deviceId, '$_collapsedKeyPrefix%'],
     );
     return {
       for (final row in rows)
@@ -118,11 +116,11 @@ class SidebarGroupingDao {
 
   Future<void> setGroupCollapsed(String groupName, bool collapsed) async {
     final db = await _db;
-    await db.insert('device_settings', {
+    await db.upsert('device_settings', {
       'device_id': deviceId,
       'key': '$_collapsedKeyPrefix$groupName',
       'value': collapsed ? '1' : '0',
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 
   static const String _lastActiveTableKey = 'last_active_table';
@@ -136,19 +134,18 @@ class SidebarGroupingDao {
   Future<String?> loadLastActiveTable() async {
     final db = await _db;
     final rows = await db.query(
-      'device_settings',
-      where: 'device_id = ? AND key = ?',
-      whereArgs: [deviceId, _lastActiveTableKey],
+      'SELECT * FROM device_settings WHERE device_id = ?1 AND key = ?2 AND is_deleted = 0',
+      [deviceId, _lastActiveTableKey],
     );
     return rows.isEmpty ? null : rows.first['value'] as String?;
   }
 
   Future<void> setLastActiveTable(String tableName) async {
     final db = await _db;
-    await db.insert('device_settings', {
+    await db.upsert('device_settings', {
       'device_id': deviceId,
       'key': _lastActiveTableKey,
       'value': tableName,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 }

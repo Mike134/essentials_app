@@ -15,30 +15,30 @@ import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/generic_dao.dart';
 import 'package:essentials_app/db/table_discovery_service.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 void main() {
   final discovery = TableDiscoveryService();
-  late Database db;
+  late SqliteCrdt db;
 
   setUpAll(() async {
-    db = await DatabaseHelper.instance.database;
+    db = await DatabaseHelper.instance.crdt;
   });
 
   tearDownAll(() async {
     await DatabaseHelper.instance.close();
   });
 
-  test('orders/order_items id is never a FieldConfig despite pk=0 on PRAGMA table_info', () async {
-    // Both tables' id uses a timestamp+random SQL default rather than
-    // INTEGER PRIMARY KEY AUTOINCREMENT (the new convention for all future
-    // tables, to avoid collisions between offline Windows/Android inserts
-    // ahead of a Syncthing sync) -- PRAGMA table_info reports pk=0 for it,
-    // so this only holds because TableDiscoveryService also matches a
-    // literal `id` column by name.
-    final ordersColumns = await db.rawQuery('PRAGMA table_info("orders")');
+  test('orders/order_items id is a real PRIMARY KEY, never a FieldConfig', () async {
+    // Both tables' id uses a timestamp+random SQL default (still not
+    // AUTOINCREMENT, to avoid collisions between offline Windows/Android
+    // inserts ahead of a sync), but as of migrations/005
+    // ("Syncing at the Record Level") it IS declared PRIMARY KEY, unlike
+    // the original convention -- sqlite_crdt's merge() needs a declared PK
+    // for its conflict-resolution target (see CLAUDE.md).
+    final ordersColumns = await db.query('PRAGMA table_info("orders")');
     final ordersIdRow = ordersColumns.firstWhere((r) => r['name'] == 'id');
-    expect(ordersIdRow['pk'], 0, reason: 'orders.id is deliberately not a SQL PRIMARY KEY');
+    expect(ordersIdRow['pk'], greaterThan(0), reason: 'orders.id is a real PRIMARY KEY as of migrations/005');
 
     final ordersConfig = await buildOrdersConfig(discovery);
     expect(
@@ -56,7 +56,7 @@ void main() {
     // UNIQUE) no NOT NULL column either -- displayColumn fell all the way
     // through to `id` until this session's UNIQUE-column heuristic
     // (table_discovery_service.dart) and this schema fix landed together.
-    final indexes = await db.rawQuery('PRAGMA index_list("orders")');
+    final indexes = await db.query('PRAGMA index_list("orders")');
     final orderNumberIsUnique = indexes.any((i) => (i['unique'] as int) == 1);
     expect(orderNumberIsUnique, isTrue, reason: 'expected order_number TEXT UNIQUE');
 
@@ -96,7 +96,7 @@ void main() {
   });
 
   test('buildOrderItemsConfigForOrder strips order_id from fields and scopes reads to one order', () async {
-    final orders = await db.query('orders', columns: ['id'], limit: 1);
+    final orders = await db.query('SELECT id FROM orders WHERE is_deleted = 0 LIMIT 1');
     expect(orders, isNotEmpty, reason: 'expected real seed data (5 orders)');
     final orderId = orders.first['id'] as int;
 
@@ -109,7 +109,10 @@ void main() {
     expect(scopedConfig.filterWhere, 'order_id = ?');
     expect(scopedConfig.filterArgs, [orderId]);
 
-    final expected = await db.query('order_items', where: 'order_id = ?', whereArgs: [orderId]);
+    final expected = await db.query(
+      'SELECT * FROM order_items WHERE order_id = ?1 AND is_deleted = 0',
+      [orderId],
+    );
     final actual = await GenericDao(scopedConfig).getAll();
     expect(actual.length, expected.length);
     expect(
@@ -121,9 +124,10 @@ void main() {
   });
 
   test('an order with real items gets a specific cascade-count delete warning', () async {
-    final rows = await db.rawQuery('''
+    final rows = await db.query('''
       SELECT o.id, COUNT(i.id) AS item_count
-      FROM orders o JOIN order_items i ON i.order_id = o.id
+      FROM orders o JOIN order_items i ON i.order_id = o.id AND i.is_deleted = 0
+      WHERE o.is_deleted = 0
       GROUP BY o.id
       HAVING item_count > 0
       LIMIT 1

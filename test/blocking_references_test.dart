@@ -13,14 +13,14 @@ import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/generic_dao.dart';
 import 'package:essentials_app/db/table_discovery_service.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 void main() {
   final discovery = TableDiscoveryService();
-  late Database db;
+  late SqliteCrdt db;
 
   setUpAll(() async {
-    db = await DatabaseHelper.instance.database;
+    db = await DatabaseHelper.instance.crdt;
   });
 
   tearDownAll(() async {
@@ -28,10 +28,11 @@ void main() {
   });
 
   test('a supplier referenced by shipment/orders is reported as blocked', () async {
-    final referenced = await db.rawQuery('''
+    final referenced = await db.query('''
       SELECT s.id FROM supplier s
-      WHERE EXISTS (SELECT 1 FROM shipment WHERE shipment.supplier_id = s.id)
-        AND EXISTS (SELECT 1 FROM orders WHERE orders.supplier_id = s.id)
+      WHERE s.is_deleted = 0
+        AND EXISTS (SELECT 1 FROM shipment WHERE shipment.supplier_id = s.id AND shipment.is_deleted = 0)
+        AND EXISTS (SELECT 1 FROM orders WHERE orders.supplier_id = s.id AND orders.is_deleted = 0)
       LIMIT 1
     ''');
     expect(referenced, isNotEmpty, reason: 'expected at least one supplier referenced by both');
@@ -49,7 +50,7 @@ void main() {
     // skip if every row is genuinely in use (still proves the method
     // doesn't crash/over-report on a real, populated table either way).
     final domainConfig = await discovery.buildConfig('domain');
-    final rows = await db.query('domain');
+    final rows = await db.query('SELECT * FROM domain WHERE is_deleted = 0');
     for (final row in rows) {
       final blockers = await GenericDao(domainConfig).findBlockingReferences(row['id'] as int);
       if (blockers.isEmpty) return; // found an unreferenced row -- proven.
@@ -57,9 +58,10 @@ void main() {
   });
 
   test('order_items is excluded from an order\'s blockers -- CASCADE, not RESTRICT', () async {
-    final withItems = await db.rawQuery('''
+    final withItems = await db.query('''
       SELECT o.id FROM orders o
-      WHERE EXISTS (SELECT 1 FROM order_items WHERE order_items.order_id = o.id)
+      WHERE o.is_deleted = 0
+        AND EXISTS (SELECT 1 FROM order_items WHERE order_items.order_id = o.id AND order_items.is_deleted = 0)
       LIMIT 1
     ''');
     expect(withItems, isNotEmpty, reason: 'expected at least one order with items');

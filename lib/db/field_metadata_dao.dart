@@ -1,6 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
+import 'sql_helpers.dart';
 
 /// One `field_metadata` row -- the override layer for a discovered (or
 /// converted) table's introspection-derived defaults. See CLAUDE.md
@@ -42,16 +43,15 @@ class FieldMetadata {
 /// app never writes to it itself (see CLAUDE.md "Part B" -- "external tool
 /// does the polish" is the deliberate boundary here).
 class FieldMetadataDao {
-  Future<Database> get _db async => DatabaseHelper.instance.database;
+  Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 
   /// All rows for [tableName], keyed by `field_name` -- one query per table
   /// per discovery pass rather than one query per field.
   Future<Map<String, FieldMetadata>> loadForTable(String tableName) async {
     final db = await _db;
     final rows = await db.query(
-      'field_metadata',
-      where: 'table_name = ?',
-      whereArgs: [tableName],
+      'SELECT * FROM field_metadata WHERE table_name = ?1 AND is_deleted = 0',
+      [tableName],
     );
     return {
       for (final row in rows)
@@ -75,13 +75,14 @@ class FieldMetadataDao {
   /// whose table no longer exists in `sqlite_master`.
   Future<List<String>> allTableNames() async {
     final db = await _db;
-    final rows = await db.query('field_metadata', columns: ['table_name'], distinct: true);
+    final rows =
+        await db.query('SELECT DISTINCT table_name FROM field_metadata WHERE is_deleted = 0');
     return [for (final row in rows) row['table_name'] as String];
   }
 
   Future<void> deleteForTable(String tableName) async {
     final db = await _db;
-    await db.delete('field_metadata', where: 'table_name = ?', whereArgs: [tableName]);
+    await db.deleteWhere('field_metadata', {'table_name': tableName});
   }
 
   /// Used by the one-time `table_configs.dart` -> `field_metadata` seeding
@@ -96,13 +97,13 @@ class FieldMetadataDao {
     bool? isLink,
   }) async {
     final db = await _db;
-    await db.insert('field_metadata', {
+    await db.upsert('field_metadata', {
       'table_name': tableName,
       'field_name': fieldName,
       'display_label': displayLabel,
       'default_value': defaultValue,
       'lookup_display_column': lookupDisplayColumn,
       'is_link': isLink == null ? null : (isLink ? 1 : 0),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 }

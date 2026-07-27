@@ -1,6 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
+import 'sql_helpers.dart';
 
 /// Reads/writes theme/font/color settings -- `app_settings` (shared: theme
 /// name, font family, font color, background color) and `device_settings`
@@ -19,11 +20,11 @@ class ThemeSettingsDao {
   static const String noWrapRowHeightKey = 'no_wrap_row_height';
   static const String wrapRowHeightKey = 'wrap_row_height';
 
-  Future<Database> get _db async => DatabaseHelper.instance.database;
+  Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 
   Future<Map<String, String>> loadAppSettings() async {
     final db = await _db;
-    final rows = await db.query('app_settings');
+    final rows = await db.query('SELECT * FROM app_settings WHERE is_deleted = 0');
     return {
       for (final row in rows) row['key'] as String: row['value'] as String? ?? '',
     };
@@ -36,9 +37,8 @@ class ThemeSettingsDao {
   Future<String?> loadDeviceSetting(String key) async {
     final db = await _db;
     final rows = await db.query(
-      'device_settings',
-      where: 'device_id = ? AND key = ?',
-      whereArgs: [deviceId, key],
+      'SELECT * FROM device_settings WHERE device_id = ?1 AND key = ?2 AND is_deleted = 0',
+      [deviceId, key],
     );
     return rows.isEmpty ? null : rows.first['value'] as String?;
   }
@@ -46,17 +46,13 @@ class ThemeSettingsDao {
   Future<void> setDeviceSetting(String key, String? value) async {
     final db = await _db;
     if (value == null) {
-      await db.delete(
-        'device_settings',
-        where: 'device_id = ? AND key = ?',
-        whereArgs: [deviceId, key],
-      );
+      await db.deleteWhere('device_settings', {'device_id': deviceId, 'key': key});
     } else {
-      await db.insert('device_settings', {
+      await db.upsert('device_settings', {
         'device_id': deviceId,
         'key': key,
         'value': value,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      });
     }
   }
 
@@ -67,13 +63,9 @@ class ThemeSettingsDao {
   Future<void> setAppSetting(String key, String? value) async {
     final db = await _db;
     if (value == null) {
-      await db.delete('app_settings', where: 'key = ?', whereArgs: [key]);
+      await db.deleteWhere('app_settings', {'key': key});
     } else {
-      await db.insert(
-        'app_settings',
-        {'key': key, 'value': value},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await db.upsert('app_settings', {'key': key, 'value': value});
     }
   }
 

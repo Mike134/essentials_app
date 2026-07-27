@@ -101,12 +101,10 @@ Future<Map<String, Object?>> _computeSubscriptionPreview(
 
   int? multiplier;
   if (renewalPeriodId != null) {
-    final db = await DatabaseHelper.instance.database;
+    final db = await DatabaseHelper.instance.crdt;
     final rows = await db.query(
-      'time_frame',
-      columns: ['multiplier'],
-      where: 'id = ?',
-      whereArgs: [renewalPeriodId],
+      'SELECT multiplier FROM time_frame WHERE id = ?1 AND is_deleted = 0',
+      [renewalPeriodId],
     );
     if (rows.isNotEmpty) multiplier = rows.first['multiplier'] as int?;
   }
@@ -192,9 +190,9 @@ Future<TableConfig> buildOrdersConfig(TableDiscoveryService discovery) async {
 /// `null` (falls back to [GenericListScreen]'s default "Delete X?" message)
 /// when the order has no items -- nothing hidden to call out in that case.
 Future<String?> _orderDeleteWarning(Map<String, Object?> row) async {
-  final db = await DatabaseHelper.instance.database;
-  final result = await db.rawQuery(
-    'SELECT COUNT(*) AS count FROM order_items WHERE order_id = ?',
+  final db = await DatabaseHelper.instance.crdt;
+  final result = await db.query(
+    'SELECT COUNT(*) AS count FROM order_items WHERE order_id = ?1 AND is_deleted = 0',
     [row['id']],
   );
   final count = result.first['count'] as int;

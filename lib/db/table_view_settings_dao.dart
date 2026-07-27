@@ -1,6 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
+import 'sql_helpers.dart';
 
 /// One saved column's per-device grid state -- mirrors a row in
 /// `table_column_settings`. `frozen` is `null`, `'left'`, or `'right'`.
@@ -43,14 +44,14 @@ class TableViewSettingsDao {
   final String tableName;
   final String deviceId;
 
-  Future<Database> get _db async => DatabaseHelper.instance.database;
+  Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 
   Future<List<ColumnSetting>> loadColumnSettings() async {
     final db = await _db;
     final rows = await db.query(
-      'table_column_settings',
-      where: 'table_name = ? AND device_id = ?',
-      whereArgs: [tableName, deviceId],
+      'SELECT * FROM table_column_settings '
+      'WHERE table_name = ?1 AND device_id = ?2 AND is_deleted = 0',
+      [tableName, deviceId],
     );
     return [
       for (final row in rows)
@@ -68,9 +69,9 @@ class TableViewSettingsDao {
   Future<ViewSetting?> loadViewSettings() async {
     final db = await _db;
     final rows = await db.query(
-      'table_view_settings',
-      where: 'table_name = ? AND device_id = ?',
-      whereArgs: [tableName, deviceId],
+      'SELECT * FROM table_view_settings '
+      'WHERE table_name = ?1 AND device_id = ?2 AND is_deleted = 0',
+      [tableName, deviceId],
     );
     if (rows.isEmpty) return null;
     final row = rows.first;
@@ -89,35 +90,39 @@ class TableViewSettingsDao {
   Future<void> saveColumnSettings(List<ColumnSetting> settings) async {
     final db = await _db;
     await db.transaction((txn) async {
-      await txn.delete(
-        'table_column_settings',
-        where: 'table_name = ? AND device_id = ?',
-        whereArgs: [tableName, deviceId],
+      await txn.execute(
+        'DELETE FROM table_column_settings WHERE table_name = ?1 AND device_id = ?2',
+        [tableName, deviceId],
       );
       for (final setting in settings) {
-        await txn.insert('table_column_settings', {
-          'table_name': tableName,
-          'device_id': deviceId,
-          'column_name': setting.columnName,
-          'width': setting.width,
-          'display_order': setting.displayOrder,
-          'visible': setting.visible ? 1 : 0,
-          'frozen': setting.frozen,
-          'wrap_text': setting.wrapText ? 1 : 0,
-        });
+        await txn.execute(
+          'INSERT INTO table_column_settings '
+          '(table_name, device_id, column_name, width, display_order, visible, frozen, wrap_text) '
+          'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
+          [
+            tableName,
+            deviceId,
+            setting.columnName,
+            setting.width,
+            setting.displayOrder,
+            setting.visible ? 1 : 0,
+            setting.frozen,
+            setting.wrapText ? 1 : 0,
+          ],
+        );
       }
     });
   }
 
   Future<void> saveViewSettings(ViewSetting setting) async {
     final db = await _db;
-    await db.insert('table_view_settings', {
+    await db.upsert('table_view_settings', {
       'table_name': tableName,
       'device_id': deviceId,
       'sort_column': setting.sortColumn,
       'sort_direction': setting.sortDirection,
       'filter_json': setting.filterJson,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 
   /// Clears this table+device's rows from both tables -- "Restore Defaults"
@@ -127,15 +132,13 @@ class TableViewSettingsDao {
   Future<void> restoreDefaults() async {
     final db = await _db;
     await db.transaction((txn) async {
-      await txn.delete(
-        'table_column_settings',
-        where: 'table_name = ? AND device_id = ?',
-        whereArgs: [tableName, deviceId],
+      await txn.execute(
+        'DELETE FROM table_column_settings WHERE table_name = ?1 AND device_id = ?2',
+        [tableName, deviceId],
       );
-      await txn.delete(
-        'table_view_settings',
-        where: 'table_name = ? AND device_id = ?',
-        whereArgs: [tableName, deviceId],
+      await txn.execute(
+        'DELETE FROM table_view_settings WHERE table_name = ?1 AND device_id = ?2',
+        [tableName, deviceId],
       );
     });
   }

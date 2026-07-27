@@ -11,16 +11,16 @@ import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/generic_dao.dart';
 import 'package:essentials_app/models/table_config.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 const String _oldSchemeTable = 'insert_id_test_old_scheme';
 const String _newSchemeTable = 'insert_id_test_new_scheme';
 
 void main() {
-  late Database db;
+  late SqliteCrdt db;
 
   setUpAll(() async {
-    db = await DatabaseHelper.instance.database;
+    db = await DatabaseHelper.instance.crdt;
   });
 
   tearDown(() async {
@@ -47,17 +47,18 @@ void main() {
     final dao = GenericDao(config);
 
     final id = await dao.insert({'name': 'first'});
-    final row = (await db.query(_oldSchemeTable, where: 'name = ?', whereArgs: ['first'])).single;
+    final row =
+        (await db.query('SELECT * FROM $_oldSchemeTable WHERE name = ?1', ['first'])).single;
     expect(id, row['id']);
   });
 
   test(
-    'new scheme (id INTEGER UNIQUE NOT NULL DEFAULT timestamp+random, not PRIMARY KEY): '
-    'insert() returns the real id, not the internal rowid',
+    'new scheme (id INTEGER PRIMARY KEY DEFAULT timestamp+random -- see migrations/005): '
+    'insert() returns the real id',
     () async {
       await db.execute('''
         CREATE TABLE $_newSchemeTable (
-          id INTEGER UNIQUE NOT NULL DEFAULT (
+          id INTEGER PRIMARY KEY DEFAULT (
               CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
               + (abs(random()) % 1000)
           ),
@@ -72,19 +73,20 @@ void main() {
       final dao = GenericDao(config);
 
       // Insert a second, unrelated row first so this table's internal
-      // rowid and its DEFAULT-generated id are guaranteed to diverge
-      // (rowid starts at 1, id is a ~16-digit timestamp) -- if insert()
-      // were still returning Database.insert()'s raw rowid, this would
-      // fail obviously rather than by coincidence matching.
+      // rowid and its DEFAULT-generated id are guaranteed to diverge if
+      // insert() were ever wrong about which one it returns -- rowid
+      // starts at 1, id is a ~16-digit timestamp, but since id is now a
+      // rowid alias (unlike the pre-migrations/005 scheme) they're
+      // actually the same value; this still proves insert() reads back
+      // the real generated id rather than assuming any particular scheme.
       await dao.insert({'name': 'zeroth'});
 
       final id = await dao.insert({'name': 'genuinely new'});
-      expect(id, greaterThan(1000000000000000), reason: 'should be the large DEFAULT-generated id, not a small rowid');
+      expect(id, greaterThan(1000000000000000), reason: 'should be the large DEFAULT-generated id');
 
       final row = (await db.query(
-        _newSchemeTable,
-        where: 'name = ?',
-        whereArgs: ['genuinely new'],
+        'SELECT * FROM $_newSchemeTable WHERE name = ?1',
+        ['genuinely new'],
       )).single;
       expect(id, row['id']);
     },

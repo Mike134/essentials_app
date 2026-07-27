@@ -16,14 +16,14 @@ import 'package:essentials_app/db/generic_dao.dart';
 import 'package:essentials_app/db/table_discovery_service.dart';
 import 'package:essentials_app/models/table_config.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 void main() {
   final discovery = TableDiscoveryService();
-  late Database db;
+  late SqliteCrdt db;
 
   setUpAll(() async {
-    db = await DatabaseHelper.instance.database;
+    db = await DatabaseHelper.instance.crdt;
   });
 
   tearDownAll(() async {
@@ -114,7 +114,7 @@ void main() {
       final dao = GenericDao(config);
 
       final viaConfig = await dao.getAll();
-      final viaDirectQuery = await db.query('subscription_computed');
+      final viaDirectQuery = await db.query('SELECT * FROM subscription_computed WHERE is_deleted = 0');
 
       expect(viaConfig.length, viaDirectQuery.length);
 
@@ -134,7 +134,7 @@ void main() {
     final paymentMethod = config.fields.firstWhere((f) => f.column == 'payment_method_id');
 
     final options = await dao.getLookupOptions(paymentMethod.lookup!);
-    final directCodes = await db.query('account', columns: ['id', 'code']);
+    final directCodes = await db.query('SELECT id, code FROM account WHERE is_deleted = 0');
 
     final optionsById = {for (final o in options) o['id'] as int: o['code']};
     for (final row in directCodes) {

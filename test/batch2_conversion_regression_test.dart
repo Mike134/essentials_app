@@ -20,7 +20,7 @@ void main() {
   final discovery = TableDiscoveryService();
 
   setUpAll(() async {
-    await DatabaseHelper.instance.database;
+    await DatabaseHelper.instance.crdt;
   });
 
   tearDownAll(() async {

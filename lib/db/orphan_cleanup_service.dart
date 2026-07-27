@@ -1,6 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
+import 'sql_helpers.dart';
 import 'table_discovery_service.dart';
 
 /// Startup pass (CLAUDE.md "Table Discovery phase", Part D): deletes rows
@@ -24,7 +25,7 @@ class OrphanCleanupService {
 
   final TableDiscoveryService _discovery;
 
-  Future<Database> get _db async => DatabaseHelper.instance.database;
+  Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 
   /// Returns the table names actually cleaned up (empty if nothing was
   /// orphaned) -- callers don't have to do anything with this, but it's
@@ -42,15 +43,13 @@ class OrphanCleanupService {
       'field_metadata',
     ]) {
       final rows = await db.query(
-        settingsTable,
-        columns: ['table_name'],
-        distinct: true,
+        'SELECT DISTINCT table_name FROM $settingsTable WHERE is_deleted = 0',
       );
       for (final row in rows) {
         final tableName = row['table_name'] as String;
         if (liveTableNames.contains(tableName)) continue;
         orphaned.add(tableName);
-        await db.delete(settingsTable, where: 'table_name = ?', whereArgs: [tableName]);
+        await db.deleteWhere(settingsTable, {'table_name': tableName});
       }
     }
     return orphaned;

@@ -5,6 +5,7 @@
 // device's own saved value.
 import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/sidebar_grouping_dao.dart';
+import 'package:essentials_app/db/sql_helpers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const String _testDeviceId = 'last-active-table-test-device';
@@ -13,13 +14,13 @@ void main() {
   late SidebarGroupingDao dao;
 
   setUpAll(() async {
-    await DatabaseHelper.instance.database;
+    await DatabaseHelper.instance.crdt;
     dao = SidebarGroupingDao(deviceId: _testDeviceId);
   });
 
   tearDown(() async {
-    final db = await DatabaseHelper.instance.database;
-    await db.delete('device_settings', where: 'device_id = ?', whereArgs: [_testDeviceId]);
+    final db = await DatabaseHelper.instance.crdt;
+    await db.deleteWhere('device_settings', {'device_id': _testDeviceId});
   });
 
   tearDownAll(() async {

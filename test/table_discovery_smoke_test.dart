@@ -16,21 +16,22 @@
 // debris in the real db.
 import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/field_metadata_dao.dart';
+import 'package:essentials_app/db/sql_helpers.dart';
 import 'package:essentials_app/db/table_discovery_service.dart';
 import 'package:essentials_app/models/table_config.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 const String _testTable = 'discovery_smoke_test_widget';
 const String _uniqueTestTable = 'discovery_smoke_test_unique';
 
 void main() {
-  late Database db;
+  late SqliteCrdt db;
   final discovery = TableDiscoveryService();
   final fieldMetadata = FieldMetadataDao();
 
   setUpAll(() async {
-    db = await DatabaseHelper.instance.database;
+    db = await DatabaseHelper.instance.crdt;
   });
 
   tearDown(() async {
@@ -81,6 +82,13 @@ void main() {
     expect(statusId.lookup!.table, 'status');
     expect(statusId.lookup!.displayColumn, 'name', reason: 'status has its own name column');
     expect(statusId.label, 'Status', reason: 'FK label should strip the trailing _id');
+
+    // sqlite_crdt's own bookkeeping columns must never leak into the field
+    // list -- see table_discovery_service.dart's crdtBookkeepingColumns.
+    for (final bookkeeping in crdtBookkeepingColumns) {
+      expect(byColumn.containsKey(bookkeeping), isFalse,
+          reason: '$bookkeeping is sqlite_crdt bookkeeping, never a real field');
+    }
   });
 
   test('field_metadata overrides win, and cleanly fall back once removed', () async {
@@ -108,7 +116,7 @@ void main() {
     await db.execute('DROP TABLE IF EXISTS $_uniqueTestTable');
     await db.execute('''
       CREATE TABLE $_uniqueTestTable (
-        id            INTEGER UNIQUE NOT NULL DEFAULT (
+        id            INTEGER PRIMARY KEY DEFAULT (
           CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
           + (abs(random()) % 1000)
         ),
@@ -146,7 +154,7 @@ void main() {
   });
 }
 
-Future<void> _createTestTable(Database db) async {
+Future<void> _createTestTable(SqliteCrdt db) async {
   await db.execute('DROP TABLE IF EXISTS $_testTable');
   await db.execute('''
     CREATE TABLE $_testTable (
@@ -162,7 +170,7 @@ Future<void> _createTestTable(Database db) async {
       hyperlink     TEXT
     )
   ''');
-  await db.insert(_testTable, {
+  await db.insertGetId(_testTable, {
     'name': 'Test Row',
     'description': 'created by table_discovery_smoke_test.dart',
     'status_id': null,

@@ -38,6 +38,22 @@ dependencies:
   sqflite: ^2.4.1
   sqflite_common_ffi: ^2.3.4+4
   path: ^1.9.0
+  # Record-level sync -- see CLAUDE.md "Syncing at the Record Level".
+  # sqlite_crdt wraps sqflite/sqflite_common_ffi (both stay direct deps
+  # above; DatabaseHelper still does the platform-conditional factory
+  # selection, sqlite_crdt just sits on top of whichever Database it opens).
+  sqlite_crdt: ^3.0.4
+  crdt_sync: ^1.0.10
+  # sqlite_crdt always opens via sqflite_common_ffi's FFI factory, on every
+  # platform including Android -- it has no native-sqflite code path at all
+  # (confirmed by reading its source: is_web_io.dart's sqliteCrdtIsWeb is
+  # unconditionally false on any non-web platform, so _open() always picks
+  # databaseFactoryFfi, never plain sqflite's databaseFactory). FFI needs a
+  # libsqlite3 to bind to; Android doesn't reliably expose one for arbitrary
+  # dlopen across vendors/API levels, so this bundles one rather than
+  # gambling on the system copy -- sqflite_common_ffi's own README
+  # recommends this for any cross-platform (non-desktop-only) use.
+  sqlite3_flutter_libs: ^0.5.34
   permission_handler: ^11.3.1
   trina_grid: ^2.2.2
   # Direct dependency (not just via trina_grid) because TrinaColumnType
