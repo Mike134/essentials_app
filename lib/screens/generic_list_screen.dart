@@ -38,8 +38,11 @@ import 'generic_form_screen.dart';
 ///
 /// **Per-device view persistence** (column width/order/visibility/frozen
 /// state, sort, filter) -- see CLAUDE.md "Real-usage findings". `id` and
-/// the actions column are structurally fixed (never customized, never
-/// persisted) -- only [TableConfig.fields] columns are. Every column/filter
+/// the actions column are structurally fixed only in that their *renderer*
+/// (readOnly numeric id, edit/delete icons) is hardcoded, not user
+/// configurable -- their position/frozen/width/visible state persists the
+/// same as any [TableConfig.fields] column, since TrinaGrid already lets
+/// the user drag/freeze/hide them like any other column. Every column/filter
 /// affordance below (resize, drag-reorder, and the per-column header menu's
 /// freeze/hide/filter items) already comes free from TrinaGrid; this screen
 /// only adds capturing that state into `table_column_settings`/
@@ -143,8 +146,17 @@ class _GenericListScreenState extends State<GenericListScreen> {
     // The pending timer (if any) closes over the stateManager that's about
     // to be torn down (GenericListScreen's build() below always remounts a
     // fresh TrinaGrid on reload -- see the doc comment on _ScreenData) --
-    // cancel it rather than let it fire against a disposed stateManager.
-    _saveTimer?.cancel();
+    // cancel it rather than let it fire against a disposed stateManager. But
+    // a change made inside the debounce window (e.g. a wrap toggle right
+    // before switching tables) must still be flushed now, or it's silently
+    // lost -- _persistGridSettings captures _stateManager/_settingsDao
+    // synchronously before its first await, so calling it here (still
+    // pointed at the outgoing grid) and letting it finish in the background
+    // is safe even though they're reset on the very next lines.
+    if (_saveTimer?.isActive ?? false) {
+      _saveTimer!.cancel();
+      unawaited(_persistGridSettings());
+    }
     _stateManager = null;
     _lastPersistedSnapshot = null;
     setState(() {
@@ -435,12 +447,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final settingsDao = _settingsDao;
     if (stateManager == null || settingsDao == null) return;
 
-    final fieldColumns = stateManager.columns.where(
-      (c) => c.field != 'id' && c.field != _actionsField,
-    );
-
+    // `id` and the actions column used to be excluded here (see the removed
+    // doc comment on this class -- "structurally fixed, never persisted"),
+    // but TrinaGrid's column menu already lets the user drag/freeze/hide
+    // them exactly like any other column, so Mike doing that (moving `id`
+    // to the end, freezing the actions column to the start) is a real
+    // customization, not a mistake -- it deserves the same persistence as
+    // every other column, not a silent revert on next visit.
     final columnSettings = [
-      for (final (index, column) in fieldColumns.indexed)
+      for (final (index, column) in stateManager.columns.indexed)
         ColumnSetting(
           columnName: column.field,
           width: column.width,
@@ -498,18 +513,19 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   // ===================== Column building =====================
 
-  /// [TableConfig.fields] reordered per saved `display_order`, falling back
-  /// to declaration order for any field with nothing saved yet (a field
-  /// added to the config after the device last saved, for instance).
-  List<FieldConfig> _orderedFields(Map<String, ColumnSetting> columnSettings) {
-    final fields = List<FieldConfig>.from(widget.config.fields);
-    final order = [
-      for (var i = 0; i < fields.length; i++)
-        columnSettings[fields[i].column]?.displayOrder ?? i,
-    ];
-    final indexes = List<int>.generate(fields.length, (i) => i)
-      ..sort((a, b) => order[a].compareTo(order[b]));
-    return [for (final i in indexes) fields[i]];
+  /// Every column identifier -- `id`, each [TableConfig.fields] column, and
+  /// the trailing actions column -- in render order. Defaults to `id`
+  /// first and actions last (their original hardcoded spots), but a saved
+  /// `display_order` for either overrides that default exactly like it
+  /// does for any other column, since from TrinaGrid's own perspective
+  /// they're plain columns like any other (see the class doc comment).
+  List<String> _orderedColumnIds(Map<String, ColumnSetting> columnSettings) {
+    final ids = ['id', for (final field in widget.config.fields) field.column, _actionsField];
+    final defaultOrder = {for (final (i, id) in ids.indexed) id: i};
+    final order = {
+      for (final id in ids) id: columnSettings[id]?.displayOrder ?? defaultOrder[id]!,
+    };
+    return List<String>.from(ids)..sort((a, b) => order[a]!.compareTo(order[b]!));
   }
 
   List<TrinaColumn> _buildColumns(
@@ -517,7 +533,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
     Map<String, Map<int, String>> lookupMaps,
     Map<String, ColumnSetting> columnSettings,
   ) {
-    return [
+    final idColumn = _withColumnSetting(
       TrinaColumn(
         title: 'ID',
         field: 'id',
@@ -530,8 +546,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
         frozen: TrinaColumnFrozen.start,
         width: 80,
       ),
-      for (final field in _orderedFields(columnSettings))
-        _buildFieldColumn(field, lookupMaps, columnSettings[field.column]),
+      columnSettings['id'],
+    );
+
+    final actionsColumn = _withColumnSetting(
       TrinaColumn(
         title: '',
         field: _actionsField,
@@ -569,7 +587,17 @@ class _GenericListScreenState extends State<GenericListScreen> {
           );
         },
       ),
-    ];
+      columnSettings[_actionsField],
+    );
+
+    final columnsById = <String, TrinaColumn>{
+      'id': idColumn,
+      for (final field in widget.config.fields)
+        field.column: _buildFieldColumn(field, lookupMaps, columnSettings[field.column]),
+      _actionsField: actionsColumn,
+    };
+
+    return [for (final id in _orderedColumnIds(columnSettings)) columnsById[id]!];
   }
 
   /// Applies a saved [ColumnSetting]'s width/visibility/frozen override, if
@@ -957,6 +985,9 @@ class _GenericListScreenState extends State<GenericListScreen> {
                 autoSizeMode: TrinaAutoSizeMode.none,
                 resizeMode: TrinaResizeMode.normal,
               ),
+              // Default thickness (8.0) read as too thin to grab comfortably
+              // -- 1.5x, per Mike.
+              scrollbar: const TrinaGridScrollbarConfig(thickness: 12.0),
               style: _trinaGridStyle(context),
             ),
             onChanged: _onGridChanged,
@@ -1013,7 +1044,13 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   @override
   void dispose() {
-    _saveTimer?.cancel();
+    // Same reasoning as _reload(): flush a still-pending save rather than
+    // dropping it, so leaving the screen mid-debounce doesn't revert the
+    // change on next visit.
+    if (_saveTimer?.isActive ?? false) {
+      _saveTimer!.cancel();
+      unawaited(_persistGridSettings());
+    }
     super.dispose();
   }
 }

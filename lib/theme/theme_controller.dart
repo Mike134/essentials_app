@@ -139,8 +139,17 @@ class ThemeController extends ChangeNotifier {
       fontFamily: fontFamily,
     );
 
+    // `base.textTheme` has no `fontSize` set on any style yet -- Flutter fills
+    // those in later, per-locale, when the `Theme` widget calls
+    // `ThemeData.localize` (English gets `typography.englishLike`, CJK
+    // `dense`, Farsi `tall`). Applying a non-1.0 fontSizeFactor to a style
+    // whose own fontSize is still null trips TextStyle.apply's assertion, so
+    // merge in that same geometry ourselves first to give every style a size
+    // to scale from.
+    final sizedTextTheme = base.typography.englishLike.merge(base.textTheme);
+
     return base.copyWith(
-      textTheme: base.textTheme.apply(
+      textTheme: sizedTextTheme.apply(
         fontSizeFactor: fontSize / preset.fontSize,
         bodyColor: fontColor,
         displayColor: fontColor,

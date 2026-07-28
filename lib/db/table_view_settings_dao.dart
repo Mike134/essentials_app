@@ -83,20 +83,43 @@ class TableViewSettingsDao {
   }
 
   /// Replaces every `table_column_settings` row for this table+device with
-  /// [settings] -- whole-set replace rather than per-column upsert, since
-  /// the caller always has the full current column list on hand (there's no
-  /// partial-update use case) and this can't drift into stale leftover rows
-  /// for columns that no longer apply.
+  /// [settings]. Per-column upsert (`INSERT OR REPLACE`) plus a scoped
+  /// prune, not a blanket delete-then-insert -- sqlite_crdt rewrites a plain
+  /// `DELETE` into `UPDATE ... SET is_deleted = 1` (a tombstone, needed so
+  /// the deletion itself syncs), so the row physically stays behind. A
+  /// delete-everything-then-insert-everything pass would re-insert into a
+  /// table that still physically holds the just-tombstoned rows, tripping
+  /// the `(table_name, device_id, column_name)` unique constraint on the
+  /// very next save for the same table+device (`INSERT OR REPLACE` doesn't
+  /// have this problem -- its conflict resolution matches on the unique
+  /// constraint regardless of `is_deleted`, so it cleanly replaces the old
+  /// row). This is the same `INSERT OR REPLACE` pattern `SqliteCrdtHelpers.
+  /// upsert` uses everywhere else in this codebase (see sql_helpers.dart);
+  /// hand-rolled here only because this call needs a multi-row transaction,
+  /// which that single-row helper doesn't cover.
   Future<void> saveColumnSettings(List<ColumnSetting> settings) async {
     final db = await _db;
     await db.transaction((txn) async {
-      await txn.execute(
-        'DELETE FROM table_column_settings WHERE table_name = ?1 AND device_id = ?2',
-        [tableName, deviceId],
-      );
+      final columnNames = settings.map((s) => s.columnName).toList();
+      if (columnNames.isEmpty) {
+        await txn.execute(
+          'DELETE FROM table_column_settings WHERE table_name = ?1 AND device_id = ?2',
+          [tableName, deviceId],
+        );
+      } else {
+        final placeholders = List.generate(
+          columnNames.length,
+          (i) => '?${i + 3}',
+        ).join(', ');
+        await txn.execute(
+          'DELETE FROM table_column_settings '
+          'WHERE table_name = ?1 AND device_id = ?2 AND column_name NOT IN ($placeholders)',
+          [tableName, deviceId, ...columnNames],
+        );
+      }
       for (final setting in settings) {
         await txn.execute(
-          'INSERT INTO table_column_settings '
+          'INSERT OR REPLACE INTO table_column_settings '
           '(table_name, device_id, column_name, width, display_order, visible, frozen, wrap_text) '
           'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
           [
