@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
 import '../util/color_picker.dart';
+import 'add_column_screen.dart';
 import 'field_metadata_screen.dart';
 
 /// Reads/writes `app_settings` (theme, font family, font color, background
@@ -314,6 +315,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context,
                 ).push(MaterialPageRoute(builder: (_) => const FieldMetadataScreen())),
                 child: const Text('Edit field overrides'),
+              ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text('Schema Changes', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text(
+                'Adds a column via ALTER TABLE, on this device only -- sqlite_crdt '
+                'never propagates a schema change, so this needs running again on '
+                'every other device. Removing a table or column stays a manual, '
+                'external process on purpose -- see CLAUDE.md.',
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: () => Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const AddColumnScreen())),
+                child: const Text('Add a column'),
               ),
             ],
           );
