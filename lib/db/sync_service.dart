@@ -170,14 +170,22 @@ class SyncService {
 
   Stream<SocketState> get watchState => _client.watchState;
 
+  static Future<Uri> _resolveServerUri(SqliteCrdt crdt) async {
+    final address = await resolveServerAddress(crdt);
+    return Uri.parse('ws://$address');
+  }
+
   /// `app_settings.sync_server_address` (format `host:port`) if a device
   /// has ever connected before, else [compileTimeDefaultServerHost]:
   /// [compileTimeDefaultServerPort] -- and seeds that default into
   /// `app_settings` so it becomes the synced source of truth for every
   /// device from here on (repointing the server later is then a data
   /// change, not a rebuild). See CLAUDE.md "Syncing at the Record Level" --
-  /// "Server-address bootstrapping."
-  static Future<Uri> _resolveServerUri(SqliteCrdt crdt) async {
+  /// "Server-address bootstrapping." Public (not just [_resolveServerUri]'s
+  /// internal use) so [MigrationService] can reach the server's plain-HTTP
+  /// `/migrations` endpoint at the same address, without duplicating this
+  /// resolution logic.
+  static Future<String> resolveServerAddress(SqliteCrdt crdt) async {
     final rows = await crdt.query(
       'SELECT value FROM app_settings WHERE setting_key = ?1 AND is_deleted = 0',
       [_serverAddressKey],
@@ -185,12 +193,12 @@ class SyncService {
     final stored = rows.isEmpty ? null : rows.first['value'] as String?;
 
     if (stored != null && stored.isNotEmpty) {
-      return Uri.parse('ws://$stored');
+      return stored;
     }
 
     final defaultAddress = '$compileTimeDefaultServerHost:$compileTimeDefaultServerPort';
     await crdt.upsert('app_settings', {'setting_key': _serverAddressKey, 'value': defaultAddress});
-    return Uri.parse('ws://$defaultAddress');
+    return defaultAddress;
   }
 
   static void _log(String message) {

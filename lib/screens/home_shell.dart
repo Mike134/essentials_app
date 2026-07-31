@@ -102,7 +102,15 @@ class _HomeShellState extends State<HomeShell> {
   /// [MigrationService.applyPending] is also re-run from
   /// [SyncService.connect]'s `onConnect`).
   Future<List<_SidebarGroup>> _bootstrapAndLoadGroups() async {
-    await MigrationService().applyPending();
+    final migrations = MigrationService();
+    // Applies anything already known locally (from a previous session),
+    // then a best-effort HTTP fetch (bypasses crdt_sync entirely -- see
+    // MigrationService's doc comment for the real bug this closes) for
+    // anything new, applied again immediately -- all before
+    // SyncService.connect() below ever risks the schema-dependent merge.
+    await migrations.applyPending();
+    await migrations.fetchFromServer();
+    await migrations.applyPending();
 
     // Fire-and-forget -- see ThemeController.load's doc comment for why
     // this is the right place to trigger it (first point the db is known

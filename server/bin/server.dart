@@ -10,6 +10,7 @@
 // address can be used instead.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crdt_sync/crdt_sync_server.dart' as crdt_sync_server;
@@ -525,6 +526,26 @@ Future<void> main() async {
 
   await for (final request in server) {
     try {
+      // Plain HTTP, not the crdt_sync websocket protocol -- a real bug
+      // caught in Part D verification, not theorized: crdt_sync's catch-up
+      // pull merges every table in one all-or-nothing transaction (same
+      // "one missing column poisoned the entire batch" failure mode as the
+      // aggregate/group_column/row_color_column incident). Once any peer
+      // has applied a migration, its outgoing row data for the migrated
+      // table carries the new column -- a device that hasn't applied that
+      // migration locally yet yet can't merge it ("no such column"), which
+      // (confirmed live against MIKE-12R, not assumed) also rolls back
+      // migration_log in the very same batch, so the device can never even
+      // learn about the migration that would fix it. Infinite loop,
+      // self-inflicted, every reconnect. Fix: fetch pending migrations over
+      // a side-channel that doesn't depend on the schema already matching,
+      // and apply them *before* the risky crdt_sync merge ever runs -- see
+      // essentials_app's MigrationService.fetchFromServer.
+      if (request.uri.path == '/migrations' && request.method == 'GET') {
+        await _handleMigrationsGet(crdt, request);
+        continue;
+      }
+
       await crdt_sync_server.upgrade(
         crdt,
         request,
@@ -549,4 +570,24 @@ Future<void> main() async {
       print('[upgrade error] $e');
     }
   }
+}
+
+/// Every live `migration_log` row's business columns, as JSON -- not
+/// `hlc`/`node_id`/`modified` (the receiving client re-inserts these
+/// through its own `sqlite_crdt` connection the normal way every other
+/// write in this app does, e.g. `GenericDao.insert`, so they get a
+/// freshly-generated, correctly-scoped value under that device's own
+/// identity rather than an inconsistent hand-copied one). See the doc
+/// comment above this endpoint's routing for why it exists as a plain
+/// HTTP fetch instead of going through crdt_sync.
+Future<void> _handleMigrationsGet(SqliteCrdt crdt, HttpRequest request) async {
+  final rows = await crdt.query(
+    'SELECT id, sql_text, description, created_at '
+    'FROM migration_log WHERE is_deleted = 0 ORDER BY id ASC',
+  );
+  request.response
+    ..statusCode = HttpStatus.ok
+    ..headers.contentType = ContentType.json
+    ..write(jsonEncode(rows));
+  await request.response.close();
 }

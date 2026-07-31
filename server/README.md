@@ -1,7 +1,6 @@
 essentials_app's own `crdt_sync` coordinator -- the record-level sync hub
-for MIKE-CU. Not a general-purpose service; see
-`C:\Users\Mike\OneDrive\Documents\Essentials\CLAUDE.md` ("Syncing at the
-Record Level") for the full design, findings, and operational history.
+for MIKE-CU. Not a general-purpose service; see `../CLAUDE.md` ("Syncing at
+the Record Level") for the full design, findings, and operational history.
 
 ## Running it
 
