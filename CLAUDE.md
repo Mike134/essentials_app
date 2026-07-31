@@ -1918,12 +1918,23 @@ a one-click "delete everything" button in an app used daily):
    `field_metadata`/settings rows for a removed table automatically on
    next launch.
 
-Deliberately **not** doing schema-change auto-propagation (e.g. storing
+~~Deliberately **not** doing schema-change auto-propagation (e.g. storing
 pending DDL as synced row data and having each device apply it
 automatically on next launch) — sounds elegant, but it means a mistake
 propagates silently to every device instead of being caught at the
 "run it once, look at it, then do the next device" stage. The manual
-per-device trigger is a feature, not friction worth engineering away.
+per-device trigger is a feature, not friction worth engineering away.~~
+**Superseded, "Schema Admin + Migration System" session** — see
+"schema_admin — migration authoring tool" further down. What changed the
+calculus: the missing-columns incident (CLAUDE.md "Debugging session,
+continued") showed the manual per-device trigger failing silently in
+practice too — MIKE-12R quietly missing three columns for an entire
+session, not caught until it broke a live sync merge — so "manual catches
+mistakes early" wasn't holding up against "manual gets forgotten." The
+mistake-propagates-silently risk this paragraph originally warned about is
+addressed differently now: `migration_status` makes non-application
+visible and per-device (schema_admin's whole reason to exist), rather than
+relying on Mike remembering to run DDL by hand on every copy.
 
 **Add column: built into `essentials_app` itself** — additive, safe, and
 probably the most common of these three operations as the schema
@@ -1986,6 +1997,144 @@ to overwrite MIKE-12R's copy as needed** (e.g. via `adb push`) until
 Part D is complete — same force-stop-first, push-then-pull-back-and-diff
 pattern already proven twice during the empty-db-propagation recoveries.
 Obsidian's Syncthing folders are unaffected by any of this.
+
+## schema_admin — migration authoring tool ("Schema Admin + Migration System" session)
+
+Replaces "Add table"/"Remove table"/"delete column"'s fully-manual,
+per-device-by-hand workflow above (`AddColumnScreen` for additive column
+changes is unaffected — still the right tool for that one narrow case) with
+a submit-once, self-applying mechanism. Two new tables, real CRDT-tracked
+tables like any other (sync via the existing `crdt_sync` pipe, excluded
+from `essentials_app`'s table discovery as infra tables):
+
+```sql
+CREATE TABLE migration_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,  -- centrally authored
+                                                       -- from schema_admin
+                                                       -- alone -- the
+                                                       -- cross-device
+                                                       -- collision problem
+                                                       -- that ruled
+                                                       -- AUTOINCREMENT out
+                                                       -- elsewhere doesn't
+                                                       -- apply here
+    sql_text    TEXT NOT NULL,   -- one or more statements -- a whole
+                                  -- table-rebuild script is a single row
+    description TEXT,
+    created_at  TEXT NOT NULL
+    -- + is_deleted/hlc/node_id/modified, same as every other table
+);
+
+CREATE TABLE migration_status (
+    migration_id  INTEGER NOT NULL REFERENCES migration_log(id),
+    device_id     TEXT NOT NULL,
+    outcome       TEXT NOT NULL,    -- 'succeeded' | 'failed' -- absence of
+                                     -- a row = not yet reported, a third,
+                                     -- genuinely distinct state
+    error_message TEXT,
+    attempted_at  TEXT,
+    PRIMARY KEY (migration_id, device_id)
+    -- + is_deleted/hlc/node_id/modified
+);
+```
+
+Bootstrapped once by hand (`migrations/008_migration_system_tables.sql`)
+into `essentials.db` on MIKE-CU and MIKE-12R and into `hub.db` — necessarily
+manual, same chicken-and-egg reasoning as any bootstrap: the mechanism that
+self-applies everything else can't create the tables it depends on to know
+what to apply.
+
+**`schema_admin`** (`essentials_app/schema_admin/`) is a genuinely separate
+Flutter project — own `pubspec.yaml`, own independent build, sibling to
+`server/`, Windows-only (`flutter create --platforms=windows`), runs only on
+MIKE-CU. Opens `hub.db` directly as a local `sqlite_crdt` peer (`lib/db/
+database_helper.dart`) — the same file the server has open, safe under
+SQLite's WAL multi-process model, same reasoning as "WAL interaction"
+above. **Writes migration_log rows only, via `crdt.execute()`/`upsert` —
+never executes DDL itself**, same reasoning as "no record-level edits in
+Letos/DBeaver": a write that bypasses `sqlite_crdt`'s own API never gets a
+real `hlc`/`node_id`/`modified` and silently never syncs. Three screens,
+deliberately lean (not a Letos replacement — no views/triggers, no general
+data browsing/editing, both already avoided project-wide):
+- **Submit** — paste already-offline-tested SQL (Mike's own workflow: prove
+  it against a disposable copy first, this is where the proven result gets
+  submitted, not where it gets figured out) plus a description, a live
+  preview of exactly what will run (split into individual statements —
+  SQLite can't run a whole script in one `execute()` call), submit.
+  `DROP TABLE`/`ALTER TABLE ... DROP COLUMN` specifically get a
+  pre-submission safety check (`MigrationDao.checkDropSafety`) — scans the
+  live `hub.db` schema's `PRAGMA foreign_key_list` for anything still
+  referencing what would be dropped and blocks submission if so, same
+  `RESTRICT`-aware spirit as `GenericDao.findBlockingReferences`, one layer
+  up (a schema-level "would this break a constraint," not a row-count
+  check).
+- **History** — every past migration, so submission isn't happening blind.
+- **Status** — per-device (device × migration matrix), not a flat pass/
+  fail list — the honest state can be "succeeded everywhere except
+  MIKE-12R, stuck at #7," and this is where that shows.
+
+**Self-apply, built independently in `essentials_app` and `server/`**
+(`lib/db/migration_service.dart` / `server/bin/migration_service.dart` —
+duplicated, not shared, same reasoning as `safeChangesetBuilder`): on
+launch/reconnect, apply every `migration_log` entry not yet `succeeded` in
+`migration_status` for this device, in strict `id` order. Each migration's
+`sql_text` is split into individual statements and run inside one
+transaction, with `PRAGMA foreign_keys = OFF`/`= ON` wrapped around it
+automatically (must toggle outside the transaction — SQLite only allows
+changing this pragma with no pending `BEGIN`) — not relied upon being
+present in the submitted SQL, same "don't make this a habit someone has to
+remember" reasoning as everywhere else in this project. A real
+`migration_status` row (`succeeded`, or `failed` with the actual caught
+error text) is written immediately after every attempt via the same
+`upsert` helper every other maintenance write in this app already uses. **A
+failed migration halts that device's progression — no silent auto-retry**,
+same lesson already learned once from the reconnect timer quietly hiding
+problems.
+
+**`server`'s own `device_id` is the constant `'server'`**, deliberately not
+`Platform.localHostname` (`MIKE-CU`) — `hub.db` is a different sync peer
+from MIKE-CU's own `essentials_app` instance (different file, different
+`node_id`), and reusing the hostname would conflate two genuinely different
+devices' migration progress under one name in schema_admin's status view.
+
+**Ordering guarantee, and the real bug Part D verification found in it.**
+`essentials_app` applies pending migrations before table discovery/
+`ThemeController.load`/`SyncService.connect` even start
+(`HomeShell._bootstrapAndLoadGroups`); `server` applies them before
+`HttpServer.bind` accepts any connection — directly motivated by the
+missing-columns incident (data for a new column arriving before the column
+exists to hold it is the same class of problem, inverted). The first cut
+of this assumed re-running `applyPending()` on every `SyncService.onConnect`
+(including the periodic reconnect) would be enough to catch anything that
+arrived too early to apply on the very first pass. **It wasn't, and Part D
+proved it live, not in theory:** `crdt_sync`'s catch-up merge is one
+all-or-nothing transaction across every table in the changeset (the exact
+"one missing column poisoned the entire batch" failure mode as the
+`aggregate`/`group_column`/`row_color_column` incident). Once MIKE-CU had
+applied a migration, its outgoing `domain` row data carried the new column;
+MIKE-12R, not yet migrated, couldn't merge those rows ("no such column") —
+and that failure rolled back `migration_log` in the same batch, so MIKE-12R
+could never even learn about the migration that would fix it. **A genuine
+infinite loop** — three real reconnects, 15+ minutes, zero progress,
+confirmed via `adb logcat` and direct `essentials.db` inspection, not
+assumed from reading the code.
+
+**Fix:** `MigrationService.fetchFromServer()` (`essentials_app`) pulls
+pending `migration_log` rows over a plain HTTP endpoint (`server.dart`'s
+`GET /migrations` — deliberately *not* `crdt_sync`, so it can't be poisoned
+by the same batch-merge failure) and `applyPending()` runs immediately
+after, both before `SyncService.connect` ever opens the risky websocket.
+By the time the schema-dependent merge runs, the device's schema already
+matches. Re-verified end to end after the fix, deterministically (no more
+waiting on a lucky reconnect): submitted a real migration, watched it reach
+`succeeded` on MIKE-CU/MIKE-12R/server; submitted a deliberately-invalid
+one, confirmed real captured error text on all three and confirmed nothing
+past it got touched (a third migration sat untouched on every device while
+the second stayed failed); retracted the failing one via the same
+`is_deleted` convention every table already has (no dedicated "retract" UI
+exists or was needed) and confirmed the pipeline picked back up cleanly on
+all three. `flutter test`/`flutter analyze` clean on `essentials_app` and
+`schema_admin` throughout.
 
 ## Working style / constraints
 
@@ -3686,3 +3835,38 @@ turned out to be within `GenericListScreen` (built incrementally across
 one long session, not worth retroactively untangling into six perfect
 commits): the grid features together first, then the sync fix (plus the
 server-side schema catch-up that rode along in the same file) second.
+
+## Schema Admin + Migration System session, concluded
+
+Two related pieces, both done: **(A)** this file and `schema.sql` moved
+into the repo as the real, authoritative files (see "Repo move" above) —
+OneDrive originals deleted, confirmed. **(B)/(C)** `schema_admin` built
+(see "schema_admin — migration authoring tool" above) plus independent
+self-apply logic in `essentials_app` and `server/`.
+
+**Part D, real end-to-end verification, not just build-clean:** rebuilt
+and redeployed all three real artifacts (`server.exe`, the Windows
+`essentials_app.exe`, and a debug APK pushed to MIKE-12R over `adb`) and
+drove the actual migration flow against them — not a simulation. Found and
+fixed a real bug in the process (see "Ordering guarantee" above) rather
+than just noting it as a known limitation: `crdt_sync`'s all-or-nothing
+batch merge could permanently strand a device that fell behind on a
+migration, confirmed by actually reproducing the infinite loop against
+MIKE-12R before fixing it with a plain-HTTP side-channel for
+`migration_log` delivery.
+
+Verified, for real, on MIKE-CU + MIKE-12R + the server: a genuine additive
+migration reaching `succeeded` everywhere; a deliberately-invalid one
+reaching `failed` everywhere with the real captured SQLite error text; a
+third migration sitting untouched on every device while the second stayed
+failed (halting, not just failure-reporting); retracting the failed one via
+the existing `is_deleted` convention; the pipeline picking back up cleanly
+afterward and a cleanup migration reaching `succeeded` everywhere too.
+`PRAGMA integrity_check`/`foreign_key_check` clean on every copy throughout.
+`flutter analyze`/`flutter test` clean on `essentials_app` and
+`schema_admin` (52/52 and 5/5 respectively) at the end.
+
+Commits, one per verified step rather than one at the end: repo move:
+CLAUDE.md/schema.sql (Part A) — `schema_admin` scaffold + bootstrap schema
+(Part B) — `essentials_app` self-apply (Part C1) — `server` self-apply
+(Part C2, later amended with the HTTP-fetch fix Part D surfaced).
