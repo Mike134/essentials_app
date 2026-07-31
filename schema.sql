@@ -618,3 +618,44 @@ CREATE TABLE order_items (
     node_id     TEXT NOT NULL,
     modified    TEXT NOT NULL
 );
+
+-- ===================== SCHEMA MIGRATION SYSTEM =====================
+-- schema_admin (essentials_app/schema_admin/, its own separate Flutter
+-- project) writes migration_log rows -- it never executes DDL itself.
+-- essentials_app and server/ each independently self-apply pending
+-- entries on launch/reconnect and record the outcome per device in
+-- migration_status. See CLAUDE.md "schema_admin -- migration authoring
+-- tool" for the full design, and "Repo move: CLAUDE.md/schema.sql" for
+-- why this superseded the earlier "no schema-change auto-propagation"
+-- decision.
+--
+-- id is real AUTOINCREMENT here -- unlike every entity table above, this
+-- is centrally authored from one place (schema_admin, MIKE-CU only), not
+-- independently written by multiple devices, so the cross-device
+-- collision problem that ruled AUTOINCREMENT out elsewhere doesn't apply.
+CREATE TABLE migration_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sql_text    TEXT NOT NULL,
+    description TEXT,
+    created_at  TEXT NOT NULL,
+    is_deleted  INTEGER DEFAULT 0,
+    hlc         TEXT NOT NULL,
+    node_id     TEXT NOT NULL,
+    modified    TEXT NOT NULL
+);
+
+-- outcome: 'succeeded' | 'failed' -- absence of a row for a given
+-- (migration_id, device_id) means "not yet reported," a third, genuinely
+-- distinct state from either -- never conflate it with 'failed'.
+CREATE TABLE migration_status (
+    migration_id  INTEGER NOT NULL REFERENCES migration_log(id),
+    device_id     TEXT NOT NULL,
+    outcome       TEXT NOT NULL,
+    error_message TEXT,
+    attempted_at  TEXT,
+    is_deleted    INTEGER DEFAULT 0,
+    hlc           TEXT NOT NULL,
+    node_id       TEXT NOT NULL,
+    modified      TEXT NOT NULL,
+    PRIMARY KEY (migration_id, device_id)
+);

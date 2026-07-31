@@ -41,6 +41,11 @@ const Set<String> infraTables = {
   'device_settings',
   'field_metadata',
   'table_group',
+  // schema_admin's migration system -- see CLAUDE.md "schema_admin --
+  // migration authoring tool". Real CRDT-tracked tables (sync like
+  // everything else), but never a normal nav/grid entry.
+  'migration_log',
+  'migration_status',
 };
 
 bool isInfraTable(String tableName) {
