@@ -9,6 +9,7 @@
 // helper listen() calls internally per-connection, exposed so a real bind
 // address can be used instead.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:crdt_sync/crdt_sync_server.dart' as crdt_sync_server;
@@ -17,6 +18,33 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 const port = 1340;
 const dbDir = r'C:\Databases\essentials_app\server';
 const dbPath = r'C:\Databases\essentials_app\server\hub.db';
+
+/// See the client's own copy of this exact function
+/// (`essentials_app/lib/db/sync_service.dart`'s `safeChangesetBuilder`) for
+/// the full explanation -- duplicated here rather than shared because this
+/// server is a separate Dart package/project. Short version: `sql_crdt`'s
+/// sync watermark is a single maximum across every table, not per table, so
+/// a fast-moving table (this app's per-device grid settings) can race past
+/// a slower one's still-pending change and permanently strand it. This
+/// drops the watermark (`modifiedAfter`) entirely for the one-time
+/// catch-up pull on every (re)connect and sends the complete dataset
+/// instead -- safe, since `sql_crdt`'s merge is an idempotent hlc-compared
+/// upsert, and cheap enough for this app's size on a local network.
+FutureOr<CrdtChangeset> safeChangesetBuilder(
+  Crdt crdt, {
+  Iterable<String>? onlyTables,
+  String? onlyNodeId,
+  String? exceptNodeId,
+  Hlc? modifiedOn,
+  Hlc? modifiedAfter,
+}) {
+  return crdt.getChangeset(
+    onlyTables: onlyTables,
+    onlyNodeId: onlyNodeId,
+    exceptNodeId: exceptNodeId,
+    modifiedOn: modifiedOn,
+  );
+}
 
 // Mirrors essentials_app's real schema.sql, table for table. The five
 // entity tables (shipment, subscription, journal, orders, order_items) use
@@ -354,6 +382,7 @@ const schemaStatements = <String>[
       visible       INTEGER NOT NULL DEFAULT 1,
       frozen        TEXT,
       wrap_text     INTEGER NOT NULL DEFAULT 0,
+      aggregate     TEXT,
       PRIMARY KEY (table_name, device_id, column_name)
     )
   ''',
@@ -364,6 +393,8 @@ const schemaStatements = <String>[
       sort_column    TEXT,
       sort_direction TEXT,
       filter_json    TEXT,
+      group_column   TEXT,
+      row_color_column TEXT,
       PRIMARY KEY (table_name, device_id)
     )
   ''',
@@ -449,6 +480,14 @@ Future<void> main() async {
       await crdt_sync_server.upgrade(
         crdt,
         request,
+        changesetBuilder: ({onlyTables, onlyNodeId, exceptNodeId, modifiedOn, modifiedAfter}) =>
+            safeChangesetBuilder(
+              crdt,
+              onlyTables: onlyTables,
+              onlyNodeId: onlyNodeId,
+              exceptNodeId: exceptNodeId,
+              modifiedOn: modifiedOn,
+            ),
         onConnect: (crdtSync, data) =>
             print('[connect] peer ${crdtSync.peerId}'),
         onDisconnect: (peerId, code, reason) =>
