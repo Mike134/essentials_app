@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"name": "essentials_app",
+			"path": "."
+		},
+		{
+			"name": "server",
+			"path": "server"
+		},
+		{
+			"name": "schema_admin",
+			"path": "schema_admin"
+		}
+	],
+	"settings": {
+		// server/ and schema_admin/ get their own root above -- hide them
+		// from the essentials_app root's own tree so they don't show up
+		// twice. Doesn't hide anything real: neither root's own contents
+		// contain a folder literally named "server" or "schema_admin".
+		"files.exclude": {
+			"server": true,
+			"schema_admin": true
+		}
+	}
+}
