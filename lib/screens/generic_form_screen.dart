@@ -18,16 +18,27 @@ class GenericFormScreen extends StatefulWidget {
     super.key,
     required this.config,
     this.existing,
+    this.copyFrom,
     this.extraValues,
     this.popOnSave = true,
     this.onSaved,
     this.appBarActions,
-  });
+  }) : assert(
+         existing == null || copyFrom == null,
+         'existing and copyFrom are mutually exclusive -- a row is either '
+         'being edited in place or copied into a new one, never both',
+       );
 
   final TableConfig config;
 
   /// The row being edited, or null when adding a new row.
   final Map<String, Object?>? existing;
+
+  /// The row to seed a *new* record's fields from, `id` excluded -- set by
+  /// [GenericListScreen]'s "Copy" button. Unlike [existing], this doesn't
+  /// make [isEditing] true: saving still inserts, it just starts prefilled
+  /// instead of blank/defaulted.
+  final Map<String, Object?>? copyFrom;
 
   /// Merged into the write on save, on top of whatever the form's own
   /// fields collected -- for a value that's real on the table but
@@ -80,9 +91,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       // On add, an omitted key here still gets an explicit value written
       // on save (see _save) -- so a new row's starting value must come
       // from field.defaultValue, not a bare `false`/null/empty, or it
-      // silently overrides the column's own SQL DEFAULT.
+      // silently overrides the column's own SQL DEFAULT. A copy takes
+      // every field's value straight from copyFrom instead (id is simply
+      // never one of widget.config.fields, so it's excluded automatically,
+      // not via any special-case here).
       final existingValue = widget.isEditing
           ? widget.existing![field.column]
+          : widget.copyFrom != null
+          ? widget.copyFrom![field.column]
           : field.defaultValue;
       if (field.type == FieldType.boolean) {
         _boolValues[field.column] = existingValue == 1 || existingValue == true;

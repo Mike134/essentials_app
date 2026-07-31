@@ -268,13 +268,21 @@ class GenericDao {
     return refs;
   }
 
+  /// `SELECT *`, not just [LookupConfig.valueColumn]/[LookupConfig.displayColumn]
+  /// -- the only two columns either consumer (this screen's `lookupMaps`,
+  /// the form's dropdown) actually reads, until row coloring by lookup
+  /// (see `GenericListScreen`'s `_loadData`) needed the referenced row's
+  /// own `color` column too, if it has one. Reading everything and letting
+  /// each consumer pick out what it needs is simpler than adding a second,
+  /// near-identical query just for one more optional column -- and stays
+  /// correct automatically if a lookup target ever gains other columns a
+  /// future feature wants the same way.
   Future<List<Map<String, Object?>>> getLookupOptions(LookupConfig lookup) async {
     final crdt = await _crdt;
     assertSafeSqlIdentifier(lookup.table);
-    assertSafeSqlIdentifier(lookup.valueColumn);
     assertSafeSqlIdentifier(lookup.displayColumn);
     return crdt.query(
-      'SELECT ${lookup.valueColumn}, ${lookup.displayColumn} FROM ${lookup.table} '
+      'SELECT * FROM ${lookup.table} '
       'WHERE is_deleted = 0 ORDER BY ${lookup.displayColumn}',
     );
   }

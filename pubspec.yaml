@@ -44,6 +44,11 @@ dependencies:
   # selection, sqlite_crdt just sits on top of whichever Database it opens).
   sqlite_crdt: ^3.0.4
   crdt_sync: ^1.0.10
+  # Direct dependency (not just via sqlite_crdt/crdt_sync) because
+  # SyncService's safeChangesetBuilder writes its own ChangesetBuilder,
+  # whose signature names Crdt/CrdtChangeset/Hlc directly -- see its doc
+  # comment for why that override exists at all.
+  crdt: ^5.1.3
   # sqlite_crdt always opens via sqflite_common_ffi's FFI factory, on every
   # platform including Android -- it has no native-sqflite code path at all
   # (confirmed by reading its source: is_web_io.dart's sqliteCrdtIsWeb is
@@ -63,6 +68,16 @@ dependencies:
   shadcn_ui: ^0.43.4
   url_launcher: ^6.3.2
   flutter_colorpicker: ^1.1.0
+  # Pinned to a beta, not latest stable (11.0.3) -- stable predates the
+  # Android fix ("Removed explicit Kotlin Gradle Plugin (KGP) application
+  # ... to resolve warnings under AGP 9.0+", 12.0.0-beta.4's changelog)
+  # this project's AGP 9.0.1 needs; without it, `flutter build apk` fails
+  # with "cannot find symbol: class FilePickerPlugin" (KGP silently not
+  # applied, so its Kotlin source never compiles). beta.7, not beta.8 --
+  # beta.8's changelog exists on GitHub but isn't published to pub.dev yet
+  # as of this writing; beta.7 already has the AGP9 fix (landed in
+  # beta.4). Revisit once a stable release includes this fix.
+  file_picker: 12.0.0-beta.7
 
 dev_dependencies:
   flutter_test:

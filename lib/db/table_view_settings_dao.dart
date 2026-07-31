@@ -5,6 +5,10 @@ import 'sql_helpers.dart';
 
 /// One saved column's per-device grid state -- mirrors a row in
 /// `table_column_settings`. `frozen` is `null`, `'left'`, or `'right'`.
+/// `aggregate` is `null` (no footer) or a [TrinaAggregateColumnType] name
+/// (`'sum'`, `'average'`, `'min'`, `'max'`, `'count'`) -- stored as its
+/// name string rather than the enum itself so this DAO doesn't need a
+/// trina_grid import for one column.
 class ColumnSetting {
   const ColumnSetting({
     required this.columnName,
@@ -13,6 +17,7 @@ class ColumnSetting {
     this.visible = true,
     this.frozen,
     this.wrapText = false,
+    this.aggregate,
   });
 
   final String columnName;
@@ -21,18 +26,36 @@ class ColumnSetting {
   final bool visible;
   final String? frozen;
   final bool wrapText;
+  final String? aggregate;
 }
 
-/// One saved table's per-device sort/filter state -- mirrors the single row
-/// (if any) in `table_view_settings` for a table+device. `filterJson` is a
-/// JSON-encoded array of `{column, type, value}` objects, one per active
-/// TrinaGrid filter row -- see GenericListScreen for the encode/decode.
+/// One saved table's per-device sort/filter/group/row-color state -- mirrors
+/// the single row (if any) in `table_view_settings` for a table+device.
+/// `filterJson` is a JSON-encoded array of `{column, type, value}` objects,
+/// one per active TrinaGrid filter row -- see GenericListScreen for the
+/// encode/decode. `groupColumn` is a single field name (grouping is one
+/// column at a time, not stacked -- see GenericListScreen's column menu).
+/// `rowColorColumn` is likewise a single field name -- the color field or
+/// lookup field (if any) currently driving every record's row text color
+/// (see GenericListScreen's "Use Color" column menu item) -- same
+/// one-at-a-time reasoning as `groupColumn`, and per-device (not shared,
+/// unlike the color/link field flags in `field_metadata`) because which
+/// column makes sense to color by -- or whether it looks good at all --
+/// can genuinely differ by device (Mike's call).
 class ViewSetting {
-  const ViewSetting({this.sortColumn, this.sortDirection, this.filterJson});
+  const ViewSetting({
+    this.sortColumn,
+    this.sortDirection,
+    this.filterJson,
+    this.groupColumn,
+    this.rowColorColumn,
+  });
 
   final String? sortColumn;
   final String? sortDirection; // 'asc' or 'desc'
   final String? filterJson;
+  final String? groupColumn;
+  final String? rowColorColumn;
 }
 
 /// Reads/writes one table's per-device view state (`table_column_settings`
@@ -62,6 +85,7 @@ class TableViewSettingsDao {
           visible: (row['visible'] as int? ?? 1) == 1,
           frozen: row['frozen'] as String?,
           wrapText: (row['wrap_text'] as int? ?? 0) == 1,
+          aggregate: row['aggregate'] as String?,
         ),
     ];
   }
@@ -79,6 +103,8 @@ class TableViewSettingsDao {
       sortColumn: row['sort_column'] as String?,
       sortDirection: row['sort_direction'] as String?,
       filterJson: row['filter_json'] as String?,
+      groupColumn: row['group_column'] as String?,
+      rowColorColumn: row['row_color_column'] as String?,
     );
   }
 
@@ -120,8 +146,8 @@ class TableViewSettingsDao {
       for (final setting in settings) {
         await txn.execute(
           'INSERT OR REPLACE INTO table_column_settings '
-          '(table_name, device_id, column_name, width, display_order, visible, frozen, wrap_text) '
-          'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
+          '(table_name, device_id, column_name, width, display_order, visible, frozen, wrap_text, aggregate) '
+          'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)',
           [
             tableName,
             deviceId,
@@ -131,6 +157,7 @@ class TableViewSettingsDao {
             setting.visible ? 1 : 0,
             setting.frozen,
             setting.wrapText ? 1 : 0,
+            setting.aggregate,
           ],
         );
       }
@@ -145,6 +172,8 @@ class TableViewSettingsDao {
       'sort_column': setting.sortColumn,
       'sort_direction': setting.sortDirection,
       'filter_json': setting.filterJson,
+      'group_column': setting.groupColumn,
+      'row_color_column': setting.rowColorColumn,
     });
   }
 
