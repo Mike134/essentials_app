@@ -4,6 +4,7 @@ import 'package:crdt_sync/crdt_sync.dart';
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
+import 'migration_service.dart';
 import 'sql_helpers.dart';
 
 /// Custom [ChangesetBuilder] -- not crdt_sync's own default
@@ -104,7 +105,19 @@ class SyncService {
     final client = CrdtSyncClient(
       crdt,
       uri,
-      onConnect: (nodeId, info) => _log('connected to server (peer $nodeId)'),
+      onConnect: (nodeId, info) {
+        _log('connected to server (peer $nodeId)');
+        // Re-check for newly-arrived migrations on every connect, not just
+        // app launch -- including the periodic reconnect below. See
+        // MigrationService's doc comment for why this is here: it's the
+        // mitigation for the one real gap HomeShell's launch-time
+        // applyPending() can't close on its own (a migration and
+        // migration-dependent data arriving in the same catch-up pull).
+        // Fire-and-forget -- a failure here already recorded a real
+        // migration_status row of its own; nothing here needs to block
+        // the connection.
+        MigrationService().applyPending();
+      },
       onDisconnect: (nodeId, code, reason) =>
           _log('disconnected from server (code=$code reason=$reason)'),
       changesetBuilder: ({onlyTables, onlyNodeId, exceptNodeId, modifiedOn, modifiedAfter}) =>

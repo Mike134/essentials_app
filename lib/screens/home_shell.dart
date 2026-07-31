@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../config/table_registry.dart';
+import '../db/migration_service.dart';
 import '../db/sidebar_grouping_dao.dart';
 import '../db/sync_service.dart';
 import '../models/table_config.dart';
@@ -88,7 +89,21 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    _groupsFuture = _loadGroups();
+    _groupsFuture = _bootstrapAndLoadGroups();
+  }
+
+  /// Applies any pending `migration_log` entries *before* anything else
+  /// touches the db this session -- table discovery, sync, everything --
+  /// directly motivated by the missing-columns incident (CLAUDE.md
+  /// "Debugging session, continued"): data for a new column arriving
+  /// before the column exists to hold it is the same class of problem as
+  /// this guards against, just inverted. See [MigrationService]'s own doc
+  /// comment for the one real gap this can't fully close on its own (why
+  /// [MigrationService.applyPending] is also re-run from
+  /// [SyncService.connect]'s `onConnect`).
+  Future<List<_SidebarGroup>> _bootstrapAndLoadGroups() async {
+    await MigrationService().applyPending();
+
     // Fire-and-forget -- see ThemeController.load's doc comment for why
     // this is the right place to trigger it (first point the db is known
     // reachable on both platforms) and why nothing here needs to await it:
@@ -101,6 +116,8 @@ class _HomeShellState extends State<HomeShell> {
     // Nothing here needs the result; sync happens in the background for
     // the lifetime of the app. See CLAUDE.md "Syncing at the Record Level".
     SyncService.connect();
+
+    return _loadGroups();
   }
 
   Future<List<_SidebarGroup>> _loadGroups() async {
