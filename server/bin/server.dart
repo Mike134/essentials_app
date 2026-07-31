@@ -15,7 +15,17 @@ import 'dart:io';
 import 'package:crdt_sync/crdt_sync_server.dart' as crdt_sync_server;
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
+import 'migration_service.dart';
+
 const port = 1340;
+
+/// How often to re-check `migration_log` for entries `schema_admin` wrote
+/// directly into `hub.db` while this process was already running -- there's
+/// no push notification for that (schema_admin isn't a crdt_sync client,
+/// it opens the file directly, see CLAUDE.md), so periodic re-checking is
+/// the only way to notice. Same interval as essentials_app's own periodic
+/// reconnect, no particular reason it needs to match beyond consistency.
+const Duration migrationCheckInterval = Duration(minutes: 5);
 const dbDir = r'C:\Databases\essentials_app\server';
 const dbPath = r'C:\Databases\essentials_app\server\hub.db';
 
@@ -455,6 +465,30 @@ const schemaStatements = <String>[
       cost        REAL
     )
   ''',
+
+  // ===================== SCHEMA MIGRATION SYSTEM =====================
+  // See schema.sql's own "SCHEMA MIGRATION SYSTEM" section and CLAUDE.md
+  // "schema_admin -- migration authoring tool" for the full design. `id`
+  // is real AUTOINCREMENT -- centrally authored from schema_admin alone,
+  // not independently written by multiple devices.
+  '''
+    CREATE TABLE migration_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      sql_text    TEXT NOT NULL,
+      description TEXT,
+      created_at  TEXT NOT NULL
+    )
+  ''',
+  '''
+    CREATE TABLE migration_status (
+      migration_id  INTEGER NOT NULL REFERENCES migration_log(id),
+      device_id     TEXT NOT NULL,
+      outcome       TEXT NOT NULL,
+      error_message TEXT,
+      attempted_at  TEXT,
+      PRIMARY KEY (migration_id, device_id)
+    )
+  ''',
 ];
 
 Future<void> createSchema(CrdtTableExecutor db, int version) async {
@@ -470,6 +504,20 @@ Future<void> main() async {
   await crdt.execute('PRAGMA foreign_keys = ON');
   print('Hub replica open: $dbPath');
   print('Hub node id: ${crdt.nodeId}');
+
+  // Applied before HttpServer.bind -- no client connection is accepted,
+  // and so no other queued data sync is processed, until this device's own
+  // pending migrations are settled. See migration_service.dart and
+  // CLAUDE.md "schema_admin -- migration authoring tool".
+  final migrations = MigrationService(crdt);
+  await migrations.applyPending();
+  Timer.periodic(migrationCheckInterval, (_) async {
+    try {
+      await migrations.applyPending();
+    } catch (e) {
+      print('[migration check error] $e');
+    }
+  });
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
   print('Listening on 0.0.0.0:$port (reachable at 10.0.0.134:$port)');
