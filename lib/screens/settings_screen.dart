@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
 import '../util/color_picker.dart';
-import 'add_column_screen.dart';
-import 'field_metadata_screen.dart';
+import 'add_field_screen.dart';
+import 'manage_fields_screen.dart';
+import 'manage_tables_screen.dart';
+import 'new_table_screen.dart';
 
 /// Reads/writes `app_settings` (theme, font family, font color, background
 /// color -- shared) and `device_settings` (font size -- per-device) via
@@ -126,7 +128,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           final controller = ThemeController.instance;
           final preset = presetFor(controller.themeName);
           return ListView(
-            padding: const EdgeInsets.all(16),
+            // Real bug, found live on 12R (three-button nav bar): a plain
+            // EdgeInsets.all(16) has no idea the system nav bar exists, so
+            // the last row of content (the schema-engine buttons) sat
+            // partly underneath it -- visible but not reliably tappable.
+            // Scaffold's own `body` slot does NOT automatically avoid
+            // system UI the way people often assume; only explicitly
+            // consulting MediaQuery's bottom inset (or wrapping in
+            // SafeArea) does. Added on top of the existing uniform 16, not
+            // replacing it, so nothing above the bottom edge changes.
+            padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
             children: [
               const Text('Theme', style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
@@ -301,38 +312,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 32),
               const Divider(),
               const SizedBox(height: 16),
-              const Text('Field Labels & Defaults', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('Schema Engine (Essentials v2)', style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               const Text(
-                'Overrides a table\'s auto-derived field labels, insert '
-                'defaults, lookup display columns, and link-field flags. Was '
-                'edited via Letos; now lives here instead so changes actually '
-                'sync to other devices.',
+                'Creates tables and fields through the actual schema engine -- '
+                'syncs to every device automatically, no manual per-device steps.',
               ),
               const SizedBox(height: 8),
-              OutlinedButton(
-                onPressed: () => Navigator.of(
-                  context,
-                ).push(MaterialPageRoute(builder: (_) => const FieldMetadataScreen())),
-                child: const Text('Edit field overrides'),
-              ),
-              const SizedBox(height: 32),
-              const Divider(),
-              const SizedBox(height: 16),
-              const Text('Schema Changes', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text(
-                'Adds a column via ALTER TABLE, on this device only -- sqlite_crdt '
-                'never propagates a schema change, so this needs running again on '
-                'every other device. Removing a table or column stays a manual, '
-                'external process on purpose -- see CLAUDE.md.',
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton(
-                onPressed: () => Navigator.of(
-                  context,
-                ).push(MaterialPageRoute(builder: (_) => const AddColumnScreen())),
-                child: const Text('Add a column'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const NewTableScreen())),
+                    child: const Text('New table'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const AddFieldScreen())),
+                    child: const Text('Add a field'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const ManageFieldsScreen())),
+                    child: const Text('Manage fields'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const ManageTablesScreen())),
+                    child: const Text('Manage tables'),
+                  ),
+                ],
               ),
             ],
           );

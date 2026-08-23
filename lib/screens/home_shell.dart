@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../config/table_registry.dart';
@@ -8,7 +10,6 @@ import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
-import '../util/strings.dart';
 import 'generic_list_screen.dart';
 import 'settings_screen.dart';
 
@@ -86,10 +87,20 @@ class _HomeShellState extends State<HomeShell> {
   Set<String> _collapsedGroups = {};
   late Future<List<_SidebarGroup>> _groupsFuture;
 
+  StreamSubscription<void>? _schemaChangesSubscription;
+  Timer? _schemaChangesDebounce;
+
   @override
   void initState() {
     super.initState();
     _groupsFuture = _bootstrapAndLoadGroups();
+  }
+
+  @override
+  void dispose() {
+    _schemaChangesSubscription?.cancel();
+    _schemaChangesDebounce?.cancel();
+    super.dispose();
   }
 
   /// Applies any pending `migration_log` entries *before* anything else
@@ -121,11 +132,51 @@ class _HomeShellState extends State<HomeShell> {
     // Same reasoning -- SyncService.connect() resolves the server address
     // (compile-time default, or app_settings once this device has synced
     // before) and starts CrdtSyncClient's own connect-with-backoff loop.
-    // Nothing here needs the result; sync happens in the background for
-    // the lifetime of the app. See CLAUDE.md "Syncing at the Record Level".
-    SyncService.connect();
+    // Nothing here needs the result to keep booting; sync happens in the
+    // background for the lifetime of the app. See CLAUDE.md "Syncing at the
+    // Record Level". Still worth capturing the instance (once it resolves)
+    // to subscribe to its live schema-change notifications below -- see
+    // _subscribeToSchemaChanges' doc comment.
+    SyncService.connect().then((_) {
+      if (mounted) _subscribeToSchemaChanges();
+    });
 
     return _loadGroups();
+  }
+
+  /// Live counterpart to [_reloadTables] -- that method only ever fires on
+  /// return from Settings; this fires whenever [SyncService.schemaChanges]
+  /// reports an incoming `table_definitions`/`field_definitions`/
+  /// `migration_log` row, covering the case Settings-return can't: a
+  /// rename/create/delete made on a *different* device, arriving while
+  /// this one is just sitting on the main table/grid view. Debounced
+  /// 500ms, not called straight from the stream event -- [SyncService]'s
+  /// own doc comment on `onChangesetReceived` explains why: that callback
+  /// fires *before* `crdt.merge()` is actually awaited, so reloading
+  /// immediately risks reading pre-merge data. A short delay is cheap
+  /// insurance, not a precise wait -- same "cheap to call unconditionally"
+  /// reasoning [_reloadTables] already uses, and the debounce also
+  /// coalesces a multi-table catch-up batch into one reload instead of
+  /// several.
+  ///
+  /// **Applies pending migrations first, always, before reloading** --
+  /// found necessary live: a table *created* on another device while this
+  /// one was already connected arrived with correct metadata (plain CRDT
+  /// row sync) but its physical `CREATE TABLE` was never actually run
+  /// here, since nothing except app launch and `SyncService`'s own
+  /// `onConnect` ever called [MigrationService.applyPending] -- neither of
+  /// which fires for a migration arriving mid-session over an
+  /// already-open connection. Cheap to call unconditionally, same
+  /// reasoning as everywhere else `applyPending` is invoked -- it skips
+  /// anything already applied.
+  void _subscribeToSchemaChanges() {
+    _schemaChangesSubscription ??= SyncService.schemaChanges.listen((_) {
+      _schemaChangesDebounce?.cancel();
+      _schemaChangesDebounce = Timer(const Duration(milliseconds: 500), () async {
+        await MigrationService().applyPending();
+        if (mounted) _reloadTables();
+      });
+    });
   }
 
   Future<List<_SidebarGroup>> _loadGroups() async {
@@ -161,6 +212,24 @@ class _HomeShellState extends State<HomeShell> {
   void _reloadGroups() {
     setState(() {
       _groupsFuture = _loadGroupingOnly();
+    });
+  }
+
+  /// Re-derives the table list itself, not just grouping -- unlike
+  /// [_reloadGroups]. Called after returning from Settings, since New
+  /// Table/Add Field/Manage Fields (Essentials v2 Phase 1's schema engine,
+  /// all reached from there) can change which tables/fields exist. Table
+  /// discovery is otherwise deliberately "at launch, not live" (CLAUDE.md
+  /// "Table Discovery phase" Part A) -- found live, testing Step 7's new
+  /// screens: a table created through New Table had no way to ever appear
+  /// in nav without a full app restart, defeating the entire point of
+  /// `SchemaEditorService.createTable` already applying it locally right
+  /// away. Cheap to call unconditionally on every return from Settings
+  /// (not just when something demonstrably changed) -- `loadEffectiveTables`
+  /// is already exactly what launch itself runs.
+  Future<void> _reloadTables() async {
+    setState(() {
+      _groupsFuture = _loadGroups();
     });
   }
 
@@ -226,7 +295,7 @@ class _HomeShellState extends State<HomeShell> {
     if (dao == null || group.name == _ungroupedGroupName) return;
 
     final sorted = [...group.tables]
-      ..sort((a, b) => titleCase(a.tableName).compareTo(titleCase(b.tableName)));
+      ..sort((a, b) => a.displayName.compareTo(b.displayName));
     await dao.setGroupOrder(group.name, [for (final t in sorted) t.tableName]);
     _reloadGroups();
   }
@@ -242,7 +311,7 @@ class _HomeShellState extends State<HomeShell> {
     final choice = await showDialog<String>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: Text('Move "${titleCase(table.tableName)}" to group'),
+        title: Text('Move "${table.displayName}" to group'),
         children: [
           for (final group in groups)
             SimpleDialogOption(
@@ -341,10 +410,45 @@ class _HomeShellState extends State<HomeShell> {
 
         if (_tables.isEmpty) {
           // Every table has been dropped, or discovery genuinely found
-          // nothing -- rare, but should degrade to a message, not a crash
-          // trying to index into an empty list.
-          return const Scaffold(
-            body: Center(child: Text('No tables found in essentials.db.')),
+          // nothing. Used to degrade to a completely bare message with no
+          // drawer/rail at all -- reasonable when this was a rare edge
+          // case no v1 install could realistically stay in for long
+          // (Settings was always reachable from populated nav). Essentials
+          // v2 makes "zero tables" the actual starting state of a fresh
+          // database, and New Table lives in Settings -- the old bare
+          // message was a real dead end with no way out, found live
+          // testing Step 7's new screens (CLAUDE.md "Essentials v2 Phase
+          // 1"). Same rail/drawer as the populated branch below, just with
+          // an empty-state body instead of GenericListScreen.
+          const emptyBody = Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'No tables yet. Open Settings to create your first one.',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          );
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final isWide = constraints.maxWidth >= wideLayoutBreakpoint;
+              if (!isWide) {
+                return Scaffold(
+                  appBar: AppBar(title: const Text('Essentials')),
+                  drawer: _buildDrawer(groups),
+                  body: emptyBody,
+                );
+              }
+              return Scaffold(
+                body: Row(
+                  children: [
+                    SizedBox(width: 160, child: ListView(children: _buildRailChildren(groups))),
+                    const VerticalDivider(width: 1),
+                    const Expanded(child: emptyBody),
+                  ],
+                ),
+              );
+            },
           );
         }
 
@@ -407,9 +511,12 @@ class _HomeShellState extends State<HomeShell> {
 
   Widget _railSettingsItem() {
     return InkWell(
-      onTap: () => Navigator.of(
-        context,
-      ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
+      onTap: () async {
+        await Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+        if (mounted) _reloadTables();
+      },
       child: const Padding(
         padding: EdgeInsets.symmetric(vertical: 12, horizontal: 4),
         child: Column(
@@ -496,7 +603,7 @@ class _HomeShellState extends State<HomeShell> {
             ),
             const SizedBox(height: 4),
             Text(
-              titleCase(table.tableName),
+              table.displayName,
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 12,
@@ -547,11 +654,12 @@ class _HomeShellState extends State<HomeShell> {
           ListTile(
             leading: const Icon(Icons.settings_outlined),
             title: const Text('Settings'),
-            onTap: () {
+            onTap: () async {
               Navigator.pop(context);
-              Navigator.of(
+              await Navigator.of(
                 context,
               ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+              if (mounted) _reloadTables();
             },
           ),
         ],
@@ -617,7 +725,7 @@ class _HomeShellState extends State<HomeShell> {
       onSecondaryTap: () => _showMoveToGroupMenu(table, groups),
       child: ListTile(
         leading: const Icon(Icons.table_chart_outlined),
-        title: Text(titleCase(table.tableName)),
+        title: Text(table.displayName),
         selected: table.tableName == _selectedTableName,
         trailing: IconButton(
           icon: const Icon(Icons.more_vert),
@@ -662,7 +770,7 @@ class _HomeShellState extends State<HomeShell> {
       borderRadius: BorderRadius.circular(4),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Text(titleCase(table.tableName)),
+        child: Text(table.displayName),
       ),
     );
   }

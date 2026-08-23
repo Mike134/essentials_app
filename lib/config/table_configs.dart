@@ -79,6 +79,7 @@ Future<TableConfig> buildSubscriptionConfig(TableDiscoveryService discovery) asy
   ];
   return TableConfig(
     tableName: base.tableName,
+    displayName: base.displayName,
     displayColumn: base.displayColumn,
     orderBy: base.orderBy,
     readSource: 'subscription_computed',
@@ -178,6 +179,7 @@ Future<TableConfig> buildOrdersConfig(TableDiscoveryService discovery) async {
   final base = await discovery.buildConfig(ordersTableName);
   return TableConfig(
     tableName: base.tableName,
+    displayName: base.displayName,
     displayColumn: base.displayColumn,
     orderBy: base.orderBy,
     fields: base.fields,
@@ -218,6 +220,7 @@ Future<TableConfig> buildOrderItemsConfigForOrder(
   ];
   return TableConfig(
     tableName: base.tableName,
+    displayName: base.displayName,
     displayColumn: base.displayColumn,
     orderBy: base.orderBy,
     fields: fields,
