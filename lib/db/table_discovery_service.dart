@@ -46,6 +46,12 @@ const Set<String> infraTables = {
   // everything else), but never a normal nav/grid entry.
   'migration_log',
   'migration_status',
+  // Essentials v2 Phase 1's dynamic schema metadata (see
+  // claude/essentials-v2-phase1-design.md, "Metadata schema") -- same
+  // reasoning as field_metadata above: real, synced, CRDT-tracked tables,
+  // never a nav/grid entry of their own.
+  'table_definitions',
+  'field_definitions',
 };
 
 bool isInfraTable(String tableName) {
@@ -150,6 +156,7 @@ class TableDiscoveryService {
         _deriveOrderBy(columns, displayColumn, fields);
     return TableConfig(
       tableName: tableName,
+      displayName: titleCase(tableName),
       displayColumn: displayColumn,
       orderBy: orderBy,
       fields: fields,

@@ -41,6 +41,7 @@ void main() {
     ''');
     final config = TableConfig(
       tableName: _oldSchemeTable,
+      displayName: 'Old Scheme',
       displayColumn: 'name',
       fields: const [FieldConfig(column: 'name', label: 'Name')],
     );
@@ -67,6 +68,7 @@ void main() {
       ''');
       final config = TableConfig(
         tableName: _newSchemeTable,
+        displayName: 'New Scheme',
         displayColumn: 'name',
         fields: const [FieldConfig(column: 'name', label: 'Name')],
       );
@@ -88,6 +90,58 @@ void main() {
         'SELECT * FROM $_newSchemeTable WHERE name = ?1',
         ['genuinely new'],
       )).single;
+      expect(id, row['id']);
+    },
+  );
+
+  test(
+    'old scheme, zero explicit field values: insert({}) still works (SQLite auto-assigns id)',
+    () async {
+      // Real gap found live, Essentials v2 Phase 1 Step 6
+      // (generic_dao_linked_fields_test.dart's fieldless parent tables) --
+      // no v1 table ever had zero FieldConfig entries, so insert({}) was
+      // never actually exercised before. The old string-concatenation
+      // build ('id, ' + '' or '' + '') produced invalid SQL
+      // ("INSERT INTO t (id, ) VALUES ((expr), )") whenever `values` was
+      // empty.
+      await db.execute('CREATE TABLE $_oldSchemeTable (id INTEGER PRIMARY KEY AUTOINCREMENT)');
+      final config = TableConfig(
+        tableName: _oldSchemeTable,
+        displayName: 'Old Scheme',
+        displayColumn: 'id',
+        fields: const [],
+      );
+      final dao = GenericDao(config);
+
+      final id = await dao.insert({});
+      final row = (await db.query('SELECT * FROM $_oldSchemeTable WHERE id = ?1', [id])).single;
+      expect(id, row['id']);
+    },
+  );
+
+  test(
+    'new scheme, zero explicit field values: insert({}) still injects the real id DEFAULT',
+    () async {
+      await db.execute('''
+        CREATE TABLE $_newSchemeTable (
+          id INTEGER PRIMARY KEY DEFAULT (
+              CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+              + (abs(random()) % 1000)
+          )
+        )
+      ''');
+      final config = TableConfig(
+        tableName: _newSchemeTable,
+        displayName: 'New Scheme',
+        displayColumn: 'id',
+        fields: const [],
+      );
+      final dao = GenericDao(config);
+
+      final id = await dao.insert({});
+      expect(id, greaterThan(1000000000000000), reason: 'should be the large DEFAULT-generated id, not a small rowid');
+
+      final row = (await db.query('SELECT * FROM $_newSchemeTable WHERE id = ?1', [id])).single;
       expect(id, row['id']);
     },
   );

@@ -96,6 +96,7 @@ class FieldConfig {
 class TableConfig {
   const TableConfig({
     required this.tableName,
+    required this.displayName,
     required this.displayColumn,
     required this.fields,
     this.orderBy,
@@ -108,6 +109,19 @@ class TableConfig {
   });
 
   final String tableName;
+
+  /// User-facing table name -- `table_definitions.display_name` in
+  /// Essentials v2 (freely renameable via `ManageTablesScreen`, unlike
+  /// [tableName], the immutable physical identifier). Every nav/title
+  /// render site should show this, never derive a label from [tableName]
+  /// directly -- found live, Essentials v2 Phase 1 Step 8: renaming a
+  /// table through `SchemaMetadataDao.updateTable` correctly updated
+  /// `table_definitions`, but nothing outside `ManageTablesScreen` itself
+  /// ever read it, since v1 never had a table name distinct from its
+  /// physical identifier (every render site just title-cased `tableName`
+  /// instead) -- see CLAUDE.md "Essentials v2 Phase 1 -- Step 8" for the
+  /// fix.
+  final String displayName;
 
   /// Column shown as each row's title in the list screen (e.g. `name`).
   final String displayColumn;

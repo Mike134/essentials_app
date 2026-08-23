@@ -1,6 +1,7 @@
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import '../models/table_config.dart';
+import '../util/field_options.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
 
@@ -24,9 +25,17 @@ class StillInUseException implements Exception {
       "Can't delete -- this $tableName record is still in use by other records.";
 }
 
-/// One other real table's FK pointing at [GenericDao.config]'s table.
-class _ForeignKeyRef {
-  _ForeignKeyRef(this.table, this.column, this.onDelete);
+/// One other real table's `select`/linked field pointing at
+/// [GenericDao.config]'s table -- Essentials v2 Phase 1's replacement for
+/// a real declared SQL foreign key, since no v2 table ever declares one
+/// (see claude/essentials-v2-phase1-design.md, "Critical risks" #3).
+/// [onDelete] is `field_definitions.options.on_delete`, defaulting to
+/// `'RESTRICT'` when unset -- matches this project's long-standing
+/// default posture (every relationship blocks deletion unless explicitly
+/// marked otherwise; see CLAUDE.md "Parent-child (one-to-many)
+/// relationships").
+class _LinkedFieldRef {
+  _LinkedFieldRef(this.table, this.column, this.onDelete);
 
   final String table;
   final String column;
@@ -111,14 +120,39 @@ class GenericDao {
       for (final c in columns) {
         assertSafeSqlIdentifier(c);
       }
-      final columnList = idDefault == null ? columns.join(', ') : 'id, ${columns.join(', ')}';
-      final placeholders = List.generate(columns.length, (i) => '?${i + 1}').join(', ');
-      final valuesSql = idDefault == null ? placeholders : '($idDefault), $placeholders';
 
-      await txn.execute(
-        'INSERT INTO ${config.tableName} ($columnList) VALUES ($valuesSql)',
-        columns.map((c) => values[c]).toList(),
-      );
+      if (columns.isEmpty && idDefault == null) {
+        // No explicit field values and no id DEFAULT to inject -- a plain
+        // AUTOINCREMENT table with zero other columns. Genuinely reachable
+        // in Essentials v2: a table created via SchemaEditorService
+        // .createTable with no addField calls yet has no FieldConfig
+        // entries at all, so an "Add" on it inserts nothing but `id`.
+        // `INSERT INTO t () VALUES ()` isn't valid SQL, and SQLite's own
+        // all-default-row syntax (`INSERT INTO t DEFAULT VALUES`) isn't
+        // supported by sql_crdt itself -- confirmed live, not assumed:
+        // `CrdtWriteExecutor._insert` asserts `targetColumns.isNotEmpty`
+        // ("target columns must be explicitly stated"), since it needs an
+        // explicit column list to know where to splice in its own
+        // is_deleted/hlc/node_id/modified values. Explicitly inserting
+        // `NULL` into `id` is SQLite's own documented equivalent to
+        // omitting it for a plain rowid-alias column (still triggers
+        // normal auto-assignment) while satisfying sql_crdt's requirement.
+        // Found live by generic_dao_linked_fields_test.dart's fieldless
+        // parent tables, not a v1 case (every v1 table always had real
+        // business columns).
+        await txn.execute('INSERT INTO ${config.tableName} (id) VALUES (NULL)');
+      } else {
+        final columnNames = [if (idDefault != null) 'id', ...columns];
+        final valueExpressions = [
+          if (idDefault != null) '($idDefault)',
+          ...List.generate(columns.length, (i) => '?${i + 1}'),
+        ];
+        await txn.execute(
+          'INSERT INTO ${config.tableName} (${columnNames.join(', ')}) '
+          'VALUES (${valueExpressions.join(', ')})',
+          columns.map((c) => values[c]).toList(),
+        );
+      }
 
       final result = await txn.query('SELECT last_insert_rowid() AS id');
       id = result.first['id'] as int;
@@ -155,19 +189,22 @@ class GenericDao {
     );
   }
 
-  /// Deletes the row, cascading explicitly to any child rows an `ON DELETE
-  /// CASCADE` FK declares (e.g. `order_items.order_id` -> `orders`) --
-  /// SQLite's own cascade never fires through sqlite_crdt's soft-delete
-  /// rewrite (see CLAUDE.md "Syncing at the Record Level"), so this is now
-  /// the actual enforcement, not a formality. Single-level only -- no
-  /// CASCADE child in the current schema has its own CASCADE children;
-  /// extend recursively if that ever changes.
+  /// Deletes the row, cascading explicitly to any child rows a
+  /// `field_definitions.options.on_delete = 'cascade'` linked field
+  /// declares (e.g. an `order_items`-shaped table's `order_id` field
+  /// pointing at `orders`) -- no v2 table ever declares a real SQL FK, so
+  /// there is nothing for SQLite's own cascade to fire on; this is the
+  /// actual enforcement, not a formality (same as it already was for the
+  /// v1 `PRAGMA`-declared-FK path this replaces -- see CLAUDE.md "Syncing
+  /// at the Record Level"). Single-level only -- extend recursively if a
+  /// table ever needs its own CASCADE children.
   ///
   /// [findBlockingReferences] should always be checked by the caller before
   /// this is reached (see [GenericListScreen]) -- the [StillInUseException]
-  /// catch here is only a same-instant-race fallback and unlikely to
-  /// actually fire, since RESTRICT is no longer enforced by SQLite itself
-  /// through this pathway.
+  /// catch here is only a defensive fallback (a hand-created table outside
+  /// this app's own schema engine could still declare a real SQL FK) and
+  /// unlikely to actually fire for anything created through
+  /// [SchemaEditorService.createTable].
   Future<void> delete(int id) async {
     final crdt = await _crdt;
     try {
@@ -177,7 +214,7 @@ class GenericDao {
         // parent crdt from inside a transaction deadlocks. Hit this for
         // real: a live CASCADE delete against actual synced data hung for
         // 30+ seconds and timed out before this fix.
-        final cascadeRefs = await _foreignKeyRefs(
+        final cascadeRefs = await _linkedFieldRefs(
           txn,
           onDeleteFilter: (onDelete) => onDelete == 'CASCADE',
         );
@@ -198,33 +235,45 @@ class GenericDao {
   }
 
   /// Every other real table that still holds at least one *live*
-  /// (`is_deleted = 0`) row referencing this row's id via a non-`CASCADE`
-  /// foreign key -- i.e. what would block [delete] if SQLite's own
-  /// `RESTRICT` enforcement still fired through this pathway (it doesn't
-  /// -- see [delete]'s doc comment). This check is now the real
-  /// enforcement, not a pre-check backstopped by the database.
-  /// `CASCADE` FKs are deliberately excluded (e.g. `order_items.order_id`
-  /// -> `orders`) -- those are expected to cascade via [delete], not a
-  /// reason to block (see CLAUDE.md "Parent-child (one-to-many)
-  /// relationships").
+  /// (`is_deleted = 0`) row referencing this row's id via a `select`/
+  /// linked field whose `options.on_delete` is `'RESTRICT'` (the default
+  /// when unset -- see [_LinkedFieldRef]'s doc comment) -- i.e. what would
+  /// block [delete]. This is the real enforcement, not a pre-check
+  /// backstopped by the database, since v2 never declares a real SQL FK
+  /// for SQLite to enforce in the first place (see
+  /// claude/essentials-v2-phase1-design.md, "Critical risks" #3).
+  /// `'CASCADE'` and `'IGNORE'` fields are both excluded -- `'CASCADE'`
+  /// is expected to cascade via [delete], not block; `'IGNORE'` is
+  /// explicitly opted out of both blocking and cascading, left as a
+  /// dangling reference by design.
   ///
   /// Checked by [GenericListScreen] *before* showing a delete confirmation,
   /// rather than only discovering the block after the user already clicked
   /// Delete. Found by Mike deleting a `supplier` still referenced by
-  /// `shipment`/`orders`.
+  /// `shipment`/`orders` (v1; the same pre-check discipline carries
+  /// forward unchanged into v2, only its source query changed).
   Future<List<String>> findBlockingReferences(int id) async {
     final crdt = await _crdt;
-    final refs = await _foreignKeyRefs(
+    final refs = await _linkedFieldRefs(
       crdt,
-      onDeleteFilter: (onDelete) => onDelete != 'CASCADE',
+      onDeleteFilter: (onDelete) => onDelete == 'RESTRICT',
     );
 
     final blockers = <String>{};
     for (final ref in refs) {
-      final count = await crdt.query(
-        'SELECT COUNT(*) AS c FROM ${ref.table} WHERE ${ref.column} = ?1 AND is_deleted = 0',
-        [id],
-      );
+      List<Map<String, Object?>> count;
+      try {
+        count = await crdt.query(
+          'SELECT COUNT(*) AS c FROM ${ref.table} WHERE ${ref.column} = ?1 AND is_deleted = 0',
+          [id],
+        );
+      } on DatabaseException {
+        // The referencing table itself no longer physically exists --
+        // stale field_definitions metadata (e.g. the other table was
+        // dropped outside the app's own schema engine). Nothing to block
+        // on; not this method's job to reconcile that drift.
+        continue;
+      }
       if ((count.first['c'] as int) > 0) {
         blockers.add(ref.table);
       }
@@ -232,38 +281,42 @@ class GenericDao {
     return blockers.toList()..sort();
   }
 
-  /// Every FK across every real table pointing at [config.tableName],
-  /// filtered by [onDeleteFilter] on the FK's declared `on_delete` action.
+  /// Every other real table's `select`/linked field pointing at
+  /// [config.tableName], filtered by [onDeleteFilter] on the field's
+  /// `options.on_delete`. Reads `field_definitions` directly (Essentials
+  /// v2 Phase 1 -- see claude/essentials-v2-phase1-design.md,
+  /// `GenericDao.findBlockingReferences`) instead of `PRAGMA
+  /// foreign_key_list`, since no v2 table ever declares a real SQL FK.
   /// Takes [CrdtApi] (implemented by both [SqliteCrdt] itself and the
   /// [CrdtExecutor] a transaction hands its callback) rather than
   /// concretely [SqliteCrdt], so [delete] can pass its transaction's `txn`
   /// instead of the parent `crdt` -- required, not just tidier, per the
   /// deadlock note on [delete].
-  Future<List<_ForeignKeyRef>> _foreignKeyRefs(
+  Future<List<_LinkedFieldRef>> _linkedFieldRefs(
     CrdtApi crdt, {
     required bool Function(String onDelete) onDeleteFilter,
   }) async {
     final tableName = config.tableName;
-    final allTables = await crdt.query(
-      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    final rows = await crdt.query(
+      "SELECT table_name, field_name, options FROM field_definitions "
+      "WHERE is_deleted = 0 AND format = 'select' "
+      "AND options ->> 'mode' = 'linked' AND options ->> 'table' = ?1",
+      [tableName],
     );
 
-    final refs = <_ForeignKeyRef>[];
-    for (final row in allTables) {
-      final otherTable = row['name'] as String;
-      if (otherTable == tableName) continue;
+    final refs = <_LinkedFieldRef>[];
+    for (final row in rows) {
+      final otherTable = row['table_name'] as String;
+      if (otherTable == tableName) continue; // no v2 table self-references today; matches the old PRAGMA path's same skip.
       assertSafeSqlIdentifier(otherTable);
+      final fieldName = row['field_name'] as String;
+      assertSafeSqlIdentifier(fieldName);
 
-      final foreignKeys = await crdt.query('PRAGMA foreign_key_list("$otherTable")');
-      for (final fk in foreignKeys) {
-        if (fk['table'] != tableName) continue;
-        final onDelete = (fk['on_delete'] as String).toUpperCase();
-        if (!onDeleteFilter(onDelete)) continue;
+      final options = parseFieldOptions(row['options'] as String?);
+      final onDelete = ((options['on_delete'] as String?) ?? 'restrict').toUpperCase();
+      if (!onDeleteFilter(onDelete)) continue;
 
-        final fromColumn = fk['from'] as String;
-        assertSafeSqlIdentifier(fromColumn);
-        refs.add(_ForeignKeyRef(otherTable, fromColumn, onDelete));
-      }
+      refs.add(_LinkedFieldRef(otherTable, fieldName, onDelete));
     }
     return refs;
   }

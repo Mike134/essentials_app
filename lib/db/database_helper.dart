@@ -102,32 +102,39 @@ class DatabaseHelper {
   }
 
   /// Defense in depth alongside the file-existence check above: confirm the
-  /// file actually has the app's real, CRDT-migrated schema (checked via
-  /// `domain`'s `hlc` column -- present only after migrations/004 ran)
-  /// before ever handing it to sqlite_crdt. Uses a plain sqflite connection,
-  /// independent of sqlite_crdt succeeding or not, opened and closed before
-  /// sqlite_crdt touches the file at all.
+  /// file actually has the app's real, v2-bootstrapped schema (checked via
+  /// `table_definitions`'s `hlc` column -- present only once the file has
+  /// been through `tool/bootstrap_fresh_db.dart`) before ever handing it to
+  /// sqlite_crdt. `table_definitions` is the marker rather than any business
+  /// table since v2's clean-slate rebuild means business tables no longer
+  /// exist until Mike creates them -- see claude/essentials-v2-step2-wipe-
+  /// procedure.md. Uses a plain sqflite connection, independent of
+  /// sqlite_crdt succeeding or not, opened and closed before sqlite_crdt
+  /// touches the file at all.
   Future<void> _verifyRealSchema(String path) async {
     sqfliteFfiInit();
     final db = await databaseFactoryFfi.openDatabase(path);
     try {
-      final columns = await db.rawQuery("PRAGMA table_info('domain')");
-      final hasDomainTable = columns.isNotEmpty;
+      final columns = await db.rawQuery("PRAGMA table_info('table_definitions')");
+      final hasMetadataTable = columns.isNotEmpty;
       final hasHlcColumn = columns.any((c) => c['name'] == 'hlc');
-      if (!hasDomainTable) {
+      if (!hasMetadataTable) {
         throw StateError(
           'essentials.db at $path exists but has no real schema (missing '
-          'the domain table) -- refusing to use it. Do not delete or reset '
-          'this file, check Syncthing / .stversions for a recoverable copy.',
+          'the table_definitions table) -- refusing to use it. This should '
+          'never happen to a genuine v2 database; rebuild it with '
+          '`dart run tool/bootstrap_fresh_db.dart --out $path --force` '
+          'rather than deleting or resetting it by hand.',
         );
       }
       if (!hasHlcColumn) {
         throw StateError(
-          'essentials.db at $path has the domain table but is missing the '
-          'hlc column -- this copy predates the CRDT-tracking migration '
-          '(migrations/004_crdt_tracking_columns.sql / '
-          '005_entity_id_scheme_and_crdt_columns.sql). Refusing to open it '
-          'with sqlite_crdt; run the migration against this copy first.',
+          'essentials.db at $path has the table_definitions table but is '
+          'missing the hlc column -- this copy was never created through '
+          'sqlite_crdt\'s CREATE TABLE rewrite (e.g. written by a raw SQL '
+          'tool instead of tool/bootstrap_fresh_db.dart). Refusing to open '
+          'it with sqlite_crdt; recreate it with '
+          '`dart run tool/bootstrap_fresh_db.dart --out $path --force`.',
         );
       }
     } finally {

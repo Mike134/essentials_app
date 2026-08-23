@@ -40,7 +40,12 @@ class OrphanCleanupService {
       'table_column_settings',
       'table_view_settings',
       'table_group',
-      'field_metadata',
+      // 'field_metadata' deliberately omitted -- gone as of the Essentials
+      // v2 Phase 1 wipe (superseded by field_definitions), so this table no
+      // longer exists to query. Minimal unblock only -- this whole file is
+      // still slated for deletion/rework once SchemaRegistry replaces
+      // TableDiscoveryService (claude/essentials-v2-step2-wipe-procedure.md,
+      // "Lower priority, but will break loudly"), not touched further here.
     ]) {
       final rows = await db.query(
         'SELECT DISTINCT table_name FROM $settingsTable WHERE is_deleted = 0',
