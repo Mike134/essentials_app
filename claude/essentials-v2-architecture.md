@@ -80,6 +80,7 @@ Grid · List · Card · Form · Calendar · Kanban
 | Component | Technology | Purpose |
 |---|---|---|
 | Scripting engine | `flutter_js` (QuickJS) | JavaScript execution, sandboxed, cross-platform |
+| Barcode scanning | `mobile_scanner` | Camera-based barcode/QR scan on Android; degrades to a plain text field on Windows. Added in Phase 2 — see that section's own note on the one accepted, tracked build-warning risk (Kotlin Gradle Plugin application). |
 
 ### Scripting Language: JavaScript
 
@@ -127,7 +128,7 @@ Note: `format` replaces `field_type`. It is a presentation and input hint, not a
 
 **Superseded 2026-08-22 by the clean-slate decision** (see `claude/essentials-v2-phase1-design.md`, "Clean-slate directive"): the 19 tables are NOT ported or auto-registered. The rebuilt database starts with zero business tables; any of the original 19 comes back only if/when recreated by hand through the New Table UI, with no special status. This line originally said the opposite ("ported as built-in tables") — left visible via git history rather than silently rewritten, since the phase1 doc is the one to trust on this point.
 
-Only `table_definitions` and `field_definitions` actually shipped in Phase 1. `view_definitions`, `script_definitions`, `event_definitions`, `template_definitions` are still just this list of names — no schema, no code — reserved for Phases 3/5/7 below, not yet designed in detail.
+`table_definitions` and `field_definitions` shipped in Phase 1. `view_definitions`, `script_definitions`, `event_definitions`, `template_definitions` are still just this list of names — no schema, no code — reserved for later phases below, not yet designed in detail.
 
 ---
 
@@ -149,49 +150,53 @@ This mirrors Excel's behavior: a cell holds a value, and a format specification 
 |---|---|---|---|
 | `text` | Single-line text box | As-is | `{ multiline: false }` |
 | `text_multiline` | Multi-line textarea | As-is | `{ multiline: true }` |
-| `number` | Numeric keyboard | Format mask | `{ mask: '#,##0.00', prefix: '', suffix: '' }` |
-| `currency` | Numeric keyboard | Currency mask | `{ symbol: '$', mask: '#,##0.00' }` |
-| `percentage` | Numeric keyboard | % mask | `{ decimals: 2 }` |
-| `date` | Calendar picker | Date mask | `{ mask: 'MM/DD/YYYY' }` |
-| `time` | Time picker | Time mask | `{ mask: 'HH:mm' }` |
-| `datetime` | Date+time picker | DateTime mask | `{ mask: 'MM/DD/YYYY HH:mm' }` |
-| `boolean` | Toggle or checkbox | Configurable labels | `{ widget: 'checkbox', true_label: 'Yes', false_label: 'No' }` |
+| `integer` / `real` | Numeric keyboard | Format mask | `{ decimals: int }` (real only) |
+| `currency` | Numeric keyboard | Currency mask | `{ symbol: '$', decimals: 2 }` |
+| `percentage` | Numeric keyboard | % mask | `{ decimals: 0 }` |
+| `date` | Calendar picker | Date mask | — |
+| `dateTime` | Date+time picker | DateTime mask | — |
+| `boolean` | Toggle or checkbox | Configurable labels | — |
 | `select` | Dropdown / picker | Display value | See **Select fields** below |
 | `rating` | Star widget | Stars | `{ max: 5 }` |
-| `url` | Text box | Tappable link | — |
+| `url` (styled `text`) | Text box | Tappable link | `{ isLink: true }` |
+| `color` (styled `text`) | Swatch + color-picker popup | Swatch | `{ isColor: true }` — **rendering already works (carried from v1), but not yet pickable in `AddFieldScreen` — queued small fix, see below** |
 | `barcode` | Camera scan (Android) / text (Windows) | As-is | — |
-| `formula` | Read-only (computed) | Result of expression | `{ expression: '...' }` |
-| `attachment` | File picker (embed) | Thumbnail + filename | — |
+| `formula` | Read-only (computed) | Result of expression | `{ expression: '...', engine: 'simple' }` |
 | `link_file` | File picker / URL input | Path or URL | — |
-| `link_record` | Record picker | Configured display field | `{ table: 'table_name', display_field: 'field_name' }` |
-| `lookup` | Read-only (resolved) | Value from linked record | `{ link_field: 'field_name', source_field: 'field_name' }` |
-| `rollup` | Read-only (computed) | Aggregate value | `{ link_field: 'field_name', source_field: 'field_name', aggregate: 'sum' }` |
+| `link_record` | Record picker | Configured display field | `{ table: 'table_name', display_field: 'field_name' }` — **Phase 4** |
+| `lookup` | Read-only (resolved) | Value from linked record | `{ link_field: 'field_name', source_field: 'field_name' }` — **Phase 4** |
+| `rollup` | Read-only (computed) | Aggregate value | `{ link_field: 'field_name', source_field: 'field_name', aggregate: 'sum' }` — **Phase 4** |
+| `attachment` | File picker (embed) | Thumbnail + filename | — **dropped from Phase 2, not yet scheduled — see below** |
 
-**Phase 1 actually shipped a smaller set** — `text, integer, real, boolean, date, dateTime, select` (see `lib/util/field_format_choice.dart`'s `FieldFormatChoice` enum). `select` supports only the "linked table" sub-mode below; inline-option selects, and every format from `rating` down through `rollup` in the table above, are still just this design-doc entry — Phase 2+ work, not yet built.
+**Phase 1 shipped:** `text, integer, real, boolean, date, dateTime, select` (linked-table sub-mode only).
 
-**Phase 2's actual scope for this table was designed 2026-08-23** (`claude/essentials-v2-phase2-design.md`) and narrows/corrects it in three ways: `lookup`/`rollup` moved out to Phase 4 (both need `link_record`, not yet built); `formula` is scoped to a small spreadsheet-style expression subset rather than full JS; `attachment` is scoped to local-only storage for Phase 2, with cross-device sync (the "File / Attachment Sync" section below) deferred as its own follow-up design. See that doc for the full format catalog, `options` JSON shapes, and the render-layer change (`FieldFormatHandler`) it identified as a prerequisite.
+**Phase 2 shipped, 2026-08-23 — real-device verified on MIKE-CU and MIKE-12R:** `currency`, `percentage`, `real`'s `decimals` option, `rating`, `url` (as a `text`+`isLink` convenience, no new stored format), inline-mode `select`, `formula` (small expression subset, not full JS), and `barcode` (`mobile_scanner` on Android, plain text field on Windows — confirmed degrading cleanly, not just assumed). Full design, the `options` JSON reference, and the build order live in `claude/essentials-v2-phase2-design.md`; the real-device verification write-up (including the two real findings — a stale APK on MIKE-12R, and a `GenericFormScreen` Save-button/nav-bar overlap, both fixed) is in `CLAUDE.md`'s "Essentials v2 Phase 2" sections.
+
+**Still not built:** `lookup`/`rollup` (need `link_record`, Phase 4's job) and `attachment` (dropped from Phase 2 entirely — a field that doesn't sync between devices was judged not worth shipping half-built; local storage and hub file-transfer sync will be designed and built together as their own future phase, not yet scheduled to a specific phase number).
+
+**`color` — found 2026-08-23, queued as a small fix (not a phase, no design doc):** `FieldConfig.isColor` rendering already works everywhere (carried forward from v1's `domain.color`/`class.color` — grid swatch + tap-to-pick cell, form's palette-icon button, row-coloring's `colorableColumns`), but `FieldFormatChoice` has no `color` entry, so `AddFieldScreen` can't actually create one on a new v2 field — same shape gap `url` had before Phase 2. Fix, confirmed with Mike: add a `color` entry sharing `text`'s value exactly like `url` does (`options: {isColor: true}`), **and** give `AddFieldScreen`'s default-value entry the same `pickColor()` popup the grid/form already use instead of a bare hex-typing box — Mike flagged the picker specifically as important, not a nice-to-have. See `CLAUDE.md`'s "expose `color` as a pickable field format" note for the full two-part fix.
 
 ### Select fields
 
 A `select` format has two sub-modes, configured in options:
 
-- **Inline list** — options defined directly on the field, stored as JSON in `field_definitions.options`. Suitable for small, stable lists (e.g. Low/Medium/High). Stored value is the option key.
-- **Linked table** — points to another table. Stored value is the linked record's `id` (integer FK). Display value is resolved at render time from the configured display field. If the display value changes on the source record, the stored ID still resolves correctly. This is the default for anything relational.
+- **Inline list** — options defined directly on the field, stored as JSON in `field_definitions.options`. Suitable for small, stable lists (e.g. Low/Medium/High). Stored value is the option key. **Shipped in Phase 2.**
+- **Linked table** — points to another table. Stored value is the linked record's `id` (integer FK). Display value is resolved at render time from the configured display field. If the display value changes on the source record, the stored ID still resolves correctly. This is the default for anything relational. **Shipped in Phase 1.**
 
 ```json
 // Inline select
-{ "mode": "inline", "options": [{"key": 1, "label": "Low"}, {"key": 2, "label": "Medium"}, {"key": 3, "label": "High"}] }
+{ "mode": "inline", "options": [{"key": "low", "label": "Low"}, {"key": "med", "label": "Medium"}, {"key": "high", "label": "High"}] }
 
 // Linked table select
-{ "mode": "linked", "table": "priority", "display_field": "name", "multi": false }
+{ "mode": "linked", "table": "priority", "displayField": "name", "valueField": "id", "on_delete": "restrict" }
 ```
 
 ### Attachment vs. Link (file) — separate formats, separate storage mechanisms
 
 - **`attachment`** — file is copied into `C:\Databases\essentials_app\files\{table}\{record_id}\`. App owns it. Synced via file transfer endpoint on hub server. Android equivalent: app data directory. **Dropped from Phase 2 entirely (confirmed 2026-08-23) — local storage and sync will be designed and built together in a future phase, see `claude/essentials-v2-phase2-design.md`.**
-- **`link_file`** — stores a path string or URL. Points to a file the app does not own or manage. Not synced. Displays content if accessible, handles gracefully if not.
+- **`link_file`** — stores a path string or URL. Points to a file the app does not own or manage. Not synced. Displays content if accessible, handles gracefully if not. **Shipped in Phase 2.**
 
-A record can have both formats on different fields simultaneously. Users add whichever they need.
+A record can have both formats on different fields simultaneously, once `attachment` exists.
 
 ---
 
@@ -270,64 +275,93 @@ Attachment files live alongside the database:
 
 Sync mechanism: hub server (`server.dart`) gets a file transfer endpoint alongside the existing CRDT WebSocket. When CRDT sync detects a new attachment record on a device, the file is pulled from whichever device owns it via the hub. File identity keyed by `{table}/{record_id}/{field_name}/{filename}` to avoid collisions.
 
-**Not built yet as of 2026-08-23** (confirmed by reading `server/bin/server.dart` — no file/upload endpoint exists). `attachment` was dropped from Phase 2 entirely (confirmed 2026-08-23) rather than shipped local-only as originally proposed — this section's implementation, local storage and sync together, is deferred to its own future phase. See `claude/essentials-v2-phase2-design.md`.
+**Not built yet as of 2026-08-23** (confirmed by reading `server/bin/server.dart` — no file/upload endpoint exists). `attachment` was dropped from Phase 2 entirely (confirmed 2026-08-23) rather than shipped local-only as originally proposed — this section's implementation, local storage and sync together, is deferred to its own future phase, not yet scheduled to a specific phase number.
 
 ---
 
 ## Features Roadmap
 
+**Execution order is not phase-number order — see "Roadmap sequencing" immediately below before assuming Phase 3 comes after Phase 2.** The phase numbers below are stable labels for what each chunk of work contains, same as they've always been; they are not a promise about what gets built next.
+
+### Roadmap sequencing (confirmed 2026-08-23, after Phase 2)
+
+With Phase 1 and Phase 2 done, the actual build order for what comes next was deliberately reordered away from strict phase-number order, for reasons worth keeping on record rather than re-litigating later:
+
+1. **Limited CSV import** (side task, not a phase) — import into an *existing* table's plain fields only. No auto-creating a new table from CSV headers (real format-detection work, not worth doing yet), no importing into a linked/child-table field (needs Phase 4's link-column mechanics understood first — doing it before Phase 4 would mean building it blind). CSV *export* already exists and needs no work — confirmed by reading `GenericListScreen._exportCsv`, which is already format-aware (reads through the grid's own `formattedValueForDisplay`, so it already picks up every Phase 2 format correctly). The Phase 7 bullet below claiming CSV import "already partially exists" is stale — that referred to the old v1 practice of importing externally via Letos, not an in-app feature; grepping `lib/` for CSV/import code as of 2026-08-23 found no in-app import path at all. **Designed 2026-08-23** — full field-mapping/coercion rules, malformed-value handling, and UI flow in `claude/essentials-v2-csv-import-design.md`. **In progress as of 2026-08-23** — Claude Code started this session.
+1a. **`color` field format** (small fix, queued right after CSV import, not its own phase) — see the Field Model section above and `CLAUDE.md`'s note for the two-part fix (picker entry + default-value color picker in `AddFieldScreen`).
+2. **Phase 4 — Cross-Table Linking**
+3. **Phase 6 — Global Search**
+4. **Phase 5 — Scripts & Events**
+5. **Phase 3 — View Types**
+6. **Phase 7 — Import / Export / Templates** (the rest of it: Memento backup import, starter template library, full DB export/backup)
+
+**Why Phase 4 before Phase 6/5/3:** core relational plumbing (`link_record`/`lookup`/`rollup`) that most of the rest of the app benefits from having, and it's what CSV import's "into a linked table" case is blocked on (see above) — building it early also means any later child-table import work is informed by real link-column UI/schema mechanics instead of guessed at.
+
+**Why Phase 6 (Search) before Phase 5 (Scripts):** Scripts & Events is the single riskiest phase left on the roadmap — a new embedded JS runtime (`flutter_js`/QuickJS) with real sandboxing and cross-platform (Windows + Android) packaging risk, the same class of scope Phase 2's design doc explicitly flagged as too much surface area to pull in early for just one field format. That risk hasn't gone away by being later in the list. Search, by contrast, is SQLite FTS5 — same stack already in use, no new native dependency — and becomes more valuable the moment CSV import and Phase 4 start putting real data volume into the database. For a personal database, findability was judged more valuable sooner than automation.
+
+**Why Phase 3 (Views) stays near the end:** view types are worth more once there's real data and real relational structure to look at. Building List/Card/Calendar/Kanban views for tables that are still mostly empty (the state most tables are in today, pre-CSV-import) has low marginal value; CSV import, Phase 4, and Phase 6 all land real, browsable data first.
+
+**Process note, not a change:** each item above still gets its own short design pass before Code implements it, the same discipline Phase 1 and Phase 2 both used — "next in line" doesn't mean "skip straight to implementation." (The `color` fix is small enough it skipped a formal design doc — see the Field Model section — but the confirmation-before-implementation discipline still applied.)
+
 ### Phase 1 — Dynamic Schema Engine — **DONE, 2026-08-22**
 - `table_definitions` + `field_definitions` metadata schema
 - Dynamic DDL execution (CREATE TABLE, ALTER TABLE)
 - Table creation / field management UI
-- ~~Port 19 current tables as built-in registered tables (data preserved)~~ — **did not happen, correctly.** Superseded by the clean-slate decision recorded above and in `claude/essentials-v2-phase1-design.md`: the database starts genuinely empty, no business tables auto-recreated, no `is_builtin` concept. This bullet was never updated when that decision was made — flagging it here rather than silently deleting it, same reasoning as the Metadata Schema section's correction above.
+- ~~Port 19 current tables as built-in registered tables (data preserved)~~ — **did not happen, correctly.** Superseded by the clean-slate decision recorded above and in `claude/essentials-v2-phase1-design.md`: the database starts genuinely empty, no business tables auto-recreated, no `is_builtin` concept.
 - `TableDiscoveryService` replaced by `SchemaRegistry`, reading from metadata (not `sqlite_master` heuristics)
 
-Implementation detail, verification results, and the full build order live in `claude/essentials-v2-phase1-design.md`. Code-reviewed complete 2026-08-23 (see `claude/project-overview.md`'s Current Status section) — every design rule (never emit CRDT columns, full identifier quoting, same-transaction `migration_log` + metadata writes, two-stage delete, metadata-driven referential integrity) verified actually implemented, not just designed.
+Implementation detail, verification results, and the full build order live in `claude/essentials-v2-phase1-design.md`. Code-reviewed complete 2026-08-23 — every design rule verified actually implemented, not just designed.
 
-### Phase 2 — Rich Field Types — **complete and real-device verified 2026-08-23** — all 7 build order steps built, then confirmed working on both MIKE-CU and MIKE-12R the same day, including two real findings fixed live (a stale 12R build, and a Save-button nav-bar overlap in `GenericFormScreen`) — see CLAUDE.md's Phase 2 sections
-- `number` (revised, `decimals` option) / `currency` / `percentage` / `rating` / `url` / `link_file` / `barcode` / `formula`, plus inline-mode `select`
-- Formula field — **scoped to a small spreadsheet-style expression subset for Phase 2**, not full JS (`flutter_js` stays reserved for Phase 5). Confirmed 2026-08-23; implementation runs on Opus, rest of Phase 2 on Sonnet. **Built 2026-08-23** (build order step 6) — hand-rolled evaluator after a real pub.dev check, `options: {expression, resultType, decimals}`, value computed at read time into an always-NULL physical column so format changes stay metadata-only. Full write-up in CLAUDE.md's Phase 2 Step 6 section.
-- Barcode scan integration (Android camera / Windows text fallback) — **built 2026-08-23** (build order step 7). Spiked and chosen: `mobile_scanner: ^7.4.0`, bundled MLKit mode (no Play Services dependency), confirmed not to break the Windows build. See CLAUDE.md's Phase 2 Step 7 section for the spike write-up and a real, tracked KGP-warning caveat.
-- **`lookup`/`rollup` moved out of Phase 2 to Phase 4**, where they correctly belong (both need `link_record`, which Phase 4 builds) — the format table above still lists them under the general spec; this bullet is the correction, same convention as Phase 1's corrections above.
-- **Image/attachment field dropped from Phase 2 entirely, confirmed 2026-08-23** — not even local-only. A field that doesn't sync between devices was judged not worth shipping half-built; local storage and hub file-transfer sync (see "File / Attachment Sync" above, still unbuilt) will be designed and built together as their own future phase.
+### Phase 2 — Rich Field Types — **DONE, 2026-08-23, real-device verified**
+- `currency` / `percentage` / `real`'s `decimals` option / `rating` / `url` / `link_file` / `barcode` / `formula`, plus inline-mode `select`
+- `formula` shipped as a small spreadsheet-style expression subset, not full JS (`flutter_js` stays reserved for Phase 5) — built on Opus per the confirmed model-tier split, rest of Phase 2 on Sonnet
+- `barcode` shipped via `mobile_scanner` — camera scan on Android, plain text field (no icon at all, not a greyed-out one) on Windows, confirmed degrading cleanly on real hardware
+- **`lookup`/`rollup` moved out of Phase 2 to Phase 4**, where they correctly belong (both need `link_record`, which Phase 4 builds)
+- **`attachment` dropped from Phase 2 entirely, confirmed 2026-08-23** — not even local-only. Local storage and hub file-transfer sync (see "File / Attachment Sync" above, still unbuilt) will be designed and built together as their own future phase.
 
-Full design — the format catalog, `options` JSON shapes for every Phase 2 format, and the `FieldFormatHandler` render-layer change identified as a prerequisite (both `GenericListScreen`/`GenericFormScreen` currently branch on a 6-value `FieldType` enum in 3-4 places each; adding this many more formats the same way was judged not to scale) — lives in `claude/essentials-v2-phase2-design.md`.
+All seven build-order steps confirmed working on **both** MIKE-CU and MIKE-12R through a real "All Types" table, cross-synced live — not just build-verified. Two real findings surfaced and were fixed during that pass: MIKE-12R was running a stale pre-Phase-2 build the first time it was checked (an install gap, not a code bug — fixed via `adb install`), and `GenericFormScreen`'s Save button sat under MIKE-12R's system nav bar (a real bug, the same overlap class five other screens already had fixed — this screen just hadn't been touched yet). Full design, the format catalog, `options` JSON reference, and the `FieldFormatHandler`/`FieldFormatRegistry` render-layer change live in `claude/essentials-v2-phase2-design.md`; the real-device verification write-up is in `CLAUDE.md`'s "Essentials v2 Phase 2" sections.
 
-### Phase 3 — View Types
-- List view
-- Card/gallery view
-- Calendar view
-- Kanban view
-- View management UI (create, rename, delete views per table)
+### Limited CSV import — **in progress, designed 2026-08-23, see "Roadmap sequencing" above**
+Not a phase — a side task, scoped to importing into an existing table's plain (non-linked) fields only. Full design (field-mapping, per-format coercion rules, malformed-value handling, UI flow, build order) in `claude/essentials-v2-csv-import-design.md`. Claude Code started implementation 2026-08-23.
 
-### Phase 4 — Cross-Table Linking
+### `color` field format — **queued next, small fix, no design doc**
+`FieldConfig.isColor` rendering already works everywhere; `AddFieldChoice` just has no entry for it yet, and the default-value box needs the same picker the grid/form already use. See the Field Model section above and `CLAUDE.md`'s note for the full two-part fix.
+
+### Phase 4 — Cross-Table Linking — **up next after CSV import and the color fix**
 - Link to record field type
 - Lookup and Rollup field types
 - Link Definitions metadata
 - UI for selecting linked table and display field
 
-### Phase 5 — Scripts & Events
+### Phase 6 — Global Search — **sequenced before Phase 5, see "Roadmap sequencing" above**
+- Full-text search across all tables
+- SQLite FTS5 virtual tables per user table (or a unified search index)
+- Search UI — results grouped by table, click-through to record
+
+### Phase 5 — Scripts & Events — **sequenced after Phase 6, see "Roadmap sequencing" above**
 - `flutter_js` integration
 - Script editor UI (in-app, with syntax highlighting)
 - Event binding UI
 - Script API implementation
 - Scheduled event runner
 
-### Phase 6 — Global Search
-- Full-text search across all tables
-- SQLite FTS5 virtual tables per user table (or a unified search index)
-- Search UI — results grouped by table, click-through to record
+### Phase 3 — View Types — **sequenced near the end, see "Roadmap sequencing" above**
+- List view
+- Card/gallery view
+- Calendar view
+- Kanban view
+- View management UI (create, rename, delete views per table)
 
-### Phase 7 — Import / Export / Templates
-- CSV import per table (already partially exists)
+### Phase 7 — Import / Export / Templates — **the rest of it, last; CSV import itself was pulled out and moved up, see above**
+- ~~CSV import per table (already partially exists)~~ — pulled out as its own side task before Phase 4, see "Roadmap sequencing" above; the "already partially exists" claim was stale (no in-app CSV import code existed as of 2026-08-23 — confirmed by reading `lib/`, not assumed) and is corrected here rather than silently rewritten.
 - Memento backup file import (CSV-based)
 - Starter template library (Contacts, Books, Movies, Passwords, Expenses, etc.)
-- Full database export/backup
+- Full database export/backup — note CSV export of a single table already works today (`GenericListScreen._exportCsv`); this bullet is about a full-database backup/export, a different and larger scope.
 
 ### Deferred (explicitly, not forgotten)
 - Reporting / printing — significant effort, moderate value
 - iOS / Mac — not a target
+- Attachment fields (local storage + hub file-transfer sync, designed and built together) — dropped from Phase 2, not yet assigned a phase number
 
 ---
 
@@ -354,3 +388,6 @@ These do not change:
 - **Global search strategy** — FTS5 per-table virtual tables vs. unified search index
 - **Starter template set** — which 5–10 templates ship built-in?
 - **Record history UI** — CRDT timestamps give implicit history; surface it to users?
+- **Attachment phase number** — where local storage + sync (dropped from Phase 2) lands in the roadmap; not yet decided.
+- ~~**CSV import design**~~ — done, 2026-08-23, see `claude/essentials-v2-csv-import-design.md`.
+- ~~**`color` field format**~~ — confirmed 2026-08-23, queued small fix, see `CLAUDE.md`'s note; no separate design doc needed.
