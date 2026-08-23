@@ -127,6 +127,8 @@ Note: `format` replaces `field_type`. It is a presentation and input hint, not a
 
 **Superseded 2026-08-22 by the clean-slate decision** (see `claude/essentials-v2-phase1-design.md`, "Clean-slate directive"): the 19 tables are NOT ported or auto-registered. The rebuilt database starts with zero business tables; any of the original 19 comes back only if/when recreated by hand through the New Table UI, with no special status. This line originally said the opposite ("ported as built-in tables") — left visible via git history rather than silently rewritten, since the phase1 doc is the one to trust on this point.
 
+Only `table_definitions` and `field_definitions` actually shipped in Phase 1. `view_definitions`, `script_definitions`, `event_definitions`, `template_definitions` are still just this list of names — no schema, no code — reserved for Phases 3/5/7 below, not yet designed in detail.
+
 ---
 
 ## Field Model
@@ -164,6 +166,8 @@ This mirrors Excel's behavior: a cell holds a value, and a format specification 
 | `link_record` | Record picker | Configured display field | `{ table: 'table_name', display_field: 'field_name' }` |
 | `lookup` | Read-only (resolved) | Value from linked record | `{ link_field: 'field_name', source_field: 'field_name' }` |
 | `rollup` | Read-only (computed) | Aggregate value | `{ link_field: 'field_name', source_field: 'field_name', aggregate: 'sum' }` |
+
+**Phase 1 actually shipped a smaller set** — `text, integer, real, boolean, date, dateTime, select` (see `lib/util/field_format_choice.dart`'s `FieldFormatChoice` enum). `select` supports only the "linked table" sub-mode below; inline-option selects, and every format from `rating` down through `rollup` in the table above, are still just this design-doc entry — Phase 2+ work, not yet built.
 
 ### Select fields
 
@@ -268,12 +272,14 @@ Sync mechanism: hub server (`server.dart`) gets a file transfer endpoint alongsi
 
 ## Features Roadmap
 
-### Phase 1 — Dynamic Schema Engine
+### Phase 1 — Dynamic Schema Engine — **DONE, 2026-08-22**
 - `table_definitions` + `field_definitions` metadata schema
 - Dynamic DDL execution (CREATE TABLE, ALTER TABLE)
 - Table creation / field management UI
-- Port 19 current tables as built-in registered tables (data preserved)
-- `TableDiscoveryService` updated to read from metadata, not just `sqlite_master`
+- ~~Port 19 current tables as built-in registered tables (data preserved)~~ — **did not happen, correctly.** Superseded by the clean-slate decision recorded above and in `claude/essentials-v2-phase1-design.md`: the database starts genuinely empty, no business tables auto-recreated, no `is_builtin` concept. This bullet was never updated when that decision was made — flagging it here rather than silently deleting it, same reasoning as the Metadata Schema section's correction above.
+- `TableDiscoveryService` replaced by `SchemaRegistry`, reading from metadata (not `sqlite_master` heuristics)
+
+Implementation detail, verification results, and the full build order live in `claude/essentials-v2-phase1-design.md`. Code-reviewed complete 2026-08-23 (see `claude/project-overview.md`'s Current Status section) — every design rule (never emit CRDT columns, full identifier quoting, same-transaction `migration_log` + metadata writes, two-stage delete, metadata-driven referential integrity) verified actually implemented, not just designed.
 
 ### Phase 2 — Rich Field Types
 - Implement all field types listed above
