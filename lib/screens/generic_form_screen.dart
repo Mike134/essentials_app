@@ -5,6 +5,7 @@ import '../db/generic_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
+import '../util/bool_value.dart';
 import '../util/date_format.dart';
 import '../util/field_formats/field_format_handler.dart';
 import '../util/links.dart';
@@ -104,7 +105,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           ? widget.copyFrom![field.column]
           : field.defaultValue;
       if (field.type == FieldType.boolean) {
-        _boolValues[field.column] = existingValue == 1 || existingValue == true;
+        _boolValues[field.column] = coerceBoolValue(existingValue);
       } else if (field.isLookup) {
         // Real crash, found live: a v2 linked field's own column is
         // always physically TEXT (see parseLookupValue's doc comment),

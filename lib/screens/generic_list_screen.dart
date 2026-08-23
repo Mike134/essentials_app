@@ -11,6 +11,7 @@ import '../db/generic_dao.dart';
 import '../db/table_view_settings_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
+import '../util/bool_value.dart';
 import '../util/color_picker.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
@@ -1429,7 +1430,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
       return (key == null || key.isEmpty) ? null : key;
     }
     if (field.type == FieldType.boolean) {
-      return raw == 1 || raw == true ? 1 : 0;
+      return coerceBoolValue(raw) ? 1 : 0;
     }
     if (field.type == FieldType.text) {
       return raw?.toString() ?? '';
