@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
 import '../models/table_config.dart';
+import '../util/color_default_value_field.dart';
 import '../util/field_format_choice.dart';
 import '../util/formula/formula_field_editor.dart';
 import '../util/formula/formula_service.dart';
@@ -145,6 +146,12 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     // SchemaRegistry._buildField needs to turn on FieldConfig.isLink.
     if (_format == FieldFormatChoice.url) {
       return jsonEncode({'isLink': true});
+    }
+    // `color` isn't a real stored format either -- see
+    // FieldFormatChoice.color's doc comment. Same shape as `url`, just
+    // turning on FieldConfig.isColor instead of isLink.
+    if (_format == FieldFormatChoice.color) {
+      return jsonEncode({'isColor': true});
     }
     // `inlineSelect` isn't a real stored format either -- see
     // FieldFormatChoice.inlineSelect's doc comment. Filters out any
@@ -378,14 +385,21 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
               value: _required,
               onChanged: (value) => setState(() => _required = value ?? false),
             ),
-            TextField(
-              controller: _defaultValueController,
-              decoration: InputDecoration(
+            if (_format == FieldFormatChoice.color)
+              ColorDefaultValueField(
+                controller: _defaultValueController,
                 labelText: _required ? 'Default (required)' : 'Default (optional)',
-                hintText: 'Blank = no default, field starts empty on existing rows',
+                onChanged: () => setState(() {}),
+              )
+            else
+              TextField(
+                controller: _defaultValueController,
+                decoration: InputDecoration(
+                  labelText: _required ? 'Default (required)' : 'Default (optional)',
+                  hintText: 'Blank = no default, field starts empty on existing rows',
+                ),
+                onChanged: (_) => setState(() {}),
               ),
-              onChanged: (_) => setState(() {}),
-            ),
           ],
           const SizedBox(height: 20),
           if (_error != null) ...[

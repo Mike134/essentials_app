@@ -62,6 +62,15 @@
 /// 'inline', options: [{key, label}, ...]}` -- see `InlineOptionListEditor`
 /// for the picker UI and `FieldConfig.inlineOptions`/`isInlineSelect` for
 /// how it renders. [resolve] handles this ambiguity too, same as `url`.
+///
+/// **`color` shares [text]'s `value` for the same reason `url` does.**
+/// `FieldConfig.isColor` (hex-string color swatch + picker, grid and form)
+/// has been fully wired since v1 (`domain.color`/`class.color`) -- the gap
+/// this closes is purely that `AddFieldScreen`'s picker had no way to
+/// *create* a v2 field with `options.isColor == true`; the render/edit
+/// side was never missing anything. Picking it writes `format: 'text'`,
+/// `options: {isColor: true}`. [resolve] handles this the same way it
+/// handles `url`.
 enum FieldFormatChoice {
   text('text', 'Text'),
   integer('integer', 'Whole number'),
@@ -75,6 +84,7 @@ enum FieldFormatChoice {
   percentage('percentage', 'Percentage'),
   url('text', 'Link (URL)'),
   inlineSelect('select', 'Fixed list of options'),
+  color('text', 'Color'),
   rating('rating', 'Rating'),
   formula('formula', 'Calculated (formula)'),
   barcode('barcode', 'Barcode / QR code');
@@ -94,6 +104,7 @@ enum FieldFormatChoice {
   static FieldFormatChoice resolve(String format, Map<String, Object?> options) {
     final choice = fromValue(format);
     if (choice == text && options['isLink'] == true) return url;
+    if (choice == text && options['isColor'] == true) return color;
     if (choice == select && options['mode'] == 'inline') return inlineSelect;
     return choice;
   }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
 import '../models/table_config.dart';
+import '../util/color_default_value_field.dart';
 import '../util/field_format_choice.dart';
 import '../util/field_options.dart';
 import '../util/formula/formula_field_editor.dart';
@@ -519,6 +520,10 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
       return jsonEncode({'isLink': true});
     }
     // See AddFieldScreen._buildOptionsJson's identical branch.
+    if (_format == FieldFormatChoice.color) {
+      return jsonEncode({'isColor': true});
+    }
+    // See AddFieldScreen._buildOptionsJson's identical branch.
     if (_format == FieldFormatChoice.inlineSelect) {
       return jsonEncode({
         'mode': 'inline',
@@ -691,11 +696,20 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                   value: _required,
                   onChanged: (value) => setState(() => _required = value ?? false),
                 ),
-                TextField(
-                  controller: _defaultValueController,
-                  decoration: InputDecoration(labelText: _required ? 'Default (required)' : 'Default (optional)'),
-                  onChanged: (_) => setState(() {}),
-                ),
+                if (_format == FieldFormatChoice.color)
+                  ColorDefaultValueField(
+                    controller: _defaultValueController,
+                    labelText: _required ? 'Default (required)' : 'Default (optional)',
+                    onChanged: () => setState(() {}),
+                  )
+                else
+                  TextField(
+                    controller: _defaultValueController,
+                    decoration: InputDecoration(
+                      labelText: _required ? 'Default (required)' : 'Default (optional)',
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
               ],
               if (_error != null) ...[
                 const SizedBox(height: 12),

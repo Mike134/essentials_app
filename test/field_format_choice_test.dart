@@ -37,9 +37,16 @@ void main() {
       expect(FieldFormatChoice.resolve('text', {'isLink': true}), FieldFormatChoice.url);
     });
 
-    test('resolves format text + no isLink option to plain text', () {
+    test('resolves format text + no isLink/isColor option to plain text', () {
       expect(FieldFormatChoice.resolve('text', const {}), FieldFormatChoice.text);
-      expect(FieldFormatChoice.resolve('text', {'isColor': true}), FieldFormatChoice.text);
+    });
+
+    test('resolves format text + options.isColor true to color', () {
+      expect(FieldFormatChoice.resolve('text', {'isColor': true}), FieldFormatChoice.color);
+    });
+
+    test('isColor on a non-text format is ignored -- resolves normally', () {
+      expect(FieldFormatChoice.resolve('currency', {'isColor': true}), FieldFormatChoice.currency);
     });
 
     test('isLink on a non-text format is ignored -- resolves normally', () {
@@ -67,7 +74,11 @@ void main() {
 
     test('matches fromValue for every other format', () {
       for (final choice in FieldFormatChoice.values) {
-        if (choice == FieldFormatChoice.url || choice == FieldFormatChoice.inlineSelect) continue;
+        if (choice == FieldFormatChoice.url ||
+            choice == FieldFormatChoice.inlineSelect ||
+            choice == FieldFormatChoice.color) {
+          continue;
+        }
         expect(FieldFormatChoice.resolve(choice.value, const {}), choice);
       }
     });
@@ -75,6 +86,10 @@ void main() {
 
   test('url shares its stored format string with text, by design', () {
     expect(FieldFormatChoice.url.value, FieldFormatChoice.text.value);
+  });
+
+  test('color shares its stored format string with text, by design', () {
+    expect(FieldFormatChoice.color.value, FieldFormatChoice.text.value);
   });
 
   test('inlineSelect shares its stored format string with select, by design', () {
