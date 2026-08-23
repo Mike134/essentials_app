@@ -88,6 +88,7 @@ dependencies:
   # unsupported platform is simply absent from
   # .flutter-plugins-dependencies, not a build error).
   mobile_scanner: ^7.4.0
+  csv: ^8.0.0
 
 dev_dependencies:
   flutter_test:

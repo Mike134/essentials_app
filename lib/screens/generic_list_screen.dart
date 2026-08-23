@@ -18,6 +18,7 @@ import '../util/field_formats/field_format_handler.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
 import '../util/strings.dart';
+import 'csv_import_screen.dart';
 import 'generic_form_screen.dart';
 
 /// Table view for a single table, driven entirely by [config], built on
@@ -481,6 +482,24 @@ class _GenericListScreenState extends State<GenericListScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('Exported to $savedPath')));
+  }
+
+  /// "Import from CSV" toolbar action -- symmetric with [_exportCsv], but
+  /// its own dedicated screen rather than an inline dialog (see
+  /// [CsvImportScreen]'s own doc comment for why: a multi-step flow with
+  /// real state to carry between steps, same shape as [NewTableScreen]/
+  /// [AddFieldScreen]). Pre-selects this screen's own table but leaves it
+  /// changeable -- picking the target table is a real step in that screen's
+  /// flow, not just a default. Reloads on return only when at least one row
+  /// was actually imported, same "changed == true" convention [_openForm]
+  /// already uses.
+  Future<void> _openCsvImport() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => CsvImportScreen(initialTableName: widget.config.tableName),
+      ),
+    );
+    if (changed == true) _reload();
   }
 
   /// Encloses in double quotes (doubling any embedded quotes first) if the
@@ -1479,6 +1498,11 @@ class _GenericListScreenState extends State<GenericListScreen> {
       appBar: AppBar(
         title: Text(widget.config.displayName),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined),
+            tooltip: 'Import from CSV',
+            onPressed: _openCsvImport,
+          ),
           FutureBuilder<_ScreenData>(
             future: _screenDataFuture,
             builder: (context, snapshot) {
