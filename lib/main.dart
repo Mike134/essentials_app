@@ -6,8 +6,31 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import 'screens/home_shell.dart';
 import 'screens/permission_gate.dart';
 import 'theme/theme_controller.dart';
+import 'util/field_formats/barcode_format_handler.dart';
+import 'util/field_formats/currency_format_handler.dart';
+import 'util/field_formats/field_format_handler.dart';
+import 'util/field_formats/link_file_format_handler.dart';
+import 'util/field_formats/percentage_format_handler.dart';
+import 'util/field_formats/rating_format_handler.dart';
 
 void main() {
+  // Essentials v2 Phase 2 -- see claude/essentials-v2-phase2-design.md's
+  // "Key decision". One entry per Phase 2 format as each gets built;
+  // `link_file` was the first (build order step 1, proving the pattern
+  // end to end). `currency`/`percentage` are step 2 (`real`'s own
+  // `decimals` option, also step 2, needs no handler -- see
+  // GenericListScreen._decimalsFor/_decimalNumberFormat). Steps 3 (`url`)
+  // and 4 (inline `select`) needed no handler at all, and step 6
+  // (`formula`) needed no handler either -- see FieldFormatChoice's own
+  // doc comment for why. `rating` is step 5, `barcode` is step 7 --
+  // the last of the design doc's format catalog.
+  FieldFormatRegistry.instance = FieldFormatRegistry(const [
+    LinkFileFormatHandler(),
+    CurrencyFormatHandler(),
+    PercentageFormatHandler(),
+    RatingFormatHandler(),
+    BarcodeFormatHandler(),
+  ]);
   runApp(const EssentialsApp());
 }
 

@@ -13,6 +13,55 @@
 /// `text`/`integer`/`real`/`boolean`/`date`/`dateTime`/`select` (a linked
 /// lookup). No collapsed `number` format (see Step 4's write-up for why
 /// that was deliberately not guessed at ahead of this screen).
+///
+/// `linkFile`/`currency`/`percentage`/`rating` are Phase 2 entries (see
+/// claude/essentials-v2-phase2-design.md) -- unlike the seven above, none
+/// of them has a dedicated branch in [SchemaRegistry]'s
+/// `_formatToFieldType` (all four fall through to the same
+/// [FieldType.text] every unrecognized format gets) and instead resolve
+/// through a [FieldFormatHandler] registered by their `value` string --
+/// see that class's doc comment for why new Phase 2 formats are routed
+/// differently from these first seven. `real` also gained an `options
+/// .decimals` display hint the same session `currency`/`percentage` were
+/// added, but it's not a new catalog entry -- see
+/// `GenericListScreen._decimalsFor`'s doc comment.
+///
+/// **`formula` is a third kind again** -- it *does* get a dedicated
+/// `_formatToFieldType` branch (its `options.resultType` decides between
+/// [FieldType.real] and [FieldType.text]) but has no
+/// [FieldFormatHandler]: its value is computed at read time by
+/// `FormulaService` and rendered through the long-standing
+/// [FieldConfig.readOnly] path that v1's `subscription_computed` view
+/// columns already used. See `FormulaService`'s own doc comment.
+///
+/// **`barcode` is back to the first kind** (a [FieldFormatHandler], `TEXT`
+/// storage, `options: {}`) -- its grid/form rendering is otherwise
+/// identical to plain `text`, it's routed through a handler purely to add
+/// a camera-scan button on Android. See `BarcodeFormatHandler`'s own doc
+/// comment for the package-choice spike this was built against.
+///
+/// **`url` is different again, and deliberately shares [text]'s `value`
+/// (`'text'`) rather than getting its own** -- per the design doc, a link
+/// field was never a new stored format at all: `SchemaRegistry._buildField`
+/// already reads `options['isLink'] == true` off *any* field regardless of
+/// format (`FieldConfig.isLink`, already fully wired through both screens
+/// since batch 3, long before Essentials v2 existed). `url` exists purely
+/// so `AddFieldScreen`'s picker has a discoverable entry for it -- picking
+/// it writes `format: 'text'`, `options: {isLink: true}`. **This is why
+/// [fromValue] can never resolve `url`** -- two entries sharing one
+/// `value` means `firstWhere` always returns whichever is declared first
+/// ([text]). Anywhere that needs to reverse-map an *existing* field's
+/// format back to a picker selection (i.e. an edit screen, never
+/// [AddFieldScreen] itself, which only ever creates new fields) must use
+/// [resolve] instead, which also checks `options.isLink`.
+///
+/// **`inlineSelect` shares [select]'s `value` (`'select'`) for the exact
+/// same reason `url` shares [text]'s** -- both `select` entries write
+/// `format: 'select'`; only `options.mode` (`'linked'` vs `'inline'`)
+/// tells them apart. Picking `inlineSelect` writes `options: {mode:
+/// 'inline', options: [{key, label}, ...]}` -- see `InlineOptionListEditor`
+/// for the picker UI and `FieldConfig.inlineOptions`/`isInlineSelect` for
+/// how it renders. [resolve] handles this ambiguity too, same as `url`.
 enum FieldFormatChoice {
   text('text', 'Text'),
   integer('integer', 'Whole number'),
@@ -20,7 +69,15 @@ enum FieldFormatChoice {
   boolean('boolean', 'Yes/No'),
   date('date', 'Date'),
   dateTime('dateTime', 'Date & time'),
-  select('select', 'Linked to another table');
+  select('select', 'Linked to another table'),
+  linkFile('link_file', 'Link to a file'),
+  currency('currency', 'Currency'),
+  percentage('percentage', 'Percentage'),
+  url('text', 'Link (URL)'),
+  inlineSelect('select', 'Fixed list of options'),
+  rating('rating', 'Rating'),
+  formula('formula', 'Calculated (formula)'),
+  barcode('barcode', 'Barcode / QR code');
 
   const FieldFormatChoice(this.value, this.label);
 
@@ -29,6 +86,17 @@ enum FieldFormatChoice {
 
   static FieldFormatChoice fromValue(String value) =>
       FieldFormatChoice.values.firstWhere((c) => c.value == value, orElse: () => FieldFormatChoice.text);
+
+  /// Same as [fromValue], but also recognizes [url]/[inlineSelect] -- see
+  /// this enum's own doc comment for why [fromValue] structurally can't.
+  /// Pass the field's already-parsed `options` map (e.g. via
+  /// `parseFieldOptions`), not the raw JSON string.
+  static FieldFormatChoice resolve(String format, Map<String, Object?> options) {
+    final choice = fromValue(format);
+    if (choice == text && options['isLink'] == true) return url;
+    if (choice == select && options['mode'] == 'inline') return inlineSelect;
+    return choice;
+  }
 }
 
 /// `field_definitions.options.on_delete` choices for a [FieldFormatChoice

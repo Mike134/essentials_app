@@ -178,6 +178,42 @@ void main() {
     expect(owner.lookup!.valueColumn, 'id'); // default, not overridden here
   });
 
+  test('buildConfig resolves a select/inline field into inlineOptions, not lookup', () async {
+    final tableName = await createTestTable('SR Inline Select');
+    await editor.addField(
+      tableName: tableName,
+      displayName: 'Priority',
+      format: 'select',
+      optionsJson:
+          '{"mode": "inline", "options": '
+          '[{"key": "low", "label": "Low"}, {"key": "high", "label": "High"}]}',
+    );
+
+    final config = await registry.buildConfig(tableName);
+    final priority = config.fields.single;
+    expect(priority.lookup, isNull);
+    expect(priority.isInlineSelect, isTrue);
+    expect(priority.inlineOptions, hasLength(2));
+    expect(priority.inlineOptions![0].key, 'low');
+    expect(priority.inlineOptions![0].label, 'Low');
+    expect(priority.inlineOptions![1].key, 'high');
+  });
+
+  test('buildConfig gives a select/inline field with no options an empty list, not null', () async {
+    final tableName = await createTestTable('SR Inline Select Empty');
+    await editor.addField(
+      tableName: tableName,
+      displayName: 'Empty Choice',
+      format: 'select',
+      optionsJson: '{"mode": "inline", "options": []}',
+    );
+
+    final config = await registry.buildConfig(tableName);
+    final field = config.fields.single;
+    expect(field.isInlineSelect, isTrue);
+    expect(field.inlineOptions, isEmpty);
+  });
+
   test('buildConfig throws when field_definitions references a column that does not physically exist', () async {
     final tableName = await createTestTable('SR Drift Detection');
     // Simulates a migration that landed the field_definitions row (via the

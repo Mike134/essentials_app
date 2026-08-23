@@ -2,6 +2,7 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import '../models/table_config.dart';
 import '../util/field_options.dart';
+import '../util/formula/formula_service.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
 
@@ -76,10 +77,19 @@ class GenericDao {
     // SqlUtil.transformAutomaticExplicit), so this composes correctly with
     // config.filterWhere's own bare-`?` convention without this method
     // needing to know how many placeholders came before it.
-    return crdt.query(
+    final rows = await crdt.query(
       'SELECT * FROM $source WHERE $where ORDER BY $orderBy',
       args,
     );
+
+    // Essentials v2 Phase 2 step 6: `formula` fields have a real physical
+    // column that is deliberately never written, so their value is
+    // computed here on the way out -- the read-time equivalent of what
+    // v1's `subscription_computed` view did in SQL. A no-op returning
+    // `rows` untouched for every table without a formula field, which is
+    // almost all of them (see FormulaService.applyTo).
+    if (!FormulaService.hasFormulaFields(config.fields)) return rows;
+    return [for (final row in rows) FormulaService.applyTo(config.fields, row)];
   }
 
   /// Inserts a new row and returns its real `id` column value. `id` is a

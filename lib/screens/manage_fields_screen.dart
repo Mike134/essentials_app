@@ -4,8 +4,12 @@ import 'package:flutter/material.dart';
 
 import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
+import '../models/table_config.dart';
 import '../util/field_format_choice.dart';
 import '../util/field_options.dart';
+import '../util/formula/formula_field_editor.dart';
+import '../util/formula/formula_service.dart';
+import '../util/inline_option_editor.dart';
 import '../util/permanent_delete_gate.dart';
 import 'add_field_screen.dart';
 
@@ -376,16 +380,23 @@ class _ManageFieldsScreenState extends State<ManageFieldsScreen> {
   }
 
   String _summarize(FieldDefinitionRow field) {
-    final choice = FieldFormatChoice.fromValue(field.format);
+    final options = parseFieldOptions(field.optionsJson);
+    // .resolve, not .fromValue -- a url field's stored format is plain
+    // 'text' (see FieldFormatChoice.url's doc comment), so .fromValue
+    // alone would show "Text" here for a field that's actually a link.
+    final choice = FieldFormatChoice.resolve(field.format, options);
     final parts = <String>[
       choice.label,
       if (field.required) 'required',
       if (field.defaultValue != null) 'default: ${field.defaultValue}',
     ];
     if (choice == FieldFormatChoice.select) {
-      final options = parseFieldOptions(field.optionsJson);
       final table = options['table'] as String?;
       if (table != null) parts.insert(1, 'to $table');
+    }
+    if (choice == FieldFormatChoice.formula) {
+      final expression = (options['expression'] as String?)?.trim();
+      if (expression != null && expression.isNotEmpty) parts.insert(1, expression);
     }
     return parts.join(' · ');
   }
@@ -404,12 +415,24 @@ class _FieldEditorDialog extends StatefulWidget {
 class _FieldEditorDialogState extends State<_FieldEditorDialog> {
   late final TextEditingController _displayNameController;
   late final TextEditingController _defaultValueController;
+  late final TextEditingController _currencySymbolController;
+  late final TextEditingController _decimalsController;
+  late final TextEditingController _ratingMaxController;
+  late final TextEditingController _expressionController;
   late Future<List<TableDefinitionRow>> _tableNamesFuture;
 
   late FieldFormatChoice _format;
   late bool _required;
   String? _linkedTable;
   late OnDeleteChoice _onDelete;
+  late List<InlineOption> _inlineOptions;
+  late String _resultType;
+
+  /// Sibling fields available to a formula, excluding this field itself
+  /// -- a field referencing itself is the one cycle that's both trivially
+  /// avoidable and certain to be a mistake, so it isn't offered.
+  Map<String, String> _availableFields = const {};
+
   String? _error;
   bool _saving = false;
 
@@ -419,32 +442,110 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     final field = widget.field;
     _displayNameController = TextEditingController(text: field.displayName);
     _defaultValueController = TextEditingController(text: field.defaultValue ?? '');
-    _format = FieldFormatChoice.fromValue(field.format);
     _required = field.required;
     _tableNamesFuture = widget.metadata.loadActiveTables();
 
     final options = parseFieldOptions(field.optionsJson);
+    // .resolve, not .fromValue -- see FieldFormatChoice.url's doc comment.
+    // Reopening the editor on an existing link/inline-select field needs
+    // to show the right choice selected, or saving would silently drop
+    // isLink/the option list.
+    _format = FieldFormatChoice.resolve(field.format, options);
     _linkedTable = options['table'] as String?;
     _onDelete = OnDeleteChoice.fromValue(options['on_delete'] as String?);
+    _currencySymbolController = TextEditingController(text: (options['symbol'] as String?) ?? '');
+    _decimalsController = TextEditingController(text: options['decimals']?.toString() ?? '');
+    _inlineOptions = InlineOption.parseList(options['options']);
+    _ratingMaxController = TextEditingController(text: options['max']?.toString() ?? '');
+    _expressionController = TextEditingController(text: (options['expression'] as String?) ?? '');
+    _resultType = (options['resultType'] as String?) ?? FormulaService.resultTypeNumber;
+    _loadAvailableFields();
+  }
+
+  Future<void> _loadAvailableFields() async {
+    final fields = await widget.metadata.loadFields(widget.field.tableName, includeDeleted: false);
+    if (!mounted) return;
+    setState(() {
+      _availableFields = {
+        for (final f in fields)
+          if (f.fieldName != widget.field.fieldName) f.fieldName: f.displayName,
+      };
+    });
   }
 
   @override
   void dispose() {
     _displayNameController.dispose();
     _defaultValueController.dispose();
+    _currencySymbolController.dispose();
+    _decimalsController.dispose();
+    _ratingMaxController.dispose();
+    _expressionController.dispose();
     super.dispose();
   }
 
   bool get _canSave {
     if (_displayNameController.text.trim().isEmpty) return false;
-    if (_required && _defaultValueController.text.trim().isEmpty) return false;
+    if (_showsRequired && _required && _defaultValueController.text.trim().isEmpty) return false;
     if (_format == FieldFormatChoice.select && _linkedTable == null) return false;
+    if (_format == FieldFormatChoice.inlineSelect && !_hasValidInlineOptions) return false;
+    if (_format == FieldFormatChoice.formula && !isUsableFormula(_expressionController.text)) {
+      return false;
+    }
     return true;
   }
 
+  bool get _hasValidInlineOptions =>
+      _inlineOptions.any((o) => o.key.isNotEmpty && o.label.isNotEmpty);
+
+  /// Same reasoning as [AddFieldScreen]'s own `_showsRequired`.
+  bool get _showsRequired => _format != FieldFormatChoice.formula;
+
+  /// Same shared "one field, several formats" shape as [AddFieldScreen]'s
+  /// own `_showsDecimals` -- see that getter's doc comment.
+  bool get _showsDecimals =>
+      _format == FieldFormatChoice.real ||
+      _format == FieldFormatChoice.currency ||
+      _format == FieldFormatChoice.percentage ||
+      (_format == FieldFormatChoice.formula && _resultType == FormulaService.resultTypeNumber);
+
   String? _buildOptionsJson() {
-    if (_format != FieldFormatChoice.select) return null;
-    return jsonEncode({'mode': 'linked', 'table': _linkedTable, 'on_delete': _onDelete.value});
+    if (_format == FieldFormatChoice.select) {
+      return jsonEncode({'mode': 'linked', 'table': _linkedTable, 'on_delete': _onDelete.value});
+    }
+    // See AddFieldScreen._buildOptionsJson's identical branch -- `url`
+    // isn't a real stored format, just plain 'text' plus this flag.
+    if (_format == FieldFormatChoice.url) {
+      return jsonEncode({'isLink': true});
+    }
+    // See AddFieldScreen._buildOptionsJson's identical branch.
+    if (_format == FieldFormatChoice.inlineSelect) {
+      return jsonEncode({
+        'mode': 'inline',
+        'options': [
+          for (final o in _inlineOptions)
+            if (o.key.isNotEmpty && o.label.isNotEmpty) o.toJson(),
+        ],
+      });
+    }
+    final options = <String, Object?>{};
+    if (_format == FieldFormatChoice.formula) {
+      options['expression'] = _expressionController.text.trim();
+      options['resultType'] = _resultType;
+    }
+    if (_format == FieldFormatChoice.currency) {
+      final symbol = _currencySymbolController.text.trim();
+      if (symbol.isNotEmpty) options['symbol'] = symbol;
+    }
+    if (_showsDecimals) {
+      final decimals = int.tryParse(_decimalsController.text.trim());
+      if (decimals != null) options['decimals'] = decimals;
+    }
+    if (_format == FieldFormatChoice.rating) {
+      final max = int.tryParse(_ratingMaxController.text.trim());
+      if (max != null) options['max'] = max;
+    }
+    return options.isEmpty ? null : jsonEncode(options);
   }
 
   Future<void> _save() async {
@@ -459,8 +560,14 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
         displayName: _displayNameController.text,
         format: _format.value,
         optionsJson: _buildOptionsJson(),
-        defaultValue: _defaultValueController.text.trim().isEmpty ? null : _defaultValueController.text,
-        isRequired: _required,
+        // Same reasoning as AddFieldScreen's own submit: a formula field
+        // is readOnly, so required/default are meaningless for it and the
+        // UI hides both -- force them off rather than persisting whatever
+        // the hidden controls last held.
+        defaultValue: _showsRequired && _defaultValueController.text.trim().isNotEmpty
+            ? _defaultValueController.text
+            : null,
+        isRequired: _showsRequired && _required,
       );
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -503,6 +610,42 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                   });
                 },
               ),
+              if (_format == FieldFormatChoice.formula) ...[
+                const SizedBox(height: 12),
+                FormulaFieldEditor(
+                  expressionController: _expressionController,
+                  resultType: _resultType,
+                  onResultTypeChanged: (value) => setState(() => _resultType = value),
+                  availableFields: _availableFields,
+                  onChanged: () => setState(() {}),
+                ),
+              ],
+              if (_format == FieldFormatChoice.currency) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _currencySymbolController,
+                  decoration: const InputDecoration(labelText: 'Symbol', hintText: r'Default: $'),
+                ),
+              ],
+              if (_showsDecimals) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _decimalsController,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: 'Decimal places',
+                    hintText: 'Default: ${_format == FieldFormatChoice.percentage ? '0' : '2'}',
+                  ),
+                ),
+              ],
+              if (_format == FieldFormatChoice.rating) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _ratingMaxController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Max stars', hintText: 'Default: 5'),
+                ),
+              ],
               if (_format == FieldFormatChoice.select) ...[
                 const SizedBox(height: 12),
                 FutureBuilder<List<TableDefinitionRow>>(
@@ -532,19 +675,28 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                   onChanged: (value) => setState(() => _onDelete = value ?? OnDeleteChoice.restrict),
                 ),
               ],
-              const SizedBox(height: 12),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                controlAffinity: ListTileControlAffinity.leading,
-                title: const Text('Required'),
-                value: _required,
-                onChanged: (value) => setState(() => _required = value ?? false),
-              ),
-              TextField(
-                controller: _defaultValueController,
-                decoration: InputDecoration(labelText: _required ? 'Default (required)' : 'Default (optional)'),
-                onChanged: (_) => setState(() {}),
-              ),
+              if (_format == FieldFormatChoice.inlineSelect) ...[
+                const SizedBox(height: 12),
+                InlineOptionListEditor(
+                  options: _inlineOptions,
+                  onChanged: (options) => setState(() => _inlineOptions = options),
+                ),
+              ],
+              if (_showsRequired) ...[
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Required'),
+                  value: _required,
+                  onChanged: (value) => setState(() => _required = value ?? false),
+                ),
+                TextField(
+                  controller: _defaultValueController,
+                  decoration: InputDecoration(labelText: _required ? 'Default (required)' : 'Default (optional)'),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ],
               if (_error != null) ...[
                 const SizedBox(height: 12),
                 Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),

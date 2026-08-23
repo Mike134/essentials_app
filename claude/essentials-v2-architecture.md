@@ -169,6 +169,8 @@ This mirrors Excel's behavior: a cell holds a value, and a format specification 
 
 **Phase 1 actually shipped a smaller set** — `text, integer, real, boolean, date, dateTime, select` (see `lib/util/field_format_choice.dart`'s `FieldFormatChoice` enum). `select` supports only the "linked table" sub-mode below; inline-option selects, and every format from `rating` down through `rollup` in the table above, are still just this design-doc entry — Phase 2+ work, not yet built.
 
+**Phase 2's actual scope for this table was designed 2026-08-23** (`claude/essentials-v2-phase2-design.md`) and narrows/corrects it in three ways: `lookup`/`rollup` moved out to Phase 4 (both need `link_record`, not yet built); `formula` is scoped to a small spreadsheet-style expression subset rather than full JS; `attachment` is scoped to local-only storage for Phase 2, with cross-device sync (the "File / Attachment Sync" section below) deferred as its own follow-up design. See that doc for the full format catalog, `options` JSON shapes, and the render-layer change (`FieldFormatHandler`) it identified as a prerequisite.
+
 ### Select fields
 
 A `select` format has two sub-modes, configured in options:
@@ -186,7 +188,7 @@ A `select` format has two sub-modes, configured in options:
 
 ### Attachment vs. Link (file) — separate formats, separate storage mechanisms
 
-- **`attachment`** — file is copied into `C:\Databases\essentials_app\files\{table}\{record_id}\`. App owns it. Synced via file transfer endpoint on hub server. Android equivalent: app data directory.
+- **`attachment`** — file is copied into `C:\Databases\essentials_app\files\{table}\{record_id}\`. App owns it. Synced via file transfer endpoint on hub server. Android equivalent: app data directory. **Dropped from Phase 2 entirely (confirmed 2026-08-23) — local storage and sync will be designed and built together in a future phase, see `claude/essentials-v2-phase2-design.md`.**
 - **`link_file`** — stores a path string or URL. Points to a file the app does not own or manage. Not synced. Displays content if accessible, handles gracefully if not.
 
 A record can have both formats on different fields simultaneously. Users add whichever they need.
@@ -268,6 +270,8 @@ Attachment files live alongside the database:
 
 Sync mechanism: hub server (`server.dart`) gets a file transfer endpoint alongside the existing CRDT WebSocket. When CRDT sync detects a new attachment record on a device, the file is pulled from whichever device owns it via the hub. File identity keyed by `{table}/{record_id}/{field_name}/{filename}` to avoid collisions.
 
+**Not built yet as of 2026-08-23** (confirmed by reading `server/bin/server.dart` — no file/upload endpoint exists). `attachment` was dropped from Phase 2 entirely (confirmed 2026-08-23) rather than shipped local-only as originally proposed — this section's implementation, local storage and sync together, is deferred to its own future phase. See `claude/essentials-v2-phase2-design.md`.
+
 ---
 
 ## Features Roadmap
@@ -281,11 +285,14 @@ Sync mechanism: hub server (`server.dart`) gets a file transfer endpoint alongsi
 
 Implementation detail, verification results, and the full build order live in `claude/essentials-v2-phase1-design.md`. Code-reviewed complete 2026-08-23 (see `claude/project-overview.md`'s Current Status section) — every design rule (never emit CRDT columns, full identifier quoting, same-transaction `migration_log` + metadata writes, two-stage delete, metadata-driven referential integrity) verified actually implemented, not just designed.
 
-### Phase 2 — Rich Field Types
-- Implement all field types listed above
-- Image/attachment field with thumbnail generation
-- Formula field expression evaluator
-- Barcode scan integration (Android camera)
+### Phase 2 — Rich Field Types — **complete and real-device verified 2026-08-23** — all 7 build order steps built, then confirmed working on both MIKE-CU and MIKE-12R the same day, including two real findings fixed live (a stale 12R build, and a Save-button nav-bar overlap in `GenericFormScreen`) — see CLAUDE.md's Phase 2 sections
+- `number` (revised, `decimals` option) / `currency` / `percentage` / `rating` / `url` / `link_file` / `barcode` / `formula`, plus inline-mode `select`
+- Formula field — **scoped to a small spreadsheet-style expression subset for Phase 2**, not full JS (`flutter_js` stays reserved for Phase 5). Confirmed 2026-08-23; implementation runs on Opus, rest of Phase 2 on Sonnet. **Built 2026-08-23** (build order step 6) — hand-rolled evaluator after a real pub.dev check, `options: {expression, resultType, decimals}`, value computed at read time into an always-NULL physical column so format changes stay metadata-only. Full write-up in CLAUDE.md's Phase 2 Step 6 section.
+- Barcode scan integration (Android camera / Windows text fallback) — **built 2026-08-23** (build order step 7). Spiked and chosen: `mobile_scanner: ^7.4.0`, bundled MLKit mode (no Play Services dependency), confirmed not to break the Windows build. See CLAUDE.md's Phase 2 Step 7 section for the spike write-up and a real, tracked KGP-warning caveat.
+- **`lookup`/`rollup` moved out of Phase 2 to Phase 4**, where they correctly belong (both need `link_record`, which Phase 4 builds) — the format table above still lists them under the general spec; this bullet is the correction, same convention as Phase 1's corrections above.
+- **Image/attachment field dropped from Phase 2 entirely, confirmed 2026-08-23** — not even local-only. A field that doesn't sync between devices was judged not worth shipping half-built; local storage and hub file-transfer sync (see "File / Attachment Sync" above, still unbuilt) will be designed and built together as their own future phase.
+
+Full design — the format catalog, `options` JSON shapes for every Phase 2 format, and the `FieldFormatHandler` render-layer change identified as a prerequisite (both `GenericListScreen`/`GenericFormScreen` currently branch on a 6-value `FieldType` enum in 3-4 places each; adding this many more formats the same way was judged not to scale) — lives in `claude/essentials-v2-phase2-design.md`.
 
 ### Phase 3 — View Types
 - List view

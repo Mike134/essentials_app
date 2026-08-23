@@ -14,6 +14,7 @@ import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
+import '../util/field_formats/field_format_handler.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
 import '../util/strings.dart';
@@ -1031,11 +1032,47 @@ class _GenericListScreenState extends State<GenericListScreen> {
       ? TrinaColumnTextAlign.right
       : TrinaColumnTextAlign.start;
 
+  /// Essentials v2 Phase 2's `real` `options.decimals` (default 2, per
+  /// claude/essentials-v2-phase2-design.md's `real` entry) -- a
+  /// display-only hint for the grid's own number format string, not a new
+  /// format and not a [FieldFormatHandler] (unlike `currency`/`percentage`
+  /// below, `real` keeps its existing [FieldType.real] code path
+  /// untouched otherwise). Read leniently -- `jsonDecode` always hands
+  /// back a Dart `int` for a JSON integer literal, but this tolerates a
+  /// stringified one too rather than silently falling back to the default.
+  int _decimalsFor(FieldConfig field) {
+    final raw = field.options['decimals'];
+    if (raw is int) return raw;
+    return int.tryParse(raw?.toString() ?? '') ?? 2;
+  }
+
+  /// `decimals <= 0` collapses to a whole-number format (no trailing
+  /// `.` with zero digits after it) -- same shape `_decimalNumberFormat`'s
+  /// callers already expect from the hardcoded `'#,##0.00;-#,##0.00'`
+  /// this replaces, just parameterized on [decimals] instead of always 2.
+  String _decimalNumberFormat(int decimals) => decimals <= 0
+      ? '#,##0;-#,##0'
+      : '#,##0.${'0' * decimals};-#,##0.${'0' * decimals}';
+
+  /// Essentials v2 Phase 2 -- see claude/essentials-v2-phase2-design.md's
+  /// "Key decision". `null` for every Phase 1 format, always (nothing is
+  /// registered for them), in which case every call site below falls
+  /// through to the existing [FieldType]-based branches completely
+  /// unchanged -- no regression risk for the six formats already verified
+  /// on real hardware.
+  FieldFormatHandler? _formatHandlerFor(FieldConfig field) =>
+      FieldFormatRegistry.instance.handlerFor(field.format);
+
   TrinaColumn _buildFieldColumn(
     FieldConfig field,
     Map<String, Map<int, String>> lookupMaps,
     ColumnSetting? setting,
   ) {
+    final handler = _formatHandlerFor(field);
+    if (handler != null) {
+      return _withColumnSetting(handler.buildGridColumn(field), setting);
+    }
+
     if (field.readOnly) {
       // Computed, query-time-only value (e.g. subscription_computed's
       // yearly_cost/next_date) -- nothing to write back, so no inline
@@ -1072,7 +1109,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
           title: field.label,
           field: field.column,
           type: switch (field.type) {
-            FieldType.real => TrinaColumnType.number(format: '#,##0.00;-#,##0.00'),
+            FieldType.real => TrinaColumnType.number(format: _decimalNumberFormat(_decimalsFor(field))),
             FieldType.integer => TrinaColumnType.number(),
             _ => TrinaColumnType.text(),
           },
@@ -1149,6 +1186,27 @@ class _GenericListScreenState extends State<GenericListScreen> {
           field: field.column,
           type: TrinaColumnType.select<int?>(items, itemToString: displayFor),
           formatter: (value) => displayFor(value as int?),
+          width: 160,
+        ),
+        setting,
+      );
+    }
+
+    if (field.isInlineSelect) {
+      // Same select-column shape as isLookup above, but keyed on the
+      // option's own String key instead of an int FK id -- no lookupMaps
+      // query needed, field.inlineOptions is already the complete answer
+      // (Essentials v2 Phase 2 build order step 4, see
+      // claude/essentials-v2-phase2-design.md's "Inline select" entry).
+      final options = {for (final o in field.inlineOptions!) o.key: o.label};
+      String displayFor(String? key) => key == null ? '' : (options[key] ?? '');
+      final items = <String?>[if (!field.required) null, ...options.keys];
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.select<String?>(items, itemToString: displayFor),
+          formatter: (value) => displayFor(value as String?),
           width: 160,
         ),
         setting,
@@ -1285,7 +1343,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
         field: field.column,
         type: switch (field.type) {
           FieldType.integer => TrinaColumnType.number(),
-          FieldType.real => TrinaColumnType.number(format: '#,##0.00;-#,##0.00'),
+          FieldType.real => TrinaColumnType.number(format: _decimalNumberFormat(_decimalsFor(field))),
           _ => TrinaColumnType.text(),
         },
         width: field.type == FieldType.text ? 220 : 110,
@@ -1341,7 +1399,16 @@ class _GenericListScreenState extends State<GenericListScreen> {
     // item type and break both the dropdown's current-selection highlight
     // and its edit validation; parsing to the same int the column type
     // actually expects is the correct fix, not a same-shape workaround.
+    final handler = _formatHandlerFor(field);
+    if (handler != null) return handler.cellValueFor(field, raw);
     if (field.isLookup) return parseLookupValue(raw);
+    if (field.isInlineSelect) {
+      // The stored key IS the item type TrinaColumnType.select<String?>
+      // expects, unlike isLookup's int-id parsing above -- just needs
+      // blank -> null, same "no selection" convention as everywhere else.
+      final key = raw as String?;
+      return (key == null || key.isEmpty) ? null : key;
+    }
     if (field.type == FieldType.boolean) {
       return raw == 1 || raw == true ? 1 : 0;
     }
@@ -1376,11 +1443,17 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final id = event.row.cells['id']!.value as int;
 
     Object? value = event.value;
-    if (field.isLookup) {
+    final handler = _formatHandlerFor(field);
+    if (handler != null) {
+      value = handler.valueForSave(field, value);
+    } else if (field.isLookup) {
       // Already the selected option's raw id (or null) -- the select
       // column's items are ids themselves (see _buildFieldColumn), unlike
       // the plain-text branch below, which needs its own trim/empty->null
       // handling because TrinaGrid's text editor hands back a raw String.
+    } else if (field.isInlineSelect) {
+      // Same reasoning as isLookup above -- already the selected key (or
+      // null), no trim/empty->null handling needed.
     } else if (field.type == FieldType.text) {
       final text = (value as String? ?? '').trim();
       value = text.isEmpty ? null : text;

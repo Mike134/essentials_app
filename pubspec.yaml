@@ -78,6 +78,16 @@ dependencies:
   # as of this writing; beta.7 already has the AGP9 fix (landed in
   # beta.4). Revisit once a stable release includes this fix.
   file_picker: 12.0.0-beta.7
+  # Essentials v2 Phase 2 build order step 7 -- see
+  # claude/essentials-v2-phase2-design.md's `barcode` entry and CLAUDE.md's
+  # own Phase 2 Step 7 write-up for the spike this version was chosen
+  # from. Android-only (bundles MLKit directly by default -- no Google
+  # Play Services dependency, the exact risk the design doc flagged);
+  # Windows has no plugin implementation at all, confirmed not to break
+  # `flutter build windows` (federated plugin architecture -- an
+  # unsupported platform is simply absent from
+  # .flutter-plugins-dependencies, not a build error).
+  mobile_scanner: ^7.4.0
 
 dev_dependencies:
   flutter_test:

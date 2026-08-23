@@ -6,6 +6,7 @@ import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
 import '../util/date_format.dart';
+import '../util/field_formats/field_format_handler.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
 
@@ -81,6 +82,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   final Map<String, bool> _boolValues = {};
   final Map<String, int?> _lookupValues = {};
   final Map<String, Future<List<Map<String, Object?>>>> _lookupOptions = {};
+  final Map<String, String?> _inlineSelectValues = {};
   final Map<String, FocusNode> _focusNodes = {};
   bool _saving = false;
 
@@ -113,6 +115,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         // editing.
         _lookupValues[field.column] = parseLookupValue(existingValue);
         _lookupOptions[field.column] = _dao.getLookupOptions(field.lookup!);
+      } else if (field.isInlineSelect) {
+        // No async fetch needed -- field.inlineOptions is already the
+        // complete answer, unlike isLookup above. Blank -> null, same
+        // "no selection" convention as everywhere else.
+        final key = existingValue as String?;
+        _inlineSelectValues[field.column] = (key == null || key.isEmpty) ? null : key;
       } else {
         _controllers[field.column] =
             TextEditingController(text: existingValue?.toString() ?? '');
@@ -155,6 +163,8 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         values[field.column] = (_boolValues[field.column] ?? false) ? 1 : 0;
       } else if (field.isLookup) {
         values[field.column] = _lookupValues[field.column];
+      } else if (field.isInlineSelect) {
+        values[field.column] = _inlineSelectValues[field.column];
       } else {
         final text = _controllers[field.column]!.text.trim();
         if (text.isEmpty) {
@@ -283,7 +293,15 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       body: Form(
         key: _formKey,
         child: ListView(
-          padding: const EdgeInsets.all(16),
+          // Same system-nav-bar overlap fix as SettingsScreen/
+          // ManageTablesScreen/ManageFieldsScreen/NewTableScreen/
+          // AddFieldScreen (see CLAUDE.md's real-device verification
+          // session) -- this screen just never got it at the time, since
+          // it predates that pass and wasn't one of the four screens
+          // checked. Found live on MIKE-12R: the Save button sat under
+          // the three-button nav bar, tappable-looking but not actually
+          // reachable at the very bottom edge.
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
           children: [
             // The surrogate PK is database-controlled and never editable,
             // in either view type -- shown read-only here only when
@@ -316,7 +334,22 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     );
   }
 
+  /// Essentials v2 Phase 2 -- see claude/essentials-v2-phase2-design.md's
+  /// "Key decision". `null` for every Phase 1 format, always (nothing is
+  /// registered for them), in which case [_buildField] falls through to
+  /// the existing [FieldType]-based branches completely unchanged.
+  FieldFormatHandler? _formatHandlerFor(FieldConfig field) =>
+      FieldFormatRegistry.instance.handlerFor(field.format);
+
   Widget _buildField(FieldConfig field) {
+    final handler = _formatHandlerFor(field);
+    if (handler != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: handler.buildFormField(context, field, _controllers[field.column]!),
+      );
+    }
+
     if (field.readOnly) {
       // Same disabled-TextFormField treatment as the ID field above --
       // shown for context, never editable. Reuses the controller already
@@ -388,6 +421,31 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                   : null,
             );
           },
+        ),
+      );
+    }
+
+    if (field.isInlineSelect) {
+      // No FutureBuilder needed -- field.inlineOptions is already the
+      // complete option list, unlike isLookup above (Essentials v2 Phase
+      // 2 build order step 4).
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: DropdownButtonFormField<String>(
+          initialValue: _inlineSelectValues[field.column],
+          decoration: InputDecoration(labelText: field.label),
+          items: [
+            if (!field.required) const DropdownMenuItem<String>(child: Text('-')),
+            for (final option in field.inlineOptions!)
+              DropdownMenuItem<String>(value: option.key, child: Text(option.label)),
+          ],
+          onChanged: (value) {
+            setState(() => _inlineSelectValues[field.column] = value);
+            _recomputePreview();
+          },
+          validator: field.required
+              ? (value) => value == null ? '${field.label} is required' : null
+              : null,
         ),
       );
     }

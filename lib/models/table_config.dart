@@ -29,6 +29,39 @@ class LookupConfig {
   final String valueColumn;
 }
 
+/// One choice in a `select` field's *inline* option list (`format:
+/// 'select'`, `options.mode == 'inline'`) -- Essentials v2 Phase 2 build
+/// order step 4 (see claude/essentials-v2-phase2-design.md's "Inline
+/// select" entry). The schema-engine-native alternative to [LookupConfig]
+/// for a fixed, small set of choices that don't warrant their own backing
+/// table (e.g. Low/Medium/High) -- [key] is what's actually stored in the
+/// TEXT column, [label] is what the user sees in the dropdown.
+class InlineOption {
+  const InlineOption({required this.key, required this.label});
+
+  final String key;
+  final String label;
+
+  Map<String, Object?> toJson() => {'key': key, 'label': label};
+
+  /// Parses `options.options` from a `select` field's inline-mode JSON
+  /// (`{mode: 'inline', options: [{key, label}, ...]}`) -- shared by
+  /// `SchemaRegistry` and `ManageFieldsScreen`'s field editor (the only
+  /// place that needs to reverse-parse an *existing* field's options back
+  /// into an editable list; `AddFieldScreen` only ever creates new
+  /// fields, starting from an empty one). Malformed/non-string entries
+  /// are skipped rather than thrown on, same lenient spirit as
+  /// `parseFieldOptions` itself.
+  static List<InlineOption> parseList(Object? raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final entry in raw)
+        if (entry is Map && entry['key'] is String && entry['label'] is String)
+          InlineOption(key: entry['key'] as String, label: entry['label'] as String),
+    ];
+  }
+}
+
 /// One editable column on a [TableConfig]'s table. Excludes `id`, which is
 /// always the surrogate primary key and never user-edited.
 class FieldConfig {
@@ -42,6 +75,9 @@ class FieldConfig {
     this.readOnly = false,
     this.isLink = false,
     this.isColor = false,
+    this.format,
+    this.options = const {},
+    this.inlineOptions,
   });
 
   /// The literal SQLite column name.
@@ -87,6 +123,40 @@ class FieldConfig {
   /// stored value is always the hex string; the picker is just a second
   /// way to produce one, same relationship [isLink] has to plain text.
   final bool isColor;
+
+  /// Raw `field_definitions.format` string (e.g. `'link_file'`,
+  /// `'currency'`) -- `null` for every [FieldConfig] built before Phase 2
+  /// (test-file throwaway configs, the retired `table_configs.dart`/
+  /// `table_discovery_service.dart` builders). [type]/[isLink]/[isColor]
+  /// above stay the source of truth for Phase 1's 6 formats; this exists
+  /// purely as a lookup key into `FieldFormatRegistry` for a *new* Phase 2
+  /// format that needs its own [FieldFormatHandler] -- see
+  /// claude/essentials-v2-phase2-design.md's "Key decision". A format with
+  /// no registered handler (every Phase 1 format, always) just falls
+  /// through to the existing [type]-based rendering, unaffected by this
+  /// field's presence.
+  final String? format;
+
+  /// Parsed `field_definitions.options` JSON -- format-specific settings
+  /// a [FieldFormatHandler] reads (e.g. currency's `symbol`/`decimals`).
+  /// Deliberately separate from [isLink]/[isColor] (which are also read
+  /// out of the same raw JSON, by [SchemaRegistry], for Phase 1's formats)
+  /// -- those two stay their own booleans since every render site already
+  /// keys off them directly; a Phase 2 handler reads this map instead of
+  /// needing its own bespoke [FieldConfig] fields per format.
+  final Map<String, Object?> options;
+
+  /// Non-null for a `select` field in *inline* mode (`options.mode ==
+  /// 'inline'`) -- a fixed list of choices with no backing table,
+  /// rendered as a synchronous dropdown (no async table query the way
+  /// [lookup] needs -- see [isInlineSelect]'s call sites in
+  /// `GenericListScreen`/`GenericFormScreen`). Mutually exclusive with
+  /// [lookup] in practice (a `select` field is either linked or inline,
+  /// never both) -- not enforced at this layer, but `SchemaRegistry`
+  /// never produces both non-null for the same field.
+  final List<InlineOption>? inlineOptions;
+
+  bool get isInlineSelect => inlineOptions != null;
 }
 
 /// Drives the generic list + form screens for one SQLite table. One config

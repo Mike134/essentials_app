@@ -5961,3 +5961,882 @@ order (steps 1-9) is now complete and live-verified end to end on real
 hardware. Whenever Mike picks this back up, it's genuine real usage from
 here: recreating whichever of the original tables he wants back through
 the finished engine, or anything new entirely.
+
+---
+
+## Essentials v2 Phase 2 — Rich Field Types (design ready 2026-08-23; build started same day)
+
+Phase 2 was designed (not implemented) in a claude.ai session on 2026-08-23, grounded in a real read of this repo's live code. **Start here:** `claude/essentials-v2-phase2-design.md` — the format catalog, `options` JSON shapes, the `FieldFormatHandler`/`FieldFormatRegistry` render-layer prerequisite, and the confirmed build order. Read `claude/essentials-v2-architecture.md`'s Phase 2 roadmap bullet first for the one-paragraph summary of what changed from its original format table.
+
+**Confirmed with Mike before this handoff (do not re-litigate):**
+- `attachment` is dropped from Phase 2 entirely, not even local-only — local storage and hub file-transfer sync will be designed and built together as their own later phase.
+- `formula` ships as a small arithmetic expression subset (field references, `+ - * /`, comparisons, `ROUND`/`IF`), not full JS — `flutter_js` stays reserved for Phase 5.
+- `lookup`/`rollup` are out of scope for Phase 2 — they need `link_record`, which is Phase 4's job.
+- Model tier: **Opus** for the formula expression evaluator specifically; **Sonnet** for every other Phase 2 format (`currency`/`percentage`/`real` decimals, `url`, inline `select`, `rating`, `link_file`, `barcode`).
+
+Build order (per the design doc): `FieldFormatHandler` scaffolding proven on `link_file` first → `currency`/`percentage`/`real` decimals → `url` → inline `select` → `rating` → `formula` → `barcode` (spike the scanning package choice first, same discipline as Phase 1's `sqlparser` spike).
+
+### Phase 2 — Step 1: `FieldFormatHandler`/`FieldFormatRegistry`, proven on `link_file`, build-verified
+
+**Build order step 1, per the design doc** — the one prerequisite every
+later Phase 2 format depends on, proven end to end on the single
+lowest-risk new format before adding a second. Model tier: Sonnet, per
+the confirmed decision (Opus is reserved for the `formula` step only).
+
+**`lib/models/table_config.dart`'s `FieldConfig`** gained two new,
+purely-additive optional fields — `format` (the raw `field_definitions
+.format` string, `null` for anything built before this) and `options`
+(the parsed `field_definitions.options` map, default `{}`). Both default
+so every existing `FieldConfig(...)` call site (`SchemaRegistry`'s own
+constructor being the only *real* one — `table_configs.dart`/
+`table_discovery_service.dart`'s dead builders and test-file throwaway
+configs are the rest) needed zero changes. `SchemaRegistry._buildField`
+now passes both through from the values it already had in scope.
+
+**New file, `lib/util/field_formats/field_format_handler.dart`** — the
+`FieldFormatHandler` interface (`buildGridColumn`/`cellValueFor`/
+`valueForSave`/`buildFormField`) and `FieldFormatRegistry` (a flat,
+built-once `Map<String, FieldFormatHandler>`), exactly as scoped in
+claude/essentials-v2-phase2-design.md's "Key decision" — see that file's
+own doc comment for the full rationale. `buildFormField` deliberately
+reuses `GenericFormScreen`'s existing per-column `TextEditingController`
+rather than inventing a parallel state-management path — every Phase 2
+format so far (this one included) is `TEXT`-backed exactly like `text`/
+link/color fields already are, so a handler only needs to customize the
+decoration/actions around that one shared controller, not replace it.
+This is what kept the actual `GenericFormScreen`/`GenericListScreen`
+integration to a few lines each (see below) rather than a rewrite.
+
+**New file, `lib/util/field_formats/link_file_format_handler.dart`** —
+`link_file`'s handler: grid renders path text + a small "Open file" icon
+(modeled directly on the existing `isLink` renderer); form renders a
+`TextFormField` with "Browse..." (`FilePicker.pickFiles()` — already a
+dependency) and "Open" (`openFileLink`, new) suffix icons. Storage is
+plain `TEXT`, `options` always `{}` — nothing configurable yet, per the
+design doc.
+
+**New helper, `lib/util/links.dart`'s `openFileLink`** — distinct from
+the existing `openLink` (used by `isLink` fields) because a bare local
+path (`C:\Databases\...`, no scheme) is `link_file`'s expected common
+case, not the exception: `openLink` would wrongly prepend `https://` to
+it. Anything that already parses as a URL with a real scheme opens as-is;
+anything else goes through `Uri.file(...)`, producing the correct
+`file://` URI on both Windows and Android.
+
+**Real API mismatch caught by `flutter analyze`, fixed immediately:** the
+design doc's own file-picking sketch assumed `FilePicker.platform
+.pickFiles()` (the common pattern in file_picker's docs/most versions),
+but this project's pinned `12.0.0-beta.7` (see pubspec.yaml's own comment
+for why it's pinned rather than stable) exposes `pickFiles` as a plain
+static method directly on `FilePicker`, no `.platform` getter at all —
+confirmed by reading the pinned version's source in the pub cache, not
+guessed. `FilePicker.pickFiles()`, not `FilePicker.platform.pickFiles()`.
+
+**Integration, both screens — exactly the "if there's a handler for this
+format, delegate; otherwise fall through to the existing `FieldType`
+switch" shape the design doc called for, not a parallel rewrite:**
+- `GenericFormScreen._buildField` checks `_formatHandlerFor(field)` first,
+  before the existing `readOnly`/boolean/lookup/plain-text branches.
+- `GenericListScreen._buildFieldColumn`/`_cellValueFor`/`_onGridChanged`
+  each gained the identical one-line dispatch at their own top, before
+  their existing per-`FieldType` branches. Every Phase 1 format still has
+  no handler registered (`FieldFormatRegistry.handlerFor` returns `null`
+  for all seven), so every one of those existing branches runs completely
+  unchanged for every table built before this — confirmed by re-running
+  the full v2 test suite (see below), not just reasoned about.
+- `main.dart` builds the one app-wide `FieldFormatRegistry.instance` in
+  `main()`, alongside the existing theme/DB setup, currently holding just
+  `LinkFileFormatHandler()`.
+- `lib/util/field_format_choice.dart`'s `FieldFormatChoice` gained
+  `linkFile('link_file', 'Link to a file')` — automatically appears in
+  `AddFieldScreen`'s format picker (it iterates `FieldFormatChoice.values`
+  already) with zero changes needed to that screen: `link_file` needs no
+  options sub-form (unlike `select`), so `_buildOptionsJson`'s existing
+  "only `select` gets special JSON" logic already does the right thing
+  (returns `null`, which `parseFieldOptions` already treats as `{}`).
+
+**New test file, `test/field_format_handler_test.dart`** (14 tests) —
+`FieldFormatRegistry.handlerFor` dispatch (resolves `link_file`, returns
+`null` for every one of the seven Phase 1 formats explicitly, `null` for
+an unrecognized format, `null` for a null format, `null` for everything
+on an empty registry) plus `LinkFileFormatHandler`'s own `cellValueFor`/
+`valueForSave` value handling. Pure Dart, no `DatabaseHelper`/
+`SyncService` involved — same style as `test/lookup_value_test.dart`.
+
+**Full v2 regression check, same discipline as every step since the Step
+3 incident (CLAUDE.md "Essentials v2 Phase 1 — Step 3"):** every
+`createTable`-using v2 test file run as its own separate `flutter test`
+invocation, never chained. All pass: `schema_registry_test.dart`,
+`generic_dao_insert_id_test.dart`, `last_active_table_test.dart`,
+`schema_editor_service_v2_test.dart`, `table_registry_v2_test.dart`,
+`generic_dao_linked_fields_test.dart`, `schema_metadata_dao_test.dart`,
+`schema_editor_service_drop_test.dart`. **A separate cluster of test
+files failed** (`table_discovery_smoke_test.dart`,
+`table_deletion_handling_test.dart`, `batch1_conversion_regression_test
+.dart`, `batch2_conversion_regression_test.dart`,
+`subscription_conversion_regression_test.dart`,
+`blocking_references_test.dart`, `order_split_pane_test.dart`) — all
+pre-existing failures, confirmed unrelated to this change: every one
+references `field_metadata`/`status`/`supplier`/`orders`, tables that no
+longer exist since the Essentials v2 clean-slate wipe (CLAUDE.md
+"Essentials v2 Phase 1 — Step 2"). These are stale v1-era test files that
+were never cleaned up after the wipe, not something this session touched
+or broke — flagged here rather than silently left a mystery, worth a
+cleanup pass eventually but out of scope for Phase 2.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, Add Field a `link_file` field onto a real table,
+confirm the grid shows the path + open icon and the form shows the
+Browse/Open icons, confirm a picked/typed path round-trips through
+save/reload correctly on both grid and form, then F5/relaunch MIKE-12R to
+confirm it syncs and renders the same way there (same two-platform
+discipline as every checkpoint since Phase 1 Step 5). **Step 6 (`formula`)
+is explicitly gated: stop and tell Mike to switch the session to Opus
+before starting that step's implementation** — flagged mid-session by
+Mike, matching the design doc's own confirmed model-tier split.
+
+### Phase 2 — Step 2: `currency`, `percentage`, `real`'s `decimals` option, build-verified
+
+Batched together per the design doc's build order — "all thin wrappers
+around the existing numeric path." Still Sonnet.
+
+**`real`'s `decimals` option — no handler, per the design doc ("no new
+format, no `FieldFormatHandler` needed").**
+`GenericListScreen._decimalsFor`/`_decimalNumberFormat` (new private
+helpers) read `field.options['decimals']` (default 2) and build the
+existing `TrinaColumnType.number(format: ...)` string dynamically instead
+of the old hardcoded `'#,##0.00;-#,##0.00'`, in both places that string
+appeared (the `readOnly` branch and the plain branch of
+`_buildFieldColumn`). `_footerRendererFor` needed no change — it already
+reads `numberFormat` live off the column object itself, so a real
+column's footer sum picks up its own configured decimal count for free.
+
+**New handlers, `currency`/`percentage`** — both delegate their actual
+grid formatting to `trina_grid`'s own built-in column types
+(`TrinaColumnType.currency`/`.percentage`), found by reading the
+package's source rather than hand-rolling a format string the way the
+design doc's own sketch (`'$symbol#,##0.00'`) suggested: both already
+handle symbol/decimal-place formatting and — critically for
+`percentage` — the ×100/÷100 display conversion internally
+(`TrinaColumnTypePercentage.applyFormat`/`.toNumber`, confirmed by
+reading the source; `toNumber` is what `TrinaGrid`'s own
+`castValueByColumnType` calls on every edit, before `onChanged` ever
+fires). This means `cellValueFor`/`valueForSave` for both handlers are
+trivial pass-throughs on the grid side — the ×100/÷100 conversion never
+touches either handler's own code there, TrinaGrid already did it.
+
+**The form side is where `percentage` genuinely needed new machinery.**
+`currency`'s form field binds directly to the shared
+`TextEditingController` `GenericFormScreen` already keeps per field (same
+"one text controller per field" model `link_file` already used) — no
+unit conversion, the typed text *is* the stored text. `percentage` can't
+do this: the stored text (`"0.15"`) and what a user should see/type
+(`"15"`) are deliberately different numbers (per the design doc's own
+storage convention, so a future `formula`/`rollup` field never needs to
+guess which convention a given percentage value uses). New file
+`lib/util/field_formats/percentage_format_handler.dart`'s private
+`_PercentageFormField` wraps a *second*, display-only
+`TextEditingController` around the shared storage one: on user edit, it
+divides by 100 and writes the result into the shared controller (which is
+what `GenericFormScreen._currentValues()` actually reads on save); it
+also listens the other direction (multiplies by 100 for display) in case
+something else ever writes to the shared controller programmatically —
+no current caller does this for a `percentage` field, but every other
+format's form field gets this "picks up an external change to the shared
+controller" property for free by construction, so this handler
+deliberately preserves it rather than silently only working for direct
+typing. A `_updatingFromStorage` guard flag stops the two controllers'
+listeners from feeding back into each other in a loop.
+
+**`AddFieldScreen`/`ManageFieldsScreen`'s `_FieldEditorDialog` both
+gained the same small options sub-form** — a "Symbol" field (currency
+only) and a shared "Decimal places" field (real/currency/percentage,
+since only one format is ever selected at a time). Blank means "use the
+handler's own default" — omitted from the `options` JSON entirely rather
+than the picker screen guessing/duplicating a default that already lives
+in the handler. **Applied to both screens, not just `AddFieldScreen`** —
+`_FieldEditorDialog`'s pre-existing `_buildOptionsJson()` unconditionally
+returned `null` for every non-`select` format, meaning editing *any*
+attribute of an existing currency field through Manage Fields (e.g. just
+its display name) would have silently reset its symbol/decimals back to
+default on save. Not something this step's own new formats introduced by
+themselves, but real enough to fix now rather than ship a new format with
+a known data-loss path through its own edit screen — `_FieldEditorDialog`
+now pre-populates both new controllers from the field's existing options
+in `initState` and includes them in its own `_buildOptionsJson`, mirroring
+`AddFieldScreen` exactly (still simple duplication between the two
+screens, matching the project's existing convention for the `select`
+sub-form rather than a new shared abstraction).
+
+**New tests, `test/field_format_handler_test.dart`** (20 tests total, up
+from 14) — `CurrencyFormatHandler`'s default/`options`-driven symbol and
+decimal count (verified against the real `TrinaColumnTypeCurrency`
+object, not just trusting the constructor call), pass-through
+`cellValueFor`/`valueForSave`, and a widget test confirming its form
+field's typed text lands directly in the shared controller.
+`PercentageFormatHandler`'s `decimalsFor` default/override,
+`TrinaColumnTypePercentage`'s `decimalInput` confirmed `false` (the
+handler relies on that default rather than overriding it), and two widget
+tests: typing `"42"` into the display field leaves `"0.42"` in the shared
+storage controller (the actual regression risk this format carries), and
+a blank stored value displays as blank rather than `"0"`/`"NaN"`.
+
+`flutter analyze` clean; `test/field_format_handler_test.dart` (20/20),
+`schema_registry_test.dart`, `schema_metadata_dao_test.dart`, and
+`lookup_value_test.dart` all re-run clean after this step's changes.
+`flutter build windows` and `flutter build apk --debug` both clean.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, add a `currency` field and a `percentage` field to a
+real table (and try `real`'s new "Decimal places" option on an existing
+or new decimal field), confirm grid display/inline-edit and form
+display/edit both round-trip correctly for all three, then F5/relaunch
+MIKE-12R to confirm sync — same two-platform checkpoint discipline as
+Step 1.
+
+### Phase 2 — Step 3: `url` as a picker entry, build-verified
+
+Per the design doc: "not a new stored format at all." `SchemaRegistry
+._buildField` already reads `options['isLink'] == true` off *any* field's
+options regardless of format, and `FieldConfig.isLink` has been fully
+wired through both `GenericListScreen`/`GenericFormScreen` since batch 3
+— long before Essentials v2 existed. This step is purely about making
+that flag reachable from `AddFieldScreen`'s picker for the first time
+(before this, no schema-engine field could ever have `isLink: true` — it
+was only ever set on the 19 hand-written v1 `TableConfig`s). Zero new
+render code, exactly as the design doc predicted.
+
+**`FieldFormatChoice` gained `url('text', 'Link (URL)')`** — deliberately
+sharing `text`'s `value` string rather than getting its own, since
+picking it just writes `format: 'text'` plus `options: {isLink: true}`.
+This has a real, documented consequence: `FieldFormatChoice.fromValue`
+can never resolve `url` back out of a stored field (`firstWhere` always
+returns whichever entry with a matching `value` is declared first, i.e.
+`text`) — added `FieldFormatChoice.resolve(format, options)` as the fix,
+checking `options.isLink` too. `AddFieldScreen` never needs `resolve`
+(create-only, no existing field to reverse-map), but `ManageFieldsScreen`
+has two call sites that do: `_FieldEditorDialog`'s `initState` (so
+reopening the editor on an existing link field shows "Link (URL)"
+selected, not "Text") and `_summarize` (so the field list's subtitle
+reads correctly too).
+
+**A real correctness risk caught before it could matter, not after:**
+before adding `resolve`, `_FieldEditorDialog`'s `initState` would have set
+`_format = FieldFormatChoice.fromValue('text')` for an existing link
+field — i.e. plain `text`, not `url` — and its `_buildOptionsJson` (no
+branch for plain `text`) would have silently returned `null` on the very
+next save, wiping `isLink: true` the first time anyone renamed a link
+field through Manage Fields. Never actually shipped or hit live (`url`
+didn't exist as a pickable format until this same change), but worth
+noting as the reason `resolve` exists at all rather than being deferred —
+same "fix it before it's a live bug, not after" instinct as Step 2's
+options-preservation fix.
+
+**`AddFieldScreen`/`_FieldEditorDialog` both gained the identical small
+`_buildOptionsJson` branch** — `_format == FieldFormatChoice.url` →
+`{'isLink': true}` — mirroring how `select`/`currency`/`percentage` each
+get their own branch there.
+
+**New test file, `test/field_format_choice_test.dart`** (8 tests) —
+`fromValue`'s documented inability to distinguish `url` from `text`
+(the exact limitation `resolve` fixes), `resolve`'s behavior for
+`text`+`isLink`, `text` with no/other options, a stray `isLink` on a
+non-text format (ignored, format wins), and `resolve` matching `fromValue`
+for every other format. `flutter analyze` clean;
+`field_format_choice_test.dart` + `field_format_handler_test.dart` run
+together clean (28/28 — safe to combine, neither touches
+`DatabaseHelper`/`SyncService`). `flutter build windows` and `flutter
+build apk --debug` both clean.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, add a field via Add Field with format "Link (URL)",
+confirm it renders as a clickable link in both grid and form exactly like
+a v1 link field always has, then open it via Manage Fields, confirm the
+editor shows "Link (URL)" selected (not "Text"), rename it, save, and
+confirm it's *still* a clickable link afterward (the specific regression
+`resolve` exists to prevent) — then F5/relaunch MIKE-12R to confirm sync.
+
+### Phase 2 — Step 4: inline `select`, build-verified
+
+Per the design doc: `select` gains a second mode alongside the existing
+linked-lookup one -- `options: {mode: 'inline', options: [{key, label},
+...]}` -- for a fixed, small choice list with no backing table (e.g.
+Low/Medium/High). Genuinely new work, but well-scoped exactly as the doc
+predicted: `_lookupFor` stays a linked-only branch, untouched; inline
+select is a parallel path, not a variant of it.
+
+**`FieldConfig` gained `inlineOptions`/`isInlineSelect`**, a peer to
+`lookup`/`isLookup` rather than routed through `FieldFormatHandler` (Step
+1's mechanism) -- inline select is fundamentally a variant of the
+*existing* select/lookup dropdown rendering (same "pick one of N,
+resolve a stored key to a display label" shape), not a new TEXT-backed
+widget the way `link_file`/`currency`/`percentage` are. Forcing it
+through `FieldFormatHandler` would have meant either letting a handler
+intercept *both* select sub-modes (reimplementing the already-working
+linked-lookup grid/form code inside it) or somehow scoping a handler to
+one `options.mode` only, neither of which the interface was designed
+for. New `InlineOption` class (`lib/models/table_config.dart`, alongside
+`LookupConfig`) — `{key, label}` plus a shared `parseList`/`toJson` used
+by both `SchemaRegistry` and `ManageFieldsScreen`'s field editor.
+
+**`SchemaRegistry` gained `_inlineOptionsFor`**, a sibling to `_lookupFor`
+-- same `format == 'select'` gate, disambiguated by `options.mode`
+(`'linked'` vs `'inline'`) exactly the way `_lookupFor` already
+disambiguates by requiring `'linked'` explicitly. A field with zero valid
+option entries still gets `isInlineSelect == true` with an empty list,
+not `null` — a dropdown with nothing to pick is more honest than silently
+falling back to plain text.
+
+**Both screens gained a parallel `isInlineSelect` branch, modeled
+directly on the existing `isLookup` one but genuinely simpler** — no
+`FutureBuilder`/async DAO query, since `field.inlineOptions` is already
+the complete answer (no table to query). `GenericListScreen` gained a
+`TrinaColumnType.select<String?>` branch (keyed on the option's own
+string `key`, not an int FK id, mirroring `isLookup`'s int-keyed one) in
+`_buildFieldColumn`/`_cellValueFor`/`_onGridChanged`; `GenericFormScreen`
+gained a synchronous `DropdownButtonFormField<String>` in `_buildField`,
+plus a new `_inlineSelectValues` map (a `String`-keyed peer to
+`_lookupValues`) read by `_currentValues()` and populated in `initState`.
+
+**`FieldFormatChoice` gained `inlineSelect('select', 'Fixed list of
+options')`** — sharing `select`'s `value` the same way `url` shares
+`text`'s (Step 3's pattern, reused directly): picking it writes `format:
+'select'` plus `options: {mode: 'inline', options: [...]}`.
+`FieldFormatChoice.resolve` extended with the matching `options.mode ==
+'inline'` check, alongside its existing `isLink` check for `url`.
+
+**New shared widget, `lib/util/inline_option_editor.dart`'s
+`InlineOptionListEditor`** — a controlled `ReorderableListView` of
+key/label text-field pairs with add/remove, used identically by
+`AddFieldScreen` and `ManageFieldsScreen`'s field editor dialog. Unlike
+every other Phase 2 sub-form (currency's symbol field, the shared
+decimal-places field, `select`'s linked-table picker), this is
+deliberately **not duplicated** between the two screens — a full
+add/remove/reorder/edit list is enough surface area (its own local
+`TextEditingController`-per-row bookkeeping, keyed by a synthetic id so
+reordering/editing doesn't lose cursor position or drop keystrokes) that
+one shared, well-tested implementation was worth it over two copies of
+the same drag-and-drop logic. Controlled, not self-contained: the parent
+screen owns the `List<InlineOption>` and reads it at submit time; the
+widget just calls `onChanged` with a complete new list on every edit.
+**Real bug caught before it could ship, not after:** the first version's
+`AddFieldScreen` call site didn't wrap its `onChanged` in `setState`,
+which would have left the "Add Field" button's enabled state stale (not
+reacting live as the first valid option was typed) until some unrelated
+rebuild happened to occur — caught by re-reading the code against
+`_canSubmit`'s own logic before ever running it, not found live.
+
+**Both `AddFieldScreen`/`ManageFieldsScreen`'s field editor gained
+identical `_canSubmit`/`_canSave` gating** (at least one option with a
+non-empty key and label) and an identical `_buildOptionsJson` branch that
+also filters out any blank leftover row at serialization time, not just
+trusting the submit gate — same "don't trust one layer alone" instinct as
+elsewhere in this app.
+
+**New/extended tests:**
+- `test/inline_option_test.dart` (7 tests) — `InlineOption.parseList`'s
+  lenient parsing (well-formed, null, non-list, empty, malformed entries
+  skipped) and `toJson` round-tripping through `parseList`.
+- `test/inline_option_editor_test.dart` (5 widget tests) — existing
+  options render correctly, the empty-state hint, Add option appends a
+  blank row and notifies `onChanged`, typing into either field notifies
+  with the updated text, removing a row notifies with the rest.
+- `test/field_format_choice_test.dart` extended (8 → 12 tests) — the same
+  `resolve`/`fromValue` coverage Step 3 established, now also proving
+  `inlineSelect`'s identical ambiguity and fix.
+- `test/schema_registry_test.dart` extended (+2 tests, run individually
+  per the established `createTable`-isolation rule) — a real inline
+  select field built through the actual `SchemaEditorService`/
+  `SchemaRegistry` pipeline resolves to `inlineOptions`, not `lookup`;
+  zero valid options still yields `isInlineSelect == true` with an empty
+  list.
+
+`flutter analyze` clean; every new/extended test file passes (`inline_option_test.dart`,
+`inline_option_editor_test.dart`, `field_format_choice_test.dart`,
+`schema_registry_test.dart`, `schema_metadata_dao_test.dart` all
+re-confirmed). `flutter build windows` and `flutter build apk --debug`
+both clean.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, add a field via Add Field with format "Fixed list of
+options" (e.g. Low/Medium/High), confirm it renders as a real dropdown in
+both grid and form, confirm the stored value round-trips correctly
+through save/reload, then open it via Manage Fields and confirm the
+editor shows "Fixed list of options" selected with the same options
+populated (not blank, not "Linked to another table") — then F5/relaunch
+MIKE-12R to confirm sync.
+
+### Phase 2 — Step 5: `rating`, build-verified
+
+Per the design doc, the one open question for this step was TrinaGrid's
+custom-cell-renderer API -- **already confirmed working, not a fresh
+spike**: this app has used `TrinaColumn.renderer` three times already
+(the boolean checkbox column, the color-field swatch, the `isLink` open
+icon), all on the pinned `trina_grid: ^2.2.2`. No new verification needed
+before committing to a star-rendering approach in the grid.
+
+**New handler, `RatingFormatHandler`** — storage: `TEXT` holding a plain
+integer string (`"4"`); `options: {max: int (default 5)}`.
+
+**Grid: tappable stars, not just a read-only display** — the design doc
+left this genuinely open ("read-only... or a plain '4/5' text cell, low
+risk either way"). Chosen: interactive stars directly in the grid cell,
+reusing the exact `readOnly: true` column + a renderer that calls
+`changeCellValue(..., force: true)` pattern this app already established
+twice (the boolean checkbox, the color swatch) — not a new interaction
+model, just the third application of one already proven. Tapping the
+currently-set star again clears the rating (the only way back to "no
+rating" once one's set, standard rating-widget convention).
+
+**Form: a `FormField<int>` wrapper, genuinely simpler than
+`percentage`'s** — needed because a star row isn't text input at all, so
+`currency`/`link_file`'s plain "bind a `TextFormField` straight to the
+shared controller" approach doesn't apply. Unlike `percentage`, though,
+rating's displayed and stored numbers are the *same* integer (no ×100/÷100
+split) — so no second display-only controller or bidirectional-sync
+listener is needed. `FormField<int>` already gives the value-tracking and
+`Form.validate()` participation this needs; the only extra step is
+writing `next?.toString()` into the shared `TextEditingController` on
+every tap, since that controller (not `FormField`'s own internal state)
+is what `GenericFormScreen._currentValues()` actually reads on save.
+
+**`AddFieldScreen`/`ManageFieldsScreen`'s field editor both gained a "Max
+stars" field**, same shared-sub-form pattern as currency's symbol/every
+format's decimal-places field — blank means "use the handler's own
+default (5)," omitted from `options` JSON rather than guessed at the
+picker layer.
+
+**New/extended tests, `test/field_format_handler_test.dart`** (28 tests,
+up from 20) — `RatingFormatHandler`'s `readOnly` grid column, width
+scaling with `options.max`, `cellValueFor`/`valueForSave` parsing, and
+five widget tests: default-5-stars rendering, all-empty for a blank
+controller, tapping a star fills every star up to it *and* writes the int
+to the shared controller (the actual regression risk — a UI update with
+no corresponding write would silently never save), tapping the
+currently-set star again clears it, and required-field validation firing
+through a real `Form`/`GlobalKey<FormState>` (not just checking the
+validator function in isolation).
+
+`flutter analyze` clean; `field_format_handler_test.dart` (28/28),
+`field_format_choice_test.dart`, `inline_option_test.dart`, and
+`inline_option_editor_test.dart` all re-confirmed passing. `flutter build
+windows` and `flutter build apk --debug` both clean.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, add a `rating` field, confirm tapping stars in the
+grid writes immediately (same "tap is the edit" feel as the checkbox/color
+columns), confirm the form's star row round-trips through save/reload,
+confirm tapping an already-set star clears it in both places, then
+F5/relaunch MIKE-12R to confirm sync.
+
+### Phase 2 — Step 6: `formula`, build-verified (run on Opus, per the confirmed model-tier split)
+
+The largest step of Phase 2, and the one the design doc explicitly
+reserved for Opus. Session was switched before any of it was written.
+
+**Scope, per the confirmed decision:** a small spreadsheet-style
+expression subset, **not** full JS — `flutter_js`/QuickJS stays reserved
+for Phase 5's scripting engine.
+
+#### The pub.dev check the design doc asked for — done, then hand-rolled anyway
+
+Real check, not skipped: the credible candidates were `math_expressions`
+(v3.2.0, actively maintained) and `expressions` (v0.2.5+3, pre-1.0, ~11
+months stale). Hand-rolled regardless, for reasons specific to this
+design rather than package-quality doubts (full write-up in
+`lib/util/formula/formula_expression.dart`'s own doc comment):
+
+1. **The `{field_name}` brace syntax is this design's own** — no package
+   tokenizes `{...}` as a variable. Both workarounds are bad:
+   string-substituting values before parsing is genuinely *unsafe* (a text
+   field whose value contains `)`, `+`, or a quote silently corrupts the
+   expression, and nulls have no sane substitution), while pre-scanning to
+   rewrite braces into legal identifiers means writing a real tokenizer
+   anyway — a naive regex would rewrite inside string literals too. Most
+   of the work is unavoidable either way.
+2. **`math_expressions` has no string type at all**, so `||` and
+   `IF(c, 'a', 'b')` are structurally out.
+3. **Null-tolerant semantics are the whole point here** and no package
+   provides them — these run over real rows with missing values, where a
+   thrown exception or a `NaN` reaching a grid cell is not acceptable.
+4. This project's own dependency scar tissue (`pubspec.yaml`'s
+   `file_picker` comment — forced onto a beta because stable broke under
+   AGP 9) makes a pre-1.0 dep for one field format a bad trade.
+
+#### The two new files
+
+- **`lib/util/formula/formula_expression.dart`** — tokenizer +
+  recursive-descent parser + evaluator, zero dependencies, no knowledge of
+  this app at all (it takes a plain `FormulaFieldResolver` callback).
+  Supports `+ - * /`, unary minus, `||` concatenation, the six comparison
+  spellings (`= == != <> < <= > >=`), parentheses, number/string/`true`/
+  `false`/`null` literals, and six functions (`ROUND`, `IF`, `ABS`,
+  `COALESCE`, `MIN`, `MAX` — adding another is one table entry).
+- **`lib/util/formula/formula_service.dart`** — the app glue: type-aware
+  field resolution, chained formulas, cycle safety, rounding.
+
+#### Decisions worth not re-litigating
+
+- **`||` binds looser than arithmetic — a deliberate divergence from
+  SQLite**, which binds it *tighter* than `*`. SQLite would read
+  `'Total: ' || {a} + {b}` as `('Total: ' || {a}) + {b}`; that reads wrong
+  for a user-facing formula language. Still binds tighter than comparison,
+  so `{a} || {b} = 'xy'` compares the concatenated result.
+- **Null semantics:** arithmetic and comparison propagate null (SQL-like);
+  **`||` treats null as empty string (deliberately not SQL-like)** —
+  concatenation exists to build a display string and one missing field
+  blanking the whole result is never wanted. Division by zero yields null,
+  never `Infinity`/`NaN`, which would render as literal garbage in a cell.
+- **Arguments evaluate eagerly, including both `IF` branches** — safe
+  precisely because divide-by-zero yields null rather than throwing, so
+  `IF({q} = 0, 0, {t} / {q})` still behaves correctly without lazy
+  evaluation.
+- **A formula field keeps a real physical `TEXT` column that is never
+  written.** The tempting alternative — no column at all — was rejected:
+  the architecture's north star is that *changing a field's format is
+  metadata-only*, and skipping the column would turn a `text` → `formula`
+  edit into a destructive `DROP COLUMN` and the reverse into an
+  `ADD COLUMN`. An unused column is a small, honest price. It also means
+  `SchemaRegistry`'s physical-column validation needs no formula
+  exception. **The one real consequence, documented in code:** the stored
+  column stays NULL, so a `table_definitions.order_by` naming a formula
+  column would sort by NULLs. Grid sort/filter/aggregate/CSV export are
+  all unaffected — they read the values `GenericDao.getAll` already
+  populated.
+- **No `FieldFormatHandler` for `formula`** (unlike steps 1/2/5) — its
+  rendering is exactly the long-standing `FieldConfig.readOnly` path that
+  v1's `subscription_computed` view columns already used, including
+  wrap-text, footer aggregates and non-editability. Registering a handler
+  would have meant reimplementing all of that. This makes three distinct
+  Phase 2 categories, now documented on `FieldFormatChoice`: needs a new
+  widget (`link_file`/`currency`/`percentage`/`rating` → handler), is a
+  variant of existing rendering (`url` → `isLink`, inline `select` →
+  dropdown), or is computed (`formula` → `readOnly`).
+- **Result type is an explicit user choice** (`options.resultType`,
+  Number/Text, default Number) rather than inferred — it can't be derived
+  statically, and it genuinely matters: `FieldType.real` is what gives the
+  column right-alignment, decimal formatting via step 2's existing
+  `_decimalsFor`, and footer-aggregate eligibility.
+
+#### A real subtlety caught while writing `FormulaService`
+
+`{cost} * 2` on a **currency** field would have multiplied as *text*.
+`currency`/`percentage`/`rating` are all unrecognized by
+`_formatToFieldType` and therefore carry `FieldType.text` — their real
+behaviour lives in a `FieldFormatHandler`, not the type enum. So
+`FormulaService.isNumericField` checks the **format string** as well as
+the type. Covered by its own test; would have been a genuinely confusing
+silent-wrong-answer bug otherwise.
+
+#### Display consistency, caught before it shipped
+
+A numeric result of `10` reaches the grid as a `num` formatted `"10.00"`
+by the column's own `options.decimals`, but reached the *form* preview as
+the literal string `"10.0"` via `toString()`. Added
+`FormulaService.computeAllForDisplay` — used only by
+`TableConfig.computePreview` (the form path), leaving the grid path on raw
+typed values — so both views of one value read identically. Numeric
+results are also rounded to the field's `decimals` (default 2, matching
+`real`'s own) which kills floating-point noise like `3.3333333333333335`.
+
+#### Wiring — deliberately small
+
+`SchemaRegistry` sets `readOnly: true`, picks the `FieldType` from
+`resultType`, forces `required` off (a required readOnly field is
+meaningless), and synthesizes `computePreview` for any table with formula
+fields. `GenericDao.getAll` merges computed values into each row on the
+way out (allocation-free no-op for tables without formulas).
+**`GenericFormScreen` and `GenericListScreen` needed zero changes** —
+`readOnly` and `computePreview` were already fully wired through both,
+built for `subscription` back in batch 3.
+
+#### UI
+
+New shared `FormulaFieldEditor` (`lib/util/formula/formula_field_editor.dart`),
+used by both `AddFieldScreen` and `ManageFieldsScreen` — same
+"real behaviour is worth sharing, trivial sub-forms stay duplicated"
+line drawn for `InlineOptionListEditor` in step 4. Carries **live
+parse-error feedback as you type** (the only place a formula error can
+ever reach the user — at read time `FormulaService` deliberately swallows
+it so one bad field can't blank a whole grid), tappable chips that insert
+`{field_name}` **at the cursor**, the function list as helper text, and
+the result-type picker. Both screens hide Required/Default for this
+format and force them off on submit rather than persisting whatever the
+hidden controls last held. Manage Fields' field list shows the expression
+in its subtitle. An unknown bare name in an expression produces a
+targeted error naming the likely mistake — typing `cost * 2` instead of
+`{cost} * 2`.
+
+#### Tests — 76 new, across three files
+
+- **`test/formula_expression_test.dart`** (43) — literals, precedence
+  (including both documented `||` divergences), null/divide-by-zero
+  semantics, every comparison spelling, all six functions, eager-`IF`
+  safety, and 11 parse-error cases including the braces-suggestion message.
+- **`test/formula_service_test.dart`** (24) — the currency/percentage/
+  rating numeric-resolution subtlety above, boolean and non-`FieldConfig`
+  (`{id}`) resolution, chained formulas in either declaration order,
+  self-reference and indirect cycles terminating at null, rounding,
+  `applyTo` being allocation-free when there are no formula fields, and
+  display formatting.
+- **`test/formula_end_to_end_test.dart`** (9) — the design doc's own ask
+  ("verify against a real recreated `subscription`-style table"), run
+  against the real `essentials.db` through the real
+  `createTable`/`addField` → `SchemaRegistry` → `GenericDao` chain:
+  a `{cost} * {quantity}` table computes correctly on insert and after
+  update, a missing input yields null, `computePreview` returns the same
+  `"13.50"` the grid shows, a chained `ROUND({total} * 1.1, 2)` resolves,
+  and — the load-bearing one — **the physical column is confirmed still
+  NULL by raw SQL**, proving the value really is computed rather than
+  stored.
+
+`flutter analyze` clean. All 122 pure/widget tests pass together; every
+DB-backed v2 file passes individually (per the established
+`createTable`-isolation rule, `formula_end_to_end_test.dart` included).
+Confirmed afterward by direct SQL: **zero leaked test tables**,
+`PRAGMA integrity_check: ok`. `flutter build windows` and `flutter build
+apk --debug` both clean.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, recreate a `subscription`-shaped table (cost +
+period + a `{cost} * 12`-style formula — the natural real test, and the
+moment phase1-handoff's "recreate whichever tables you want back" finally
+gets exercised for real), confirm the formula column computes in the grid,
+updates live in the form as you edit its inputs, is not editable in
+either, and that a footer Sum works on it; check Manage Fields shows the
+expression and reopens the editor with it populated; then F5/relaunch
+MIKE-12R to confirm both the field definition and the computed values
+appear there.
+
+**Steps 1-6 complete.** Step 7 (`barcode`), the last of the design doc's
+format catalog, done same session after switching back to Sonnet.
+
+### Phase 2 — Step 7: `barcode`, build-verified
+
+Per the design doc: spike the package choice first (Android camera works,
+Windows degrades cleanly), lowest priority, storage is plain `TEXT` --
+the format only changes input method, not what's stored.
+
+**The spike, done for real, not just read about:** `mobile_scanner:
+^7.4.0` (pub.dev's clear leader, actively maintained, 34 days old at
+spike time) checked against both risks the design doc named:
+
+1. **Google Play Services dependency** -- the package has a "bundled"
+   mode (MLKit compiled directly into the app, the default) and an
+   "unbundled" mode (downloaded via Play Services on first use). Staying
+   on the bundled default sidesteps the Play Services assumption
+   entirely -- confirmed by reading the package's own README, not
+   guessed. Never opt into `useUnbundled=true`.
+2. **Windows must degrade cleanly, not break the build** -- confirmed by
+   actually doing it: added the dependency, ran `flutter pub get`, then
+   both `flutter build windows` and `flutter build apk --debug`
+   succeeded. Flutter's federated plugin architecture means a platform
+   with no implementation is simply absent from the generated plugin
+   registrant, not a build error -- and the Windows-side code in this app
+   never references `mobile_scanner` at all (gated behind
+   `Platform.isAndroid`, same pattern `main.dart` already uses for
+   `PermissionGate`), so there's nothing to fail even in principle.
+
+**One real caveat the spike surfaced, accepted, worth tracking:**
+`flutter build apk` prints a genuine (non-fatal, today) warning --
+`mobile_scanner` applies Kotlin Gradle Plugin directly rather than
+through Flutter's newer built-in-Kotlin support, and a future Flutter
+release will turn this into a hard failure. Same category of risk this
+project already lived through once (`pubspec.yaml`'s `file_picker`
+comment -- forced onto a beta by an AGP9/KGP incompatibility). Not a
+blocker today; revisit if a future `flutter upgrade` starts failing the
+Android build citing this specifically. Documented in both
+`pubspec.yaml`'s own comment and `BarcodeFormatHandler`'s doc comment,
+not left as a silent landmine.
+
+**New handler, `BarcodeFormatHandler`** -- storage/grid/form value
+handling is functionally identical to a plain text field (mirrors
+`link_file`'s shape almost exactly); the only reason it's a handler at
+all is to add a camera-scan suffix icon to the form field, Android-only.
+Tapping it requests camera permission via `permission_handler` (already
+a dependency; `mobile_scanner`'s own bundled `AndroidManifest.xml`
+already declares `CAMERA` and an optional `<uses-feature>` for
+camera-less devices, confirmed by reading it directly -- no manual
+manifest edit needed, unlike `url_launcher`'s package-visibility
+`<queries>` entries), then pushes a new full-screen
+`BarcodeScannerScreen` (`lib/screens/barcode_scanner_screen.dart`)
+wrapping the package's own `MobileScanner` widget. First successful
+detection pops the scanned `rawValue` back to the caller, which writes it
+into the field's shared controller -- same "write into the controller
+GenericFormScreen actually reads" pattern every prior handler's form side
+already uses. No manual-entry fallback inside the scanner screen: backing
+out returns to the underlying text field, already directly typable.
+
+**On a non-Android platform, no icon renders at all** -- not a
+disabled/greyed-out one. A visible-but-broken control would be the
+opposite of "degrades cleanly"; the field stays a completely ordinary
+text field there, indistinguishable from any other text field except by
+its label. This is also exactly what `flutter test` exercises for free:
+the test host isn't Android, so a widget test pumping this handler's form
+field is a real, not simulated, check of the Windows-degradation path.
+
+**New tests, `test/field_format_handler_test.dart`** (34, up from 28) --
+grid column shape, `cellValueFor`/`valueForSave` (identical to
+`link_file`'s), a widget test confirming the controller binds directly
+(no wrapper needed, unlike `percentage`/`rating`), required validation,
+and the load-bearing one: confirms **zero** scan icons/`IconButton`s
+render on this non-Android test host, proving the degrade-cleanly
+behavior directly rather than asserting a platform check exists.
+
+**One stale test found and fixed along the way:** `field_format_choice_test
+.dart`/`field_format_handler_test.dart` had each used `'barcode'` as
+their example of a *genuinely unrecognized* format string (true when
+written, before this step existed) -- became real, silent test rot the
+moment `barcode` got a real handler and enum entry: `fromValue('barcode')`
+started correctly resolving to `FieldFormatChoice.barcode` instead of
+falling back to `text`, flipping the assertion. Caught immediately by the
+full test run (not shipped, not left broken) and fixed by swapping in a
+name that's fictitious on purpose (`'never_a_real_format'`) rather than
+another real format string that Phase 2 might someday also claim.
+
+`flutter analyze` clean. All 128 pure/widget tests pass together; every
+DB-backed v2 file passes individually (including
+`formula_end_to_end_test.dart`, re-confirmed unaffected). Confirmed
+afterward by direct SQL: zero leaked test tables, `PRAGMA
+integrity_check: ok`. `flutter build windows` and `flutter build apk
+--debug` both clean (the one documented KGP warning aside).
+
+**Build-verified only — not yet Mike-tested interactively, and this one
+genuinely needs MIKE-12R specifically** (Windows can only confirm the
+degrade-cleanly half). Next, when resumed: add a `barcode` field on
+MIKE-CU, confirm on MIKE-12R that the scan icon appears, tapping it
+prompts for camera permission the first time, opens a real camera
+preview, and a scanned code lands in the field; confirm denying
+permission shows the snackbar rather than crashing; confirm the *same*
+field on MIKE-CU (Windows) shows no icon at all and is still a normal
+typable text field; then confirm the value syncs between devices like
+any other field.
+
+---
+
+## Essentials v2 Phase 2 — complete
+
+**All seven build order steps from `claude/essentials-v2-phase2-design.md`
+are now built and build-verified**, in one continuous session
+(2026-08-23), model-tier-split exactly as confirmed before it started:
+Sonnet for steps 1-5 and 7, Opus for step 6 (`formula`) alone.
+
+| Step | Format(s) | Mechanism |
+|---|---|---|
+| 1 | `link_file` | `FieldFormatHandler`/`FieldFormatRegistry` prerequisite |
+| 2 | `currency`, `percentage`, `real.decimals` | Handler (currency/percentage); no handler (`real`) |
+| 3 | `url` | No handler -- reuses `FieldConfig.isLink` |
+| 4 | inline `select` | No handler -- peer to `FieldConfig.lookup` |
+| 5 | `rating` | Handler |
+| 6 | `formula` | No handler -- reuses `FieldConfig.readOnly`/`computePreview` |
+| 7 | `barcode` | Handler |
+
+Every step landed with real tests (unit, widget, and — for the two steps
+touching the schema engine directly, `link_file`'s registry prerequisite
+and `formula` -- a real end-to-end pass against the actual
+`essentials.db`), `flutter analyze` clean throughout, and both
+`flutter build windows`/`flutter build apk --debug` clean at every
+checkpoint. Every step is **build-verified only** — none has yet had
+Mike's own interactive pass on real hardware, per this project's
+long-standing working agreement (Code builds and verifies; Mike tests).
+
+**Next session:** work through the seven build-verified-only checkpoints
+above interactively, on both MIKE-CU and MIKE-12R, roughly in build
+order (or however Mike prefers to batch it) -- `barcode` specifically
+needs MIKE-12R's actual camera, everything else needs both platforms for
+the sync half of the check. Whatever's found gets fixed and re-verified
+the same way every prior phase's real-device pass has been (see the
+Essentials v2 Phase 1 real-device verification session for the shape
+that tends to take -- several real, previously-invisible bugs, not zero).
+Once that's done, Phase 2 is genuinely finished, not just
+build-complete -- see `claude/essentials-v2-phase2-design.md` for what
+Phase 3+ (view types, cross-table linking, and beyond) looks like next.
+
+### Real-device verification, started -- first finding was an install gap, not a bug
+
+Mike created a real "All Types" table on MIKE-CU (one field per Phase 2
+format) and added a record -- worked correctly there. On MIKE-12R, every
+Phase 2 format failed to render as its real type; the inline `select`
+field specifically showed the raw stored key ("1") instead of its label
+("excellent").
+
+**Root-caused by pulling 12R's actual `essentials.db` via `adb pull`
+(checkpointing the WAL first, same discipline as every prior cross-device
+incident in this project) and inspecting it directly, not guessed:**
+both `field_definitions.options` (the full, correct inline-mode JSON) and
+the row's own stored value (`1`, correctly mapping to `"excellent"`) were
+completely correct on 12R. The data layer and sync were never the
+problem. Confirmed instead by Mike checking two format-specific
+tells (barcode's scan icon, formula's computed value) that **12R was
+simply running a build from before this entire Phase 2 session** --
+expected, not a regression: Code never pushes installs to a device
+mid-session on its own (per the working agreement, that's normally
+Mike's own F5/`adb install`), and this was the first time 12R had been
+touched since Phase 2 started.
+
+**Fixed by installing the session's current debug APK directly**
+(`adb install -r build\app\outputs\flutter-apk\app-debug.apk`, built
+14:34 this session, right after step 7's own verify) and relaunching
+(`adb shell monkey`) -- confirmed by Mike immediately after: the inline
+`select` field, and by implication every other Phase 2 format, now
+renders correctly on 12R.
+
+**Worth remembering for the rest of this verification pass:** every
+build-order-step checkpoint above was build-verified against
+`build/windows`/a locally-built debug APK, but **none of those steps'
+own local builds were ever installed on MIKE-12R** -- this one `adb
+install` just now is what actually put the whole Phase 2 session's code
+on that device for the first time. No further reinstall should be needed
+for the remaining checklist items above (currency/percentage/real
+decimals, `url`, `rating`, `formula`, `barcode`) -- they're all already
+on the device now, from this same install.
+
+**Second finding from the same pass, a real bug this time: `GenericFormScreen`'s
+Save button sat under MIKE-12R's system nav bar.** Same root cause as the
+system-nav-bar overlap already fixed on five other screens (Settings,
+Manage Tables, Manage Fields, New Table, Add Field -- see CLAUDE.md's
+real-device verification session) -- a plain `EdgeInsets.all(16)` doesn't
+know the three-button nav bar exists and reserves no room for it.
+`GenericFormScreen` was never touched in that original pass (it predates
+it, and wasn't one of the schema-engine screens being checked at the
+time) -- this is the first time editing a real record's form was actually
+scrolled to the bottom on MIKE-12R since. Same fix applied: `EdgeInsets
+.fromLTRB(16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom)`. Grepped
+`lib/screens` for any other live `EdgeInsets.all(16)` while in there --
+none found; every other hit was a comment referencing an already-fixed
+screen. `flutter analyze` clean, `flutter build windows`/`apk --debug`
+both clean, installed on 12R and confirmed by Mike immediately after --
+Save is now reachable on every form, not just the schema-engine screens.
+
+**Rest of the checklist confirmed by Mike, same pass:** `rating` (grid
+and form stars), `formula` (real computed value, not blank), `barcode`
+(scan worked, camera opened, code landed in the field), and the CU→12R
+round trip -- all pass. One deliberate-scope question surfaced and
+settled: `barcode`'s scan affordance is form-only, no icon in the grid
+cell (unlike `link_file`'s "open file" icon or `rating`'s tappable stars,
+which both do appear in the grid) -- Mike confirmed this is the right
+call, not a gap to fill. `GenericListScreen.barcodeFormatHandler
+.buildGridColumn` stays a plain text column, as designed.
+
+## Essentials v2 Phase 2 — genuinely complete, real-device verified
+
+All seven build order steps from `claude/essentials-v2-phase2-design.md`
+are now confirmed working on **both** MIKE-CU and MIKE-12R, through a
+real "All Types" table (one field per format) created and cross-synced
+live -- not just build-verified. Two real findings came out of this pass,
+both fixed same session: MIKE-12R was running a stale (pre-Phase-2)
+build the first time it was checked (fixed by an `adb install` -- not a
+code bug, see above), and `GenericFormScreen`'s Save button sat under
+MIKE-12R's system nav bar (a real, fixed bug -- the same overlap class
+five other screens already had fixed, this one just hadn't been touched
+yet). Everything else -- all seven formats' grid and form rendering,
+save/reload round-tripping, and cross-device sync -- passed clean on
+first check.
+
+**Next session:** Phase 2 is done. Whenever Mike picks this back up, it's
+either real usage of the finished catalog, or starting Phase 3 (view
+types) -- see `claude/essentials-v2-phase2-design.md`'s own pointer to
+what comes next.

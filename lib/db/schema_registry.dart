@@ -2,6 +2,7 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import '../models/table_config.dart';
 import '../util/field_options.dart';
+import '../util/formula/formula_service.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
 
@@ -137,6 +138,16 @@ class SchemaRegistry {
       displayColumn: (tableRow['display_field'] as String?) ?? 'id',
       orderBy: tableRow['order_by'] as String?,
       fields: fields,
+      // Essentials v2 Phase 2 step 6: a table with `formula` fields gets
+      // the same live-preview hook `subscription`'s hand-written
+      // computePreview used to supply in v1 -- [GenericFormScreen] already
+      // calls this on every field change/focus-loss, and already only
+      // wires up those listeners when it's non-null, so formula fields
+      // update live in the form with zero changes to that screen. Null
+      // for every table without one, exactly as before.
+      computePreview: FormulaService.hasFormulaFields(fields)
+          ? (values) async => FormulaService.computeAllForDisplay(fields, values)
+          : null,
     );
   }
 
@@ -146,16 +157,35 @@ class SchemaRegistry {
     final options = parseFieldOptions(row['options'] as String?);
 
     final lookup = _lookupFor(format, options);
+    final inlineOptions = _inlineOptionsFor(format, options);
+    final isFormula = format == FormulaService.formatName;
 
     return FieldConfig(
       column: fieldName,
       label: row['display_name'] as String,
-      type: _formatToFieldType(format, lookup: lookup),
-      required: (row['required'] as int) == 1,
+      type: _formatToFieldType(format, lookup: lookup, options: options),
+      // A formula field's physical column is never written -- its value is
+      // computed at read time by FormulaService (see that class's own doc
+      // comment for why the column exists at all). readOnly is what
+      // actually enforces that: both write paths
+      // (GenericFormScreen._currentValues, GenericListScreen
+      // ._onGridChanged) already skip readOnly fields, and the grid
+      // already renders them as non-editable -- the same mechanism v1's
+      // `subscription_computed` view columns used, reused unchanged.
+      readOnly: isFormula,
+      // A required formula field is meaningless -- readOnly fields are
+      // never part of what the form validates or writes -- and
+      // SchemaEditorService.addField would have put a real NOT NULL on
+      // the column. The Add Field UI hides the checkbox for this format;
+      // this makes stale metadata (or a hand-edited row) harmless too.
+      required: !isFormula && (row['required'] as int) == 1,
       lookup: lookup,
+      inlineOptions: inlineOptions,
       defaultValue: row['default_value'] as String?,
       isLink: options['isLink'] == true,
       isColor: options['isColor'] == true,
+      format: format,
+      options: options,
     );
   }
 
@@ -164,9 +194,8 @@ class SchemaRegistry {
   /// for a `format: 'select'` field in linked-lookup mode, `table` (the
   /// referenced table), and optionally `displayField`/`valueField`
   /// (default `name`/`id`, matching [LookupConfig]'s own defaults).
-  /// **Provisional** -- no Add Field UI exists yet to actually produce
-  /// this shape (build order step 7); this is SchemaRegistry's side of the
-  /// documented contract, ready for that UI once it's built.
+  /// Returns `null` for `options.mode == 'inline'` too -- see
+  /// [_inlineOptionsFor], the sibling method for that mode.
   LookupConfig? _lookupFor(String format, Map<String, Object?> options) {
     if (format != 'select' || options['mode'] != 'linked') return null;
     final table = options['table'] as String?;
@@ -178,6 +207,18 @@ class SchemaRegistry {
     );
   }
 
+  /// `options` shape for a `format: 'select'` field in *inline* mode
+  /// (claude/essentials-v2-phase2-design.md's "Inline select" entry):
+  /// `{mode: 'inline', options: [{key, label}, ...]}`. A field with zero
+  /// valid entries still gets an empty list (not `null`) -- still
+  /// [FieldConfig.isInlineSelect], just renders a dropdown with nothing
+  /// to pick, which is more honest than silently falling back to a
+  /// lookup or plain text field it structurally isn't.
+  List<InlineOption>? _inlineOptionsFor(String format, Map<String, Object?> options) {
+    if (format != 'select' || options['mode'] != 'inline') return null;
+    return InlineOption.parseList(options['options']);
+  }
+
   /// **Provisional format catalog** -- matches [FieldType]'s own names
   /// 1:1 except `select` (a linked lookup, see [_lookupFor]). No Add
   /// Field UI exists yet to constrain what a user can actually pick (build
@@ -187,8 +228,24 @@ class SchemaRegistry {
   /// being designed. Unrecognized formats fall back to [FieldType.text],
   /// the same safe default [TableDiscoveryService._deriveType] already
   /// uses for anything it doesn't recognize.
-  FieldType _formatToFieldType(String format, {LookupConfig? lookup}) {
+  FieldType _formatToFieldType(
+    String format, {
+    LookupConfig? lookup,
+    required Map<String, Object?> options,
+  }) {
     if (lookup != null) return FieldType.text;
+    // A formula's own result type is a user choice (`options.resultType`),
+    // not derivable from the format string -- and it genuinely matters:
+    // FieldType.real is what gives the grid column right-alignment,
+    // decimal formatting via `options.decimals` (reusing step 2's
+    // `_decimalsFor` unchanged), and eligibility for a footer
+    // sum/average (`GenericListScreen._seedAggregate` gates on
+    // integer/real). A text-result formula gets plain text rendering.
+    if (format == FormulaService.formatName) {
+      return (options['resultType'] as String?) == FormulaService.resultTypeText
+          ? FieldType.text
+          : FieldType.real;
+    }
     return switch (format) {
       'integer' => FieldType.integer,
       'real' => FieldType.real,
