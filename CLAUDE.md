@@ -6882,6 +6882,8 @@ Full checkpoint: `flutter analyze` clean project-wide, `test/csv_import_coercion
 
 `test/field_format_choice_test.dart` extended (+4 tests) to cover `color`'s `resolve` behavior (including the "shares `text`'s value" ambiguity and the fix, mirroring `url`'s existing coverage) and exclude it from the "matches `fromValue` for every other format" loop, same reason `url`/`inlineSelect` are already excluded there. `flutter analyze` clean, `flutter build windows`/`apk --debug` both clean.
 
+**Mike's interactive verification: done, passed, on both MIKE-CU and MIKE-12R.** A color field created via Add Field shows "Color" in the format picker, its default-value entry gets the swatch + palette-picker popup on both screens, and the field renders/edits correctly (grid swatch, form picker) exactly like a v1 color field always has.
+
 ## v2 boolean fields reading back as always-false — fixed (2026-08-23)
 
 Found while building CSV import (see that section above) -- every v2 field is physically `TEXT` (`SchemaEditorService.addField`), so a boolean field saved as `true` (a bound Dart `int 1`) comes back out of SQLite as the *string* `"1"`, not the int, per SQLite's own TEXT-affinity conversion. `GenericFormScreen.initState` (`existingValue == 1 || existingValue == true`) and `GenericListScreen._cellValueFor` (`raw == 1 || raw == true`) both only matched a real `int`/`bool`, so both silently read a genuinely-true v2 boolean field back as false -- in the grid checkbox and the form switch -- on every reload. Same failure shape already found and fixed once for linked fields (`lib/util/lookup_value.dart`'s `parseLookupValue`), just never yet fixed for booleans.
