@@ -57,437 +57,156 @@ FutureOr<CrdtChangeset> safeChangesetBuilder(
   );
 }
 
-// Mirrors essentials_app's real schema.sql, table for table. The five
-// entity tables (shipment, subscription, journal, orders, order_items) use
-// `id INTEGER PRIMARY KEY DEFAULT (...)` here rather than schema.sql's
-// current `id INTEGER UNIQUE NOT NULL DEFAULT (...)` -- confirmed in the
-// "Syncing at the Record Level" Part A prototype that sqlite_crdt's merge
-// needs a declared PRIMARY KEY to build its conflict-resolution target.
-// Same generator expression either way (still non-AUTOINCREMENT, so the
-// original cross-device collision-avoidance property is unchanged); this
-// same fix needs to land in schema.sql and the real essentials.db in Part C
-// so client and server schemas match exactly.
+// Essentials v2 Phase 1 -- infra/bookkeeping tables ONLY. The 19 former
+// business tables (domain, subscription, journal, orders, order_items,
+// etc.) are deliberately gone from this list -- per the clean-slate
+// directive (claude/essentials-v2-phase1-design.md), business tables no
+// longer exist until Mike creates them through the app's own New Table UI,
+// and they reach this hub the same way they reach any device: replaying
+// `migration_log`, not hardcoded DDL here.
+//
+// MUST be kept byte-for-byte identical to `infraSchemaStatements` in
+// tool/bootstrap_fresh_db.dart -- same cross-package duplication
+// convention already used for `safeChangesetBuilder` and
+// `splitSqlStatements` (server/ is a separate Dart package from
+// essentials_app, so the two can't share a file). If one changes, the
+// other must change with it in the same commit.
 const schemaStatements = <String>[
-  // sqflite_common_ffi's own internal table -- not part of this app's
-  // design (schema.sql doesn't document it), but every real client has it
-  // and the sync layer doesn't distinguish "business tables" from
-  // anything else: it tries to merge whatever changesets a client sends,
-  // for every table name it mentions. Without a structural counterpart
-  // here, merging this table's changeset fails (found live, against the
-  // real server, not assumed) -- `pragma_table_info` on a table the
-  // server doesn't have at all returns zero rows same as "table exists
-  // but has no PRIMARY KEY," so sqlite_crdt's merge() builds the same
-  // broken `ON CONFLICT ()` either way. Shape matches the client's
-  // (post-migrations/006 -- `locale` as a real PRIMARY KEY, not bare).
+  // sqflite_common_ffi's own internal table. Not part of this app's design,
+  // but Android's sqflite creates it locally and the sync layer doesn't
+  // distinguish business tables from anything else -- without a structural
+  // counterpart on every peer, merging its changeset fails (found live against
+  // the real server, see server.dart's own comment). `locale` is a real
+  // PRIMARY KEY, not bare -- per migrations/006.
   '''
-    CREATE TABLE android_metadata (
-      locale TEXT PRIMARY KEY
+    CREATE TABLE "android_metadata" (
+      "locale" TEXT PRIMARY KEY
     )
   ''',
 
-  // ===================== LOOKUP / DOMAIN TABLES =====================
+  // ---------- Dynamic schema metadata (NEW in v2 Phase 1) ----------
+  // The heart of the dynamic schema engine. One row per user-visible table.
+  // `table_name` is the physical SQLite identifier and is IMMUTABLE once
+  // created; only `display_name` ever changes. That single rule is what makes
+  // rename/delete/reorder pure metadata operations with zero DDL.
   '''
-    CREATE TABLE domain (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
+    CREATE TABLE "table_definitions" (
+      "table_name"    TEXT PRIMARY KEY,
+      "display_name"  TEXT NOT NULL,
+      "description"   TEXT,
+      "icon"          TEXT,
+      "display_field" TEXT,
+      "order_by"      TEXT,
+      "position"      INTEGER,
+      "created_at"    TEXT NOT NULL
     )
   ''',
+  // One row per field. Supersedes v1's `field_metadata` entirely -- that table
+  // held only the policy half (label, default, lookup display column) and
+  // derived the structural half from PRAGMA introspection. This holds both, so
+  // `field_metadata` is NOT created here.
+  //
+  // `format` is a presentation/input hint, never a storage constraint --
+  // every user field's physical column is TEXT. `options` is JSON (format
+  // mask, currency symbol, select source table + display field, on_delete,
+  // etc.).
   '''
-    CREATE TABLE priority (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE gender (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE status (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE quality (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE condition (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE unit (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      name         TEXT NOT NULL UNIQUE,
-      abbreviation TEXT,
-      definition   TEXT,
-      active       INTEGER NOT NULL DEFAULT 1,
-      position     INTEGER,
-      color        TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE importance (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE disposition (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE time_frame (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      unit_id     INTEGER NOT NULL REFERENCES unit(id) ON DELETE RESTRICT,
-      multiplier  INTEGER NOT NULL,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  'CREATE INDEX idx_time_frame_unit_id ON time_frame(unit_id)',
-  '''
-    CREATE TABLE class (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE category (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      class_id    INTEGER REFERENCES class(id) ON DELETE RESTRICT,
-      description TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  'CREATE INDEX idx_category_class_id ON category(class_id)',
-  '''
-    CREATE TABLE account_type (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      name         TEXT NOT NULL UNIQUE,
-      abbreviation TEXT,
-      definition   TEXT,
-      active       INTEGER NOT NULL DEFAULT 1,
-      position     INTEGER,
-      color        TEXT
+    CREATE TABLE "field_definitions" (
+      "table_name"    TEXT NOT NULL,
+      "field_name"    TEXT NOT NULL,
+      "display_name"  TEXT NOT NULL,
+      "format"        TEXT NOT NULL,
+      "options"       TEXT,
+      "default_value" TEXT,
+      "required"      INTEGER NOT NULL DEFAULT 0,
+      "position"      INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY ("table_name", "field_name")
     )
   ''',
 
-  // ===================== ENTITY TABLES =====================
+  // ---------- Per-device table view state ----------
   '''
-    CREATE TABLE account (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      name            TEXT NOT NULL UNIQUE,
-      code            TEXT UNIQUE,
-      institution     TEXT,
-      account_type_id INTEGER REFERENCES account_type(id) ON DELETE RESTRICT,
-      domain_id       INTEGER REFERENCES domain(id) ON DELETE RESTRICT,
-      notes           TEXT,
-      active          INTEGER NOT NULL DEFAULT 1,
-      position        INTEGER,
-      color           TEXT
-    )
-  ''',
-  'CREATE INDEX idx_account_account_type_id ON account(account_type_id)',
-  'CREATE INDEX idx_account_domain_id ON account(domain_id)',
-  '''
-    CREATE TABLE supplier (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      hyperlink   TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
+    CREATE TABLE "table_column_settings" (
+      "table_name"    TEXT NOT NULL,
+      "device_id"     TEXT NOT NULL,
+      "column_name"   TEXT NOT NULL,
+      "width"         REAL,
+      "display_order" INTEGER,
+      "visible"       INTEGER NOT NULL DEFAULT 1,
+      "frozen"        TEXT,
+      "wrap_text"     INTEGER NOT NULL DEFAULT 0,
+      "aggregate"     TEXT,
+      PRIMARY KEY ("table_name", "device_id", "column_name")
     )
   ''',
   '''
-    CREATE TABLE shipper (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      hyperlink   TEXT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
+    CREATE TABLE "table_view_settings" (
+      "table_name"       TEXT NOT NULL,
+      "device_id"        TEXT NOT NULL,
+      "sort_column"      TEXT,
+      "sort_direction"   TEXT,
+      "filter_json"      TEXT,
+      "group_column"     TEXT,
+      "row_color_column" TEXT,
+      PRIMARY KEY ("table_name", "device_id")
     )
   ''',
-  '''
-    CREATE TABLE person (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT,
-      gender_id   INTEGER REFERENCES gender(id) ON DELETE RESTRICT,
-      active      INTEGER NOT NULL DEFAULT 1,
-      position    INTEGER,
-      color       TEXT
-    )
-  ''',
-  'CREATE INDEX idx_person_gender_id ON person(gender_id)',
 
-  // ===================== TRANSACTIONAL / ONE-TO-MANY TABLES =====================
-  // id scheme fix applied here -- see file header comment.
+  // ---------- App/device settings, groups ----------
+  // `setting_key`, never a bare `key` -- migrations/007 renamed it precisely
+  // because of the sqlparser bug this file's header describes. Quoting would
+  // also fix it now, but the rename stands so no future fresh CREATE TABLE
+  // depends on remembering to quote.
   '''
-    CREATE TABLE shipment (
-      id INTEGER PRIMARY KEY DEFAULT (
+    CREATE TABLE "app_settings" (
+      "setting_key" TEXT PRIMARY KEY,
+      "value"       TEXT
+    )
+  ''',
+  '''
+    CREATE TABLE "device_settings" (
+      "device_id"   TEXT NOT NULL,
+      "setting_key" TEXT NOT NULL,
+      "value"       TEXT,
+      PRIMARY KEY ("device_id", "setting_key")
+    )
+  ''',
+  '''
+    CREATE TABLE "table_group" (
+      "table_name"     TEXT PRIMARY KEY,
+      "group_name"     TEXT NOT NULL,
+      "group_position" INTEGER
+    )
+  ''',
+
+  // ---------- Schema migration system ----------
+  // `id` is the timestamp+random scheme, NOT AUTOINCREMENT -- changed for v2.
+  // v1's AUTOINCREMENT was safe only because migrations were authored from
+  // exactly one place (schema_admin on MIKE-CU). Phase 1 breaks that: any
+  // device can create a table, so any device authors migration_log rows.
+  // AUTOINCREMENT is max(existing)+1, so two devices both synced through
+  // migration N will BOTH deterministically pick N+1 -- and since `id` is the
+  // primary key, CRDT merges the two rows into one and silently loses a
+  // migration. Not a microsecond race; the window is the whole sync interval.
+  '''
+    CREATE TABLE "migration_log" (
+      "id" INTEGER PRIMARY KEY DEFAULT (
         CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
         + (abs(random()) % 1000)
       ),
-      supplier_id    INTEGER REFERENCES supplier(id) ON DELETE RESTRICT,
-      order_date     TEXT,
-      due_date       TEXT,
-      received_date  TEXT,
-      domain_id      INTEGER REFERENCES domain(id) ON DELETE RESTRICT,
-      order_id       TEXT,
-      order_link     TEXT,
-      shipper_id     INTEGER REFERENCES shipper(id) ON DELETE RESTRICT,
-      tracking_id    TEXT,
-      tracking_link  TEXT,
-      items          TEXT,
-      note           TEXT
-    )
-  ''',
-  'CREATE INDEX idx_shipment_supplier_id ON shipment(supplier_id)',
-  'CREATE INDEX idx_shipment_domain_id ON shipment(domain_id)',
-  'CREATE INDEX idx_shipment_shipper_id ON shipment(shipper_id)',
-  '''
-    CREATE TABLE subscription (
-      id INTEGER PRIMARY KEY DEFAULT (
-        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
-        + (abs(random()) % 1000)
-      ),
-      name               TEXT NOT NULL UNIQUE,
-      domain_id          INTEGER REFERENCES domain(id) ON DELETE RESTRICT,
-      used_by_id         INTEGER REFERENCES person(id) ON DELETE RESTRICT,
-      class_id           INTEGER REFERENCES class(id) ON DELETE RESTRICT,
-      renewal_period_id  INTEGER REFERENCES time_frame(id) ON DELETE RESTRICT,
-      cost               REAL,
-      payment_method_id  INTEGER REFERENCES account(id) ON DELETE RESTRICT,
-      importance_id      INTEGER REFERENCES importance(id) ON DELETE RESTRICT,
-      disposition_id     INTEGER REFERENCES disposition(id) ON DELETE RESTRICT,
-      start_date         TEXT,
-      last_date          TEXT,
-      link               TEXT,
-      active             INTEGER NOT NULL DEFAULT 1,
-      note               TEXT
-    )
-  ''',
-  'CREATE INDEX idx_subscription_domain_id ON subscription(domain_id)',
-  'CREATE INDEX idx_subscription_used_by_id ON subscription(used_by_id)',
-  'CREATE INDEX idx_subscription_class_id ON subscription(class_id)',
-  'CREATE INDEX idx_subscription_renewal_period_id ON subscription(renewal_period_id)',
-  'CREATE INDEX idx_subscription_payment_method_id ON subscription(payment_method_id)',
-  'CREATE INDEX idx_subscription_importance_id ON subscription(importance_id)',
-  'CREATE INDEX idx_subscription_disposition_id ON subscription(disposition_id)',
-  '''
-    CREATE VIEW subscription_computed AS
-    SELECT
-        s.*,
-        tf.multiplier AS renewal_multiplier_months,
-        ROUND(s.cost * 12.0 / tf.multiplier, 2) AS yearly_cost,
-        CASE
-            WHEN s.start_date IS NULL OR tf.multiplier IS NULL THEN NULL
-            WHEN date(s.start_date) > date('now') THEN s.start_date
-            ELSE date(
-                s.start_date,
-                '+' || (
-                    (
-                        (
-                            (CAST(strftime('%Y','now') AS INTEGER) - CAST(strftime('%Y', s.start_date) AS INTEGER)) * 12
-                            + (CAST(strftime('%m','now') AS INTEGER) - CAST(strftime('%m', s.start_date) AS INTEGER))
-                            - (CASE WHEN CAST(strftime('%d','now') AS INTEGER) < CAST(strftime('%d', s.start_date) AS INTEGER) THEN 1 ELSE 0 END)
-                        ) / tf.multiplier + 1
-                    ) * tf.multiplier
-                ) || ' months'
-            )
-        END AS next_date
-    FROM subscription s
-    LEFT JOIN time_frame tf ON tf.id = s.renewal_period_id
-  ''',
-  '''
-    CREATE TABLE journal (
-      id INTEGER PRIMARY KEY DEFAULT (
-        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
-        + (abs(random()) % 1000)
-      ),
-      entry_time  TEXT NOT NULL,
-      entry       TEXT NOT NULL,
-      tag         TEXT,
-      status_id   INTEGER REFERENCES status(id) ON DELETE RESTRICT,
-      location    TEXT,
-      who_id      INTEGER REFERENCES person(id) ON DELETE RESTRICT,
-      domain_id   INTEGER REFERENCES domain(id) ON DELETE RESTRICT,
-      follow_up   TEXT,
-      scheduled   INTEGER NOT NULL DEFAULT 0,
-      link        TEXT,
-      image       TEXT,
-      file        TEXT,
-      latitude    REAL,
-      longitude   REAL,
-      notes       TEXT
-    )
-  ''',
-  'CREATE INDEX idx_journal_status_id ON journal(status_id)',
-  'CREATE INDEX idx_journal_who_id ON journal(who_id)',
-  'CREATE INDEX idx_journal_domain_id ON journal(domain_id)',
-
-  // ===================== PER-DEVICE TABLE VIEW STATE =====================
-  '''
-    CREATE TABLE table_column_settings (
-      table_name    TEXT NOT NULL,
-      device_id     TEXT NOT NULL,
-      column_name   TEXT NOT NULL,
-      width         REAL,
-      display_order INTEGER,
-      visible       INTEGER NOT NULL DEFAULT 1,
-      frozen        TEXT,
-      wrap_text     INTEGER NOT NULL DEFAULT 0,
-      aggregate     TEXT,
-      PRIMARY KEY (table_name, device_id, column_name)
+      "sql_text"    TEXT NOT NULL,
+      "description" TEXT,
+      "created_at"  TEXT NOT NULL
     )
   ''',
   '''
-    CREATE TABLE table_view_settings (
-      table_name     TEXT NOT NULL,
-      device_id      TEXT NOT NULL,
-      sort_column    TEXT,
-      sort_direction TEXT,
-      filter_json    TEXT,
-      group_column   TEXT,
-      row_color_column TEXT,
-      PRIMARY KEY (table_name, device_id)
-    )
-  ''',
-
-  // ===================== APP/DEVICE SETTINGS, FIELD METADATA, GROUPS =======
-  '''
-    CREATE TABLE app_settings (
-      setting_key TEXT PRIMARY KEY,
-      value       TEXT
-    )
-  ''',
-  '''
-    CREATE TABLE device_settings (
-      device_id   TEXT NOT NULL,
-      setting_key TEXT NOT NULL,
-      value       TEXT,
-      PRIMARY KEY (device_id, setting_key)
-    )
-  ''',
-  '''
-    CREATE TABLE field_metadata (
-      table_name            TEXT NOT NULL,
-      field_name             TEXT NOT NULL,
-      display_label          TEXT,
-      default_value           TEXT,
-      lookup_display_column  TEXT,
-      is_link                 INTEGER,
-      PRIMARY KEY (table_name, field_name)
-    )
-  ''',
-  '''
-    CREATE TABLE table_group (
-      table_name     TEXT PRIMARY KEY,
-      group_name     TEXT NOT NULL,
-      group_position INTEGER
-    )
-  ''',
-
-  // ===================== ORDERS / ORDER_ITEMS ==============================
-  '''
-    CREATE TABLE orders (
-      id INTEGER PRIMARY KEY DEFAULT (
-        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
-        + (abs(random()) % 1000)
-      ),
-      order_number TEXT UNIQUE,
-      supplier_id  INTEGER REFERENCES supplier(id) ON DELETE RESTRICT
-    )
-  ''',
-  '''
-    CREATE TABLE order_items (
-      id INTEGER PRIMARY KEY DEFAULT (
-        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
-        + (abs(random()) % 1000)
-      ),
-      order_id    INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-      description TEXT,
-      cost        REAL
-    )
-  ''',
-
-  // ===================== SCHEMA MIGRATION SYSTEM =====================
-  // See schema.sql's own "SCHEMA MIGRATION SYSTEM" section and CLAUDE.md
-  // "schema_admin -- migration authoring tool" for the full design. `id`
-  // is real AUTOINCREMENT -- centrally authored from schema_admin alone,
-  // not independently written by multiple devices.
-  '''
-    CREATE TABLE migration_log (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      sql_text    TEXT NOT NULL,
-      description TEXT,
-      created_at  TEXT NOT NULL
-    )
-  ''',
-  '''
-    CREATE TABLE migration_status (
-      migration_id  INTEGER NOT NULL REFERENCES migration_log(id),
-      device_id     TEXT NOT NULL,
-      outcome       TEXT NOT NULL,
-      error_message TEXT,
-      attempted_at  TEXT,
-      PRIMARY KEY (migration_id, device_id)
+    CREATE TABLE "migration_status" (
+      "migration_id"  INTEGER NOT NULL REFERENCES "migration_log"("id"),
+      "device_id"     TEXT NOT NULL,
+      "outcome"       TEXT NOT NULL,
+      "error_message" TEXT,
+      "attempted_at"  TEXT,
+      PRIMARY KEY ("migration_id", "device_id")
     )
   ''',
 ];
@@ -512,13 +231,42 @@ Future<void> main() async {
   // CLAUDE.md "schema_admin -- migration authoring tool".
   final migrations = MigrationService(crdt);
   await migrations.applyPending();
-  Timer.periodic(migrationCheckInterval, (_) async {
+
+  // Guards every applyPending() call below (the periodic timer and the
+  // live debounced trigger) so at most one ever runs at a time -- doesn't
+  // eliminate the risk of racing crdt_sync's own internal merge
+  // transaction (that one's real fix is MigrationService._attempt's own
+  // transient-lock retry, see its doc comment), but there's no reason to
+  // also let *this* code's own two separate triggers race each other on
+  // top of that.
+  var applyingMigrations = false;
+  Future<void> runApplyPending() async {
+    if (applyingMigrations) return;
+    applyingMigrations = true;
     try {
       await migrations.applyPending();
     } catch (e) {
       print('[migration check error] $e');
+    } finally {
+      applyingMigrations = false;
     }
-  });
+  }
+
+  Timer.periodic(migrationCheckInterval, (_) => runApplyPending());
+
+  // Debounced re-application, triggered live by onChangesetReceived below
+  // -- not called immediately from there: crdt_sync calls that callback
+  // *before* awaiting the actual merge (confirmed by reading crdt_sync's
+  // own source, same finding already documented on the client's identical
+  // fix), so an incoming migration_log row isn't necessarily in hub.db yet
+  // at the moment the callback fires. A short delay is cheap insurance,
+  // not a precise wait, and coalesces a batch of near-simultaneous
+  // changesets into one applyPending() call instead of several.
+  Timer? migrationApplyDebounce;
+  void scheduleMigrationApply() {
+    migrationApplyDebounce?.cancel();
+    migrationApplyDebounce = Timer(const Duration(milliseconds: 500), runApplyPending);
+  }
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
   print('Listening on 0.0.0.0:$port (reachable at 10.0.0.134:$port)');
@@ -561,8 +309,30 @@ Future<void> main() async {
             print('[connect] peer ${crdtSync.peerId}'),
         onDisconnect: (peerId, code, reason) =>
             print('[disconnect] peer $peerId (code=$code reason=$reason)'),
-        onChangesetReceived: (nodeId, counts) =>
-            print('[recv] from $nodeId: $counts'),
+        // Real gap found live (CLAUDE.md "Real-device final verification
+        // pass"): this used to be a plain print -- applying pending
+        // migrations here relied entirely on the 5-minute periodic timer
+        // above, written back when only schema_admin ever authored
+        // migrations (rare, deliberate). Essentials v2's live schema
+        // engine means any device can author one at any moment; a
+        // still-connected client kept re-offering the same batch every
+        // reconnect while the server's own applyPending never ran in
+        // between, so a table dropped on one device took up to 5 minutes
+        // (a full periodic-timer cycle) to actually disappear from
+        // hub.db, not the "quick" propagation record-level sync otherwise
+        // has. Mirrors the identical fix already made client-side
+        // (`SyncService.onChangesetReceived` -> `HomeShell`'s debounced
+        // `MigrationService().applyPending()`) -- same trigger condition,
+        // same debounced-not-immediate handling via scheduleMigrationApply
+        // above.
+        onChangesetReceived: (nodeId, counts) {
+          print('[recv] from $nodeId: $counts');
+          if (counts.containsKey('table_definitions') ||
+              counts.containsKey('field_definitions') ||
+              counts.containsKey('migration_log')) {
+            scheduleMigrationApply();
+          }
+        },
         onChangesetSent: (nodeId, counts) =>
             print('[send] to $nodeId: $counts'),
       );

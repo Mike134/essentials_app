@@ -15,6 +15,7 @@ import '../util/color_picker.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
 import '../util/links.dart';
+import '../util/lookup_value.dart';
 import '../util/strings.dart';
 import 'generic_form_screen.dart';
 
@@ -87,7 +88,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
   /// column drag's per-frame notifications into one write on release.
   static const Duration _saveDebounce = Duration(milliseconds: 600);
 
-  late final GenericDao _dao;
+  late GenericDao _dao;
   late Future<_ScreenData> _screenDataFuture;
 
   TrinaGridStateManager? _stateManager;
@@ -180,10 +181,31 @@ class _GenericListScreenState extends State<GenericListScreen> {
     _reload();
   }
 
+  /// **Real bug, found live (CLAUDE.md "Essentials v2 Phase 1" -- Step 9
+  /// follow-up): this used to check `oldWidget.config.tableName !=
+  /// widget.config.tableName`, which can never actually be true.**
+  /// `HomeShell` keys this screen with `ValueKey(selected.tableName)`, so a
+  /// genuine table switch destroys this whole State and runs [initState]
+  /// fresh -- [didUpdateWidget] is only ever called for the *same* table,
+  /// meaning the old condition was dead code, and there was no reload path
+  /// at all for the case that actually happens: `HomeShell._reloadTables()`
+  /// (fired on every return from Settings) builds a brand-new [TableConfig]
+  /// for the *same* table whenever its own field list changed underneath it
+  /// (Add Field / Manage Fields' soft-delete / restore / reorder). Found by
+  /// Mike soft-deleting two fields via Manage Fields and finding them still
+  /// in the grid on return -- the screen was still holding the very first
+  /// [TableConfig] it was ever built with. Fixed by reloading whenever
+  /// [widget.config] is a genuinely different object, not just a
+  /// differently-named table -- `_tables` in `HomeShell` is only ever
+  /// rebuilt (producing new [TableConfig] instances) by
+  /// [HomeShell._loadGroups]/`_reloadTables`, never by the purely-grouping
+  /// `_reloadGroups`, so this can't fire on every unrelated rebuild (e.g.
+  /// toggling a sidebar group) -- only when the table list itself was
+  /// actually refreshed.
   @override
   void didUpdateWidget(covariant GenericListScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.config.tableName != widget.config.tableName) {
+    if (!identical(oldWidget.config, widget.config)) {
       _dao = GenericDao(widget.config);
       _reload();
     }
@@ -447,7 +469,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
     }
 
     final savedPath = await FilePicker.saveFile(
-      dialogTitle: 'Export ${titleCase(widget.config.tableName)} to CSV',
+      dialogTitle: 'Export ${widget.config.displayName} to CSV',
       fileName: '${widget.config.tableName}.csv',
       type: FileType.custom,
       allowedExtensions: ['csv'],
@@ -1305,13 +1327,21 @@ class _GenericListScreenState extends State<GenericListScreen> {
   }
 
   Object? _cellValueFor(FieldConfig field, Object? raw) {
-    // Left as the raw FK id (or null) -- the select column's `items` are
+    // Parsed to a real int (or null) -- the select column's `items` are
     // ids, and its `formatter` (see _buildFieldColumn) turns that back into
-    // display text for the cell. Converting it to a string here the way the
-    // plain-text branch below does would desync the cell's value from
-    // `TrinaColumnType.select<int?>`'s item type and break both the
-    // dropdown's current-selection highlight and its edit validation.
-    if (field.isLookup) return raw;
+    // display text for the cell. Real bug, found live: `raw` here is a v2
+    // linked field's own physically-TEXT column value (see
+    // parseLookupValue's doc comment), a String, not the int
+    // `TrinaColumnType.select<int?>` requires -- previously left as-is
+    // ("the raw FK id"), which held for v1's real INTEGER FK columns but
+    // silently mismatched v2's, rendering a blank cell instead of the
+    // linked row's display text. Converting it to a *string* instead the
+    // way the plain-text branch below does would be equally wrong -- it
+    // would desync the cell's value from `TrinaColumnType.select<int?>`'s
+    // item type and break both the dropdown's current-selection highlight
+    // and its edit validation; parsing to the same int the column type
+    // actually expects is the correct fix, not a same-shape workaround.
+    if (field.isLookup) return parseLookupValue(raw);
     if (field.type == FieldType.boolean) {
       return raw == 1 || raw == true ? 1 : 0;
     }
@@ -1374,7 +1404,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(titleCase(widget.config.tableName)),
+        title: Text(widget.config.displayName),
         actions: [
           FutureBuilder<_ScreenData>(
             future: _screenDataFuture,

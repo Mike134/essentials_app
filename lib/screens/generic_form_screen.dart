@@ -7,6 +7,7 @@ import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
 import '../util/date_format.dart';
 import '../util/links.dart';
+import '../util/lookup_value.dart';
 
 /// Add/edit form for a single row, entirely driven by [config]. Renders
 /// text/number/boolean fields directly, lookup fields (batch 2+) as a
@@ -103,7 +104,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       if (field.type == FieldType.boolean) {
         _boolValues[field.column] = existingValue == 1 || existingValue == true;
       } else if (field.isLookup) {
-        _lookupValues[field.column] = existingValue as int?;
+        // Real crash, found live: a v2 linked field's own column is
+        // always physically TEXT (see parseLookupValue's doc comment),
+        // so `existingValue` here is a String, not the int a bare `as
+        // int?` cast assumed -- release-mode Flutter renders that as a
+        // blank grey screen (its default error widget), not a visible
+        // exception, the moment an existing record was opened for
+        // editing.
+        _lookupValues[field.column] = parseLookupValue(existingValue);
         _lookupOptions[field.column] = _dao.getLookupOptions(field.lookup!);
       } else {
         _controllers[field.column] =

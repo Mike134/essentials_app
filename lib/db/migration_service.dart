@@ -128,35 +128,75 @@ class MigrationService {
     }
   }
 
+  /// A transient SQLite busy/lock error retries a few times before being
+  /// recorded as a real failure -- see [_attempt]'s own doc comment for
+  /// why this exists.
+  static const _maxLockRetries = 3;
+  static const _lockRetryDelay = Duration(milliseconds: 300);
+
   /// Runs [sqlText] (one or more statements) wrapped in a transaction with
   /// `PRAGMA foreign_keys` off/on around it, then records the outcome.
   /// Returns whether it succeeded.
+  ///
+  /// **Retries a transient "database is locked" error a few times before
+  /// giving up -- a real incident, not a theoretical one.** Once this
+  /// device's own `MigrationService` started being triggered live off
+  /// incoming changesets (not just app launch and the periodic reconnect
+  /// -- see [MigrationService]'s own class doc comment history in
+  /// CLAUDE.md), it became newly possible for this transaction to
+  /// genuinely overlap with crdt_sync's *own* internal merge transaction
+  /// on the same shared connection -- confirmed live on the server (same
+  /// code shape, `server/bin/migration_service.dart`): a real
+  /// `SqliteException(5): database is locked` on `COMMIT`, caught by
+  /// crdt_sync's own try/catch around `crdt.merge()` and silently
+  /// swallowed there (same "no ack, no retry" pattern already documented
+  /// for a failed merge elsewhere in this file's history), while a
+  /// same-shaped failure *here* would have been recorded as a permanent
+  /// `'failed'` `migration_status` row -- and [applyPending]'s own
+  /// halt-on-failure logic would then have permanently blocked every
+  /// later migration for this device over what was really just bad
+  /// timing, not a real DDL problem. A locked-database error is
+  /// definitionally transient (the other transaction finishes and
+  /// releases it), so retrying briefly is the correct response, not
+  /// halting.
   Future<bool> _attempt(
     SqliteCrdt crdt, {
     required String deviceId,
     required int migrationId,
     required String sqlText,
   }) async {
-    String outcome;
+    String outcome = 'failed';
     String? errorMessage;
-    try {
-      // Must happen outside the transaction -- SQLite only allows toggling
-      // this pragma with no pending BEGIN.
-      await crdt.execute('PRAGMA foreign_keys = OFF');
-      await crdt.transaction((txn) async {
-        for (final statement in splitSqlStatements(sqlText)) {
-          await txn.execute(statement);
+
+    for (var attempt = 1; attempt <= _maxLockRetries; attempt++) {
+      try {
+        // Must happen outside the transaction -- SQLite only allows
+        // toggling this pragma with no pending BEGIN.
+        await crdt.execute('PRAGMA foreign_keys = OFF');
+        await crdt.transaction((txn) async {
+          for (final statement in splitSqlStatements(sqlText)) {
+            await txn.execute(statement);
+          }
+        });
+        outcome = 'succeeded';
+        errorMessage = null;
+        break;
+      } catch (e) {
+        final message = e.toString();
+        final isTransientLock =
+            message.contains('database is locked') || message.contains('SQLITE_BUSY');
+        if (isTransientLock && attempt < _maxLockRetries) {
+          await Future.delayed(_lockRetryDelay * attempt);
+          continue;
         }
-      });
-      outcome = 'succeeded';
-      errorMessage = null;
-    } catch (e) {
-      // Real error text, not a generic "it failed" -- schema_admin's
-      // status view needs this to actually be useful.
-      outcome = 'failed';
-      errorMessage = e.toString();
-    } finally {
-      await crdt.execute('PRAGMA foreign_keys = ON');
+        // Real error text, not a generic "it failed" -- schema_admin's
+        // status view needs this to actually be useful.
+        outcome = 'failed';
+        errorMessage = message;
+        break;
+      } finally {
+        await crdt.execute('PRAGMA foreign_keys = ON');
+      }
     }
 
     await crdt.upsert('migration_status', {

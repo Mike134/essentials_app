@@ -93,6 +93,38 @@ class SyncService {
 
   static SyncService? _instance;
 
+  /// Fires whenever an incoming changeset includes at least one
+  /// `table_definitions`/`field_definitions`/`migration_log` row -- i.e.
+  /// the schema itself (not just row data within an already-known table)
+  /// changed on another device. [HomeShell] listens for this to refresh
+  /// its nav/table list live, instead of only on return from Settings --
+  /// found live (CLAUDE.md "Essentials v2 Phase 1" -- Step 9 follow-up): a
+  /// rename made on one device only ever showed up on another after that
+  /// other device's user happened to open and leave Settings, since
+  /// nothing reactive existed for this app's own most basic architectural
+  /// fact -- table discovery is "at launch, not live" (CLAUDE.md "Table
+  /// Discovery phase") -- once the *sync* side of "live" genuinely started
+  /// working this session (see the frozen-hlc fix above), the *display*
+  /// side's missing reactivity became the next visible gap.
+  ///
+  /// `migration_log` was added to the trigger set after a second, real gap
+  /// this surfaced: a table *created* on another device while this one was
+  /// already connected arrived with correct `table_definitions`/
+  /// `field_definitions` metadata (plain CRDT row sync, always live) but
+  /// its physical `CREATE TABLE` never actually ran here -- nothing except
+  /// app launch and `SyncService`'s own `onConnect` ever called
+  /// `MigrationService.applyPending`, and neither of those fires for a
+  /// migration arriving mid-session over an already-open connection. The
+  /// table showed up correctly in Manage Tables (reads `table_definitions`
+  /// directly, no physical check) but silently never appeared in the real
+  /// nav (`SchemaRegistry.buildConfig` correctly detects the schema drift
+  /// and skips it rather than crash -- see `loadEffectiveTables`'s own doc
+  /// comment). [HomeShell]'s listener now calls
+  /// `MigrationService().applyPending()` before reloading, so the physical
+  /// DDL exists by the time it tries to build a `TableConfig` for it.
+  static final _schemaChangesController = StreamController<void>.broadcast();
+  static Stream<void> get schemaChanges => _schemaChangesController.stream;
+
   /// Resolves the server address (see [_resolveServerUri]) and connects.
   /// Safe to call once at app startup; [CrdtSyncClient] handles its own
   /// reconnection with exponential backoff after that.
@@ -106,6 +138,7 @@ class SyncService {
       crdt,
       uri,
       onConnect: (nodeId, info) {
+        _lastConnectedAt = DateTime.now().toUtc();
         _log('connected to server (peer $nodeId)');
         // Re-check for newly-arrived migrations on every connect, not just
         // app launch -- including the periodic reconnect below. See
@@ -120,6 +153,19 @@ class SyncService {
       },
       onDisconnect: (nodeId, code, reason) =>
           _log('disconnected from server (code=$code reason=$reason)'),
+      // Fires before crdt_sync actually merges the changeset (confirmed by
+      // reading crdt_sync's own source -- CrdtSync._mergeChangeset calls
+      // this, then awaits crdt.merge() right after), so this can't wait for
+      // the merge to be visibly done -- [HomeShell]'s listener debounces a
+      // short beat before reloading rather than assuming the merge has
+      // landed by the time this fires.
+      onChangesetReceived: (nodeId, recordCounts) {
+        if (recordCounts.containsKey('table_definitions') ||
+            recordCounts.containsKey('field_definitions') ||
+            recordCounts.containsKey('migration_log')) {
+          _schemaChangesController.add(null);
+        }
+      },
       changesetBuilder: ({onlyTables, onlyNodeId, exceptNodeId, modifiedOn, modifiedAfter}) =>
           safeChangesetBuilder(
             crdt,
@@ -169,6 +215,28 @@ class SyncService {
   SocketState get state => _client.state;
 
   Stream<SocketState> get watchState => _client.watchState;
+
+  /// Best-effort "has this device connected to the server since <time>"
+  /// signal -- used to gate stage-2 "Permanently delete"
+  /// (claude/essentials-v2-phase1-design.md, "Permanently delete gating
+  /// signal": stage 2 should stay unavailable until sync has confirmed a
+  /// soft-delete's tombstone actually reached the server). crdt_sync has
+  /// no per-row acknowledgment ([safeChangesetBuilder]'s own doc comment
+  /// covers why the periodic reconnect above exists at all) -- a connect
+  /// that happens *after* a tombstone's own `modified` timestamp means
+  /// that tombstone was necessarily included in that connect's outgoing
+  /// catch-up push ([safeChangesetBuilder] always sends the complete local
+  /// dataset on connect, never just anything newer than a watermark), so
+  /// comparing the two is the best confirmation available without building
+  /// real per-row ack tracking. Not an ironclad guarantee -- the push
+  /// could in principle still fail silently the same way the real FOREIGN
+  /// KEY failure documented in CLAUDE.md once did -- but a plain
+  /// `is_deleted` tombstone with no dependencies is exactly the kind of
+  /// write that failure mode doesn't apply to. Static (not per-instance)
+  /// since `ManageTablesScreen`/`ManageFieldsScreen` need this before ever
+  /// touching a [SyncService] instance themselves.
+  static DateTime? get lastConnectedAt => _lastConnectedAt;
+  static DateTime? _lastConnectedAt;
 
   static Future<Uri> _resolveServerUri(SqliteCrdt crdt) async {
     final address = await resolveServerAddress(crdt);
