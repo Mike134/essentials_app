@@ -6890,4 +6890,4 @@ Found while building CSV import (see that section above) -- every v2 field is ph
 
 Two new test files: `test/bool_value_test.dart` (pure Dart, every input shape `coerceBoolValue` handles) and `test/bool_value_end_to_end_test.dart` (creates a real boolean field via `SchemaEditorService`, inserts `1`/`0` through `GenericDao.insert`, confirms the raw stored value really is the string `"1"`/`"0"` -- not assumed -- and that `coerceBoolValue` correctly recovers `true`/`false` from it). Run individually, same `SchemaEditorService.createTable`-test-isolation discipline as every other schema-engine test file since the Step 3 incident. `flutter analyze` clean, `flutter build windows`/`apk --debug` both clean.
 
-**Not yet Mike-verified interactively** -- next: toggle a v2 boolean field's checkbox/switch on, switch tables and back (or close/reopen the app), confirm it's still checked, on both platforms.
+**Mike's interactive verification: done, passed, on both MIKE-CU and MIKE-12R.** A v2 boolean field toggled on now stays correctly checked after a reload, in both the grid and the form, on both platforms.
