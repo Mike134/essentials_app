@@ -1,4 +1,4 @@
-> **Synced copy.** This file mirrors the claude.ai Project doc of the same name (Project: "Essentials"). The claude.ai Project is where I keep it updated across chat sessions; this repo copy is what Claude Code and any local tooling should read and trust for execution. Written to the repo 2026-08-22 after this exact gap caused Claude Code to correctly refuse to proceed on a destructive step — the doc was cited in code comments but never actually committed here. Keep both in sync going forward: when either copy changes, update the other in the same session.
+> **Source of truth: this repo file.** As of 2026-08-24, this project stopped mirroring design docs into a claude.ai Project doc -- Mike is always on the desktop app, so a claude.ai/Cowork session can read this file directly (via the device bridge) whenever it needs it, and Claude Code always reads it locally. Maintaining two full copies was pure duplicated effort with no real benefit. The claude.ai Project now keeps a single short pointer doc (`claude/project-overview.md`, the Project's own trimmed copy) instead of a full mirror of every doc -- see that doc's note for the one edge case (a browser/mobile session, no desktop app connected) this doesn't cover.
 
 ---
 
@@ -292,7 +292,8 @@ With Phase 1 and Phase 2 done, the actual build order for what comes next was de
 1. **Limited CSV import** (side task, not a phase) — **DONE, 2026-08-23, real-device verified on MIKE-CU and MIKE-12R.** Import into an *existing* table's plain fields only. No auto-creating a new table from CSV headers, no importing into a linked/child-table field (needs Phase 4 first). CSV *export* already existed and needed no work — `GenericListScreen._exportCsv` is already format-aware. Built with the `csv: ^8.0.0` pub package, coercion logic in `lib/util/csv_import/csv_import_coercion.dart`, new `CsvImportScreen` (flat ListView reached via an "Import from CSV" toolbar icon), per-row commits via `GenericDao.insert`. 44 unit tests + 5 end-to-end tests. Full design in `claude/essentials-v2-csv-import-design.md`.
 1a. **`color` field format** (small fix, not its own phase) — **DONE, 2026-08-23, real-device verified on MIKE-CU and MIKE-12R.** See the Field Model section above.
 1b. **Boolean read-back bug fix** (found incidentally during CSV import work, not planned) — **DONE, 2026-08-23, real-device verified on MIKE-CU and MIKE-12R.** See the Field Model section above.
-2. **Phase 4 — Cross-Table Linking** — **next up.**
+1c. **Column autocomplete** (side task, not a phase) — **DONE, 2026-08-24, real-device verified on MIKE-CU and MIKE-12R.** Type-ahead suggestions in `text`-format fields, sourced from distinct prior values in that column, in both the grid (`GenericListScreen`) and the form (`GenericFormScreen`). Full design and implementation notes in `claude/essentials-v2-column-autocomplete-design.md`. One real bug found and fixed during interactive verification (grid editor's `Autocomplete` needed the real `FocusNode` `trina_grid`'s `editCellRenderer` already hands it, not a disconnected internal one) — see that doc's "Implementation notes" section. One known, accepted gap: keyboard arrow/Enter highlight-navigation works in the form but not the grid, because `trina_grid`'s own cell `FocusNode` claims those key events first for cell navigation — not pursued further this session (bigger lift than the task warranted), documented in code at `GenericListScreen._buildGridAutocompleteEditor`. Mouse/touch tap-to-select and typed-value Enter/Tab/Escape are unaffected in both places.
+2. **Phase 4 — Cross-Table Linking** — **design complete 2026-08-24, ready for Claude Code.** See the dedicated section below and `claude/essentials-v2-phase4-design.md`.
 3. **Phase 6 — Global Search**
 4. **Phase 5 — Scripts & Events**
 5. **Phase 3 — View Types**
@@ -330,11 +331,16 @@ Not a phase — a side task, scoped to importing into an existing table's plain 
 ### `color` field format — **DONE, 2026-08-23, real-device verified on MIKE-CU and MIKE-12R**
 `FieldConfig.isColor` rendering already worked everywhere; the fix added the missing `FieldFormatChoice` entry and a shared default-value color picker on both `AddFieldScreen` and `ManageFieldsScreen`. See the Field Model section above.
 
-### Phase 4 — Cross-Table Linking — **next up**
+### Column autocomplete — **DONE, 2026-08-24, real-device verified on MIKE-CU and MIKE-12R**
+Not a phase — a small side task, same category as the `color` fix and CSV import, done deliberately before Phase 4 starts. Scope narrowed during design to `text`-format fields only (`url`/`barcode`/`link_file`/`text_multiline` were considered and dropped — their values are typically distinct per row, so suggestions would mostly be noise). Suggestions come from a live `SELECT DISTINCT` against the column, prefix-matched, no cache table. Per-field opt-out via `options.autocomplete: false`, toggle in `AddFieldScreen`/`ManageFieldsScreen`. Shipped in both the grid (`trina_grid`'s `TrinaColumn.editCellRenderer` hook, confirmed present in the installed 2.2.2) and the form (Flutter's built-in `Autocomplete<String>`), sharing one debounced suggestion source (`ColumnAutocompleteSource`, `lib/util/column_autocomplete.dart`). Full design, implementation notes, and the one real bug found and fixed (grid editor's missing paired `FocusNode`) in `claude/essentials-v2-column-autocomplete-design.md`.
+
+### Phase 4 — Cross-Table Linking — **design complete 2026-08-24, ready for Claude Code**
 - Link to record field type
 - Lookup and Rollup field types
 - Link Definitions metadata
 - UI for selecting linked table and display field
+
+Full design in `claude/essentials-v2-phase4-design.md`, grounded in a read of the live schema engine, `GenericDao`, `GenericListScreen`/`GenericFormScreen`, and `AddFieldScreen`/`ManageFieldsScreen`. Two scope calls confirmed with Mike before handoff: `link_record` cardinality is configurable per field (`options.multiple`), not fixed to one or the other; and a reverse-relation panel (a linked-to record's form shows every other-table record linking back to it) ships in this pass, not deferred. `link_record` is new alongside `select`/linked (the existing single-FK-to-a-lookup-table mechanism), not a replacement for it — both coexist, and `link_record`'s JSON-array-of-ids TEXT storage needs `GenericDao._linkedFieldRefs`'s referential-integrity query extended for array-membership matching (`json_each`), not just a new format string recognized. `lookup`/`rollup` reuse `formula`'s existing read-only, computed-at-read-time pattern (`TableConfig.computePreview`, `GenericDao.getAll`) rather than a new mechanism.
 
 ### Phase 6 — Global Search — **sequenced before Phase 5, see "Roadmap sequencing" above**
 - Full-text search across all tables
@@ -394,3 +400,4 @@ These do not change:
 - **Attachment phase number** — where local storage + sync (dropped from Phase 2) lands in the roadmap; not yet decided.
 - ~~**CSV import design**~~ — done, built, and real-device verified, 2026-08-23. See `claude/essentials-v2-csv-import-design.md`.
 - ~~**`color` field format**~~ — done and real-device verified, 2026-08-23. See `CLAUDE.md`'s note; no separate design doc was needed.
+- ~~**Column autocomplete**~~ — done and real-device verified, 2026-08-24. See `claude/essentials-v2-column-autocomplete-design.md`.
