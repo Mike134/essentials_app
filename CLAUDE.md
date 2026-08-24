@@ -6893,3 +6893,131 @@ Found while building CSV import (see that section above) -- every v2 field is ph
 Two new test files: `test/bool_value_test.dart` (pure Dart, every input shape `coerceBoolValue` handles) and `test/bool_value_end_to_end_test.dart` (creates a real boolean field via `SchemaEditorService`, inserts `1`/`0` through `GenericDao.insert`, confirms the raw stored value really is the string `"1"`/`"0"` -- not assumed -- and that `coerceBoolValue` correctly recovers `true`/`false` from it). Run individually, same `SchemaEditorService.createTable`-test-isolation discipline as every other schema-engine test file since the Step 3 incident. `flutter analyze` clean, `flutter build windows`/`apk --debug` both clean.
 
 **Mike's interactive verification: done, passed, on both MIKE-CU and MIKE-12R.** A v2 boolean field toggled on now stays correctly checked after a reload, in both the grid and the form, on both platforms.
+
+
+---
+
+## Column autocomplete — done, real-device verified on both platforms (2026-08-24)
+
+Built per `claude/essentials-v2-column-autocomplete-design.md` (a small side
+task, not a phase -- same category as the `color` fix/CSV import): type-ahead
+suggestions drawn from other rows' own values in the same `text`-format
+column, offered while typing, in both `GenericListScreen`'s grid and
+`GenericFormScreen`'s form. Built in the doc's own suggested order (DAO
+method + tests, per-field toggle in `AddFieldScreen`/`ManageFieldsScreen`,
+form wiring, grid wiring), each step build-verified before the next.
+
+**`GenericDao.getDistinctColumnValues`** (`lib/db/generic_dao.dart`) --
+prefix-match `SELECT DISTINCT`, `is_deleted = 0`-aware, optional
+`excludeValue`/`limit`. 7 unit tests (`test/generic_dao_autocomplete_test
+.dart`), all against the real db through the real `SchemaEditorService`
+pipeline, same isolation discipline as every v2 test file since the Step 3
+incident.
+
+**`FieldConfig.isAutocompleteText`** (`lib/models/table_config.dart`) --
+`format == 'text' && type == FieldType.text && !isLink && !isColor &&
+options['autocomplete'] != false`. Deliberately narrower than "format is
+text" alone: `url`/`color` both also store as plain `format: 'text'` with
+their own options flag (see `FieldFormatChoice`'s doc comment) but already
+have dedicated widgets, not a bare box a typed prefix should autocomplete
+against. `options.autocomplete` defaults to `true`; a checkbox in both
+`AddFieldScreen` and `ManageFieldsScreen`'s field editor (shown only for a
+genuinely plain `text` format) turns it off.
+
+**`lib/util/column_autocomplete.dart`'s `ColumnAutocompleteSource`** is the
+one suggestion source both screens share, exactly as the design doc asked --
+confirmed against the installed SDK (Dart 3.12.2 / Flutter 3.44.6) that
+`Autocomplete`/`RawAutocomplete`'s `optionsBuilder` is genuinely
+`FutureOr<Iterable<T>> Function(TextEditingValue)`, not synchronous, so the
+DAO query runs for real on every call -- no cache workaround needed. Debounces
+~200ms and guards a slow, superseded call from clobbering a faster, newer one.
+
+**Form side** (`GenericFormScreen._buildAutocompleteField`) uses Flutter's
+built-in `Autocomplete<String>` directly -- full native keyboard support
+(arrow keys highlight, Enter/Tab accept, Escape dismisses), confirmed
+working live. One deliberate exception to this screen's usual `maxLines:
+null` auto-grow convention: an autocomplete field is `maxLines: 1` --
+confirmed by reading the Flutter SDK that a multi-line `EditableText`
+consumes vertical-arrow key events for its own caret movement before
+`Autocomplete`'s `Shortcuts` wrapper ever sees them, which would silently
+break keyboard highlight navigation. Reasonable given these are short
+recurring values (a city, a category, a name), not notes fields.
+
+**Grid side** (`GenericListScreen._buildGridAutocompleteEditor`) uses
+`TrinaColumn.editCellRenderer` -- confirmed present in the installed
+`trina_grid` 2.2.2 (`text_cell.dart`'s `TextCellState.build` checks it
+before falling back to the plain `TextField`), so the design doc's step-1
+"yes" branch applied; no manual `OverlayEntry` fallback was needed.
+
+**Real bug found and fixed live, mid-session, not caught by
+`flutter analyze`/build:** the first version passed `Autocomplete`'s
+`textEditingController` without its required paired `focusNode`
+(`Autocomplete`'s own doc comment: "If this parameter is not null, then
+focusNode must also be non-null"), enforced by an assert in
+`RawAutocomplete`'s constructor -- but Mike's first test was against the
+release exe (`flutter build windows`), where asserts are stripped, so it
+silently fell back to `Autocomplete`'s own disconnected internal
+`FocusNode` instead of throwing. That internal node never received real
+focus events from the actual on-screen cell (`fieldViewBuilder` returns
+TrinaGrid's own `defaultEditCellWidget` verbatim, which uses the *real*
+`FocusNode` -- exactly the one already handed to this callback as its 4th
+parameter, previously left unused). Symptom: suggestions worked correctly
+on the form (which wires its own real `FocusNode` correctly) but never
+appeared in the grid at all. Fixed by wiring the real `FocusNode` through
+instead of omitting it. Rebuilt and re-verified on both platforms after
+the fix.
+
+**Confirmed, real, and accepted -- not a bug:** arrow-key/Enter keyboard
+highlight-navigation of the suggestion list works on the form but not in
+the grid. Read from `trina_grid`'s source, not guessed: the grid's text
+cell editor's `FocusNode` already has its own `onKeyEvent` handler
+(`TextCellState._handleOnKey`) that unconditionally claims and consumes
+vertical-arrow/Enter/Escape/Tab key events for its own cell-navigation
+purposes -- and since that's the node actually holding focus (the
+innermost one in Flutter's key-dispatch order), `Autocomplete`'s own
+`Shortcuts` wrapper, an ancestor once composed in, never gets a chance to
+see those keys. Click/tap-to-select is unaffected in both the grid and
+the form and is the primary way this is expected to be used in the grid
+regardless; typing a value and pressing Enter/Tab/Escape still behaves
+exactly as it always has (TrinaGrid's own commit/cancel). Mike confirmed
+click-to-select works correctly in the grid after the focus-node fix.
+
+**Mike's interactive verification: done, passed, on both MIKE-CU (Windows
+exe, rebuilt after the focus-node fix) and MIKE-12R** (debug APK pushed
+via `adb install -r` after reconnecting -- MIKE-12R's wireless adb
+connection had dropped since its last use, reconnected via the native
+Wireless debugging pairing flow, same as documented under "Toolchain
+setup"). Both grid and form confirmed working on both platforms.
+
+`flutter analyze` clean throughout; `flutter build windows`/`apk --debug`
+both clean at every checkpoint; full relevant test suite (the new
+autocomplete DAO tests plus `schema_registry_test.dart`/
+`generic_dao_insert_id_test.dart`/`generic_dao_linked_fields_test.dart`/
+`schema_metadata_dao_test.dart`, each run individually per the established
+discipline) all pass. No leaked test tables, `PRAGMA integrity_check: ok`.
+
+`claude/essentials-v2-column-autocomplete-design.md`'s status line and an
+"Implementation notes" section record all of the above -- that file mirrors
+a claude.ai Project doc; sync the Project copy too, same as any other
+design doc here.
+
+---
+
+## Next session — CSV import, color fix, boolean fix, and column autocomplete are all closed out; Phase 4 is next
+
+Confirmed 2026-08-24: CSV import, the `color` field format, the boolean
+read-back fix, and column autocomplete are all built, build-verified, and
+Mike-verified interactively on both MIKE-CU and MIKE-12R.
+`claude/essentials-v2-architecture.md` has been updated accordingly (both
+the claude.ai Project copy and this repo mirror) as of the earlier three;
+column autocomplete's own design doc carries its own write-up (see above) --
+update `essentials-v2-architecture.md` too if it should list this feature
+going forward.
+
+Per the confirmed roadmap sequencing (see that doc's "Roadmap sequencing"
+section), **Phase 4 — Cross-Table Linking** is next: `link_record` field
+type, `lookup`/`rollup` (moved here from Phase 2), link definitions
+metadata, and the UI for picking a linked table + display field. This will
+get its own short design pass before implementation starts, same discipline
+as every prior phase -- do not start implementation from just this pointer
+note.

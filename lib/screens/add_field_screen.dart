@@ -49,6 +49,7 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
   OnDeleteChoice _onDelete = OnDeleteChoice.restrict;
   List<InlineOption> _inlineOptions = [];
   String _resultType = FormulaService.resultTypeNumber;
+  bool _autocomplete = true;
 
   /// The selected table's existing fields (field name -> display name),
   /// for the formula editor's insert-a-field chips. Reloaded whenever the
@@ -132,6 +133,12 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
       _format == FieldFormatChoice.percentage ||
       (_format == FieldFormatChoice.formula && _resultType == FormulaService.resultTypeNumber);
 
+  /// Only a genuinely plain `text` field is eligible for suggestions --
+  /// `url`/`color` both also pick [FieldFormatChoice.text]'s stored
+  /// `format` value but already have their own dedicated widget, not a
+  /// bare text box (see [FieldConfig.isAutocompleteText]'s doc comment).
+  bool get _showsAutocomplete => _format == FieldFormatChoice.text;
+
   String? _buildOptionsJson() {
     if (_format == FieldFormatChoice.select) {
       return jsonEncode({
@@ -187,6 +194,12 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     if (_format == FieldFormatChoice.rating) {
       final max = int.tryParse(_ratingMaxController.text.trim());
       if (max != null) options['max'] = max;
+    }
+    // Default is true (omitted entirely) -- only write the flag when the
+    // user has turned it off, same "blank/absent means the default"
+    // convention as every other options key in this method.
+    if (_showsAutocomplete && !_autocomplete) {
+      options['autocomplete'] = false;
     }
     return options.isEmpty ? null : jsonEncode(options);
   }
@@ -331,6 +344,19 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
               controller: _ratingMaxController,
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(labelText: 'Max stars', hintText: 'Default: 5'),
+            ),
+          ],
+          if (_showsAutocomplete) ...[
+            const SizedBox(height: 12),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('Autocomplete suggestions'),
+              subtitle: const Text(
+                'Suggests values already typed into this column on other rows, as you type.',
+              ),
+              value: _autocomplete,
+              onChanged: (value) => setState(() => _autocomplete = value ?? true),
             ),
           ],
           if (_format == FieldFormatChoice.select) ...[

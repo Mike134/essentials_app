@@ -6,6 +6,7 @@ import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
 import '../util/bool_value.dart';
+import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/field_formats/field_format_handler.dart';
 import '../util/links.dart';
@@ -129,8 +130,13 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         // off an editable field that might feed them -- only wired up when
         // this config actually has a preview formula (see computePreview's
         // doc comment), and never for readOnly fields themselves (those are
-        // outputs, not inputs).
-        if (!field.readOnly && widget.config.computePreview != null) {
+        // outputs, not inputs). Also allocated for an autocomplete-eligible
+        // field regardless of computePreview -- Autocomplete requires its
+        // own FocusNode paired with the TextEditingController it's given
+        // (see _buildAutocompleteField); the listener itself stays a safe
+        // no-op when computePreview is null (_recomputePreview's own early
+        // return).
+        if (!field.readOnly && (widget.config.computePreview != null || field.isAutocompleteText)) {
           final focusNode = FocusNode();
           focusNode.addListener(() {
             if (!focusNode.hasFocus) _recomputePreview();
@@ -451,6 +457,10 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       );
     }
 
+    if (field.isAutocompleteText) {
+      return _buildAutocompleteField(field);
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: TextFormField(
@@ -520,6 +530,55 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             ? (value) =>
                 (value == null || value.trim().isEmpty) ? '${field.label} is required' : null
             : null,
+      ),
+    );
+  }
+
+  /// See claude/essentials-v2-column-autocomplete-design.md. A plain
+  /// [Autocomplete] rather than a hand-rolled overlay -- it already ships
+  /// exactly what the design doc asks for (async `optionsBuilder`, arrow
+  /// keys to move the highlight, Enter/Tab to accept, Escape to dismiss)
+  /// as long as its field is single-line. That last part is a deliberate,
+  /// narrow exception to this screen's general "every field auto-wraps"
+  /// convention (`maxLines: null` everywhere else, see the plain-text
+  /// branch above and CLAUDE.md's "Debugging session"): confirmed by
+  /// reading the Flutter SDK's own `Autocomplete` source that its default
+  /// field is single-line, because a multi-line `EditableText` consumes
+  /// vertical-arrow key events for its own caret movement before they can
+  /// ever bubble up to `RawAutocomplete`'s `Shortcuts` wrapper -- a
+  /// wrapped field would silently lose arrow-key highlight navigation.
+  /// Reasonable to give up multi-line growth here specifically: an
+  /// autocomplete-eligible field is, per the design doc's own framing, a
+  /// short recurring value (a city, a category, a name) -- not a notes
+  /// field, which is exactly the kind of field this whole feature was
+  /// scoped to exclude in the first place.
+  Widget _buildAutocompleteField(FieldConfig field) {
+    final controller = _controllers[field.column]!;
+    final source = ColumnAutocompleteSource(
+      dao: _dao,
+      field: field,
+      excludeValue: () => controller.text,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Autocomplete<String>(
+        optionsBuilder: source.call,
+        focusNode: _focusNodes[field.column]!,
+        textEditingController: controller,
+        onSelected: (_) => _recomputePreview(),
+        fieldViewBuilder: (context, fieldController, fieldFocusNode, onFieldSubmitted) {
+          return TextFormField(
+            controller: fieldController,
+            focusNode: fieldFocusNode,
+            decoration: InputDecoration(labelText: field.label),
+            keyboardType: TextInputType.text,
+            onFieldSubmitted: (_) => onFieldSubmitted(),
+            validator: field.required
+                ? (value) =>
+                    (value == null || value.trim().isEmpty) ? '${field.label} is required' : null
+                : null,
+          );
+        },
       ),
     );
   }

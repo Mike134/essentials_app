@@ -157,6 +157,20 @@ class FieldConfig {
   final List<InlineOption>? inlineOptions;
 
   bool get isInlineSelect => inlineOptions != null;
+
+  /// True for a plain `text`-format field that should offer type-ahead
+  /// suggestions drawn from other rows' own values already in the same
+  /// column -- see claude/essentials-v2-column-autocomplete-design.md.
+  /// Deliberately narrow: `format == 'text'` alone isn't enough, since
+  /// [url]/[isColor] both also store as plain `format: 'text'` with an
+  /// extra options flag (see [FieldFormatChoice]'s doc comment) and both
+  /// already have their own dedicated widget/interaction, not a bare text
+  /// box a typed prefix would sensibly autocomplete against. `options
+  /// .autocomplete` defaults to `true` for an eligible field -- set it to
+  /// `false` to opt a genuinely-unique-valued field (a serial number, a
+  /// one-line description) out.
+  bool get isAutocompleteText =>
+      format == 'text' && type == FieldType.text && !isLink && !isColor && options['autocomplete'] != false;
 }
 
 /// Drives the generic list + form screens for one SQLite table. One config

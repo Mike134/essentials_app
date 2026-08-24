@@ -428,6 +428,7 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
   late OnDeleteChoice _onDelete;
   late List<InlineOption> _inlineOptions;
   late String _resultType;
+  late bool _autocomplete;
 
   /// Sibling fields available to a formula, excluding this field itself
   /// -- a field referencing itself is the one cycle that's both trivially
@@ -460,6 +461,7 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     _ratingMaxController = TextEditingController(text: options['max']?.toString() ?? '');
     _expressionController = TextEditingController(text: (options['expression'] as String?) ?? '');
     _resultType = (options['resultType'] as String?) ?? FormulaService.resultTypeNumber;
+    _autocomplete = options['autocomplete'] != false;
     _loadAvailableFields();
   }
 
@@ -510,6 +512,9 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
       _format == FieldFormatChoice.percentage ||
       (_format == FieldFormatChoice.formula && _resultType == FormulaService.resultTypeNumber);
 
+  /// Same reasoning as [AddFieldScreen]'s own `_showsAutocomplete`.
+  bool get _showsAutocomplete => _format == FieldFormatChoice.text;
+
   String? _buildOptionsJson() {
     if (_format == FieldFormatChoice.select) {
       return jsonEncode({'mode': 'linked', 'table': _linkedTable, 'on_delete': _onDelete.value});
@@ -549,6 +554,10 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     if (_format == FieldFormatChoice.rating) {
       final max = int.tryParse(_ratingMaxController.text.trim());
       if (max != null) options['max'] = max;
+    }
+    // See AddFieldScreen._buildOptionsJson's identical branch.
+    if (_showsAutocomplete && !_autocomplete) {
+      options['autocomplete'] = false;
     }
     return options.isEmpty ? null : jsonEncode(options);
   }
@@ -649,6 +658,19 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                   controller: _ratingMaxController,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(labelText: 'Max stars', hintText: 'Default: 5'),
+                ),
+              ],
+              if (_showsAutocomplete) ...[
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Autocomplete suggestions'),
+                  subtitle: const Text(
+                    'Suggests values already typed into this column on other rows, as you type.',
+                  ),
+                  value: _autocomplete,
+                  onChanged: (value) => setState(() => _autocomplete = value ?? true),
                 ),
               ],
               if (_format == FieldFormatChoice.select) ...[

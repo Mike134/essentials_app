@@ -13,6 +13,7 @@ import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/bool_value.dart';
 import '../util/color_picker.dart';
+import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
 import '../util/field_formats/field_format_handler.dart';
@@ -1370,8 +1371,86 @@ class _GenericListScreenState extends State<GenericListScreen> {
         renderer: _wrapAwareCellRenderer,
         footerRenderer: _footerRendererFor(_seedAggregate(field, setting)),
         textAlign: _numericTextAlign(field.type),
+        editCellRenderer: field.isAutocompleteText
+            ? (defaultEditCellWidget, cell, controller, focusNode, handleSelected) =>
+                  _buildGridAutocompleteEditor(defaultEditCellWidget, cell, controller, focusNode, field)
+            : null,
       ),
       setting,
+    );
+  }
+
+  /// See claude/essentials-v2-column-autocomplete-design.md. Wraps
+  /// TrinaGrid's own default text cell editor via [TrinaColumn
+  /// .editCellRenderer] -- confirmed against the installed `trina_grid`
+  /// 2.2.2 that this hook exists (`text_cell.dart`'s `TextCellState.build`
+  /// checks `column.editCellRenderer` before falling back to the plain
+  /// `TextField`), so this is the "yes" branch of the design doc's step 1,
+  /// not the manual-`OverlayEntry` fallback.
+  ///
+  /// **A real, confirmed limitation, not an oversight:** unlike the form
+  /// side's [Autocomplete] (see [GenericFormScreen._buildAutocompleteField]),
+  /// arrow-key/Enter keyboard navigation of the suggestion list does not
+  /// work here. [defaultEditCellWidget] is built by TrinaGrid's own
+  /// `TextCellState`, whose `FocusNode` already has its own `onKeyEvent`
+  /// handler (`_handleOnKey`, set once at that state's `initState`,
+  /// before this renderer ever runs) that unconditionally claims and
+  /// consumes vertical-arrow/Enter/Escape/Tab key events for its own
+  /// cell-navigation purposes. Since that `FocusNode` is the one actually
+  /// holding focus (the innermost node in Flutter's key-dispatch order),
+  /// [Autocomplete]'s own `Shortcuts` wrapper -- an ancestor in the tree
+  /// once wrapped here -- never gets a chance to see those keys, no matter
+  /// how it's wired. Confirmed by reading `trina_grid`'s source, not
+  /// guessed. Mouse/touch selection (tapping a suggestion) is unaffected
+  /// and is the primary way this is expected to be used in the grid;
+  /// typing a value and pressing Enter/Tab/Escape still behaves exactly as
+  /// it always has (TrinaGrid's own commit/cancel), just without a
+  /// suggestion getting keyboard-highlighted first.
+  Widget _buildGridAutocompleteEditor(
+    Widget defaultEditCellWidget,
+    TrinaCell cell,
+    TextEditingController controller,
+    FocusNode focusNode,
+    FieldConfig field,
+  ) {
+    final source = ColumnAutocompleteSource(
+      dao: _dao,
+      field: field,
+      excludeValue: () => controller.text,
+    );
+    return Autocomplete<String>(
+      optionsBuilder: source.call,
+      // [focusNode] is the exact same FocusNode already bound inside
+      // [defaultEditCellWidget] itself (TrinaGrid's `text_cell.dart` hands
+      // it to us as this callback's 4th parameter precisely so a custom
+      // renderer can wire it up) -- not a second, competing node.
+      // **Required, not optional, to pair with [textEditingController]
+      // below** -- [Autocomplete]'s own doc comment says so explicitly
+      // ("If this parameter is not null, then focusNode must also be
+      // non-null"), enforced by an assert in [RawAutocomplete]'s
+      // constructor. Missing this was a real bug: the assert only fires
+      // in debug builds (stripped from the release exe this was first
+      // tested against), so it silently fell back to Autocomplete's own
+      // disconnected internal FocusNode -- one that never received real
+      // focus events from the actual on-screen field (`fieldViewBuilder`
+      // below returns [defaultEditCellWidget] verbatim, which uses the
+      // real [focusNode], not Autocomplete's fallback) -- so the options
+      // overlay's focus-driven show/hide logic never engaged. Found live:
+      // suggestions worked correctly on the form (which passes its own
+      // FocusNode correctly, see GenericFormScreen._buildAutocompleteField)
+      // but never appeared in the grid.
+      focusNode: focusNode,
+      textEditingController: controller,
+      fieldViewBuilder: (context, _, _, _) => defaultEditCellWidget,
+      onSelected: (value) {
+        // Writes through the grid's own change pipeline (same path a
+        // normal typed edit takes -- see _onGridChanged) rather than only
+        // updating the visible text, so selecting a suggestion commits
+        // immediately instead of waiting for the cell to lose focus.
+        _stateManager?.changeCellValue(cell, value);
+        controller.text = value;
+        controller.selection = TextSelection.collapsed(offset: value.length);
+      },
     );
   }
 

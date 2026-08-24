@@ -349,4 +349,47 @@ class GenericDao {
       'WHERE is_deleted = 0 ORDER BY ${lookup.displayColumn}',
     );
   }
+
+  /// Type-ahead suggestions for a `text`-format field, drawn from other
+  /// rows' own values already in the same column -- see
+  /// claude/essentials-v2-column-autocomplete-design.md. Prefix match only
+  /// (not substring/fuzzy -- cheapest query, standard autocomplete
+  /// behavior), live against the real table with no cache/index of its own
+  /// -- revisit only if a real table's row count ever makes this slow in
+  /// practice (nothing today suggests that's likely at this app's scale).
+  /// `is_deleted = 0` -- same soft-delete convention every other read in
+  /// this class already respects -- so a value that only exists on a
+  /// tombstoned row is never suggested. [excludeValue], when given, drops
+  /// that exact value from the results -- used so the value already sitting
+  /// in the cell being edited isn't suggested back at itself. Debouncing
+  /// (~200ms, per the design doc) is the UI layer's job, not this method's
+  /// -- see [ColumnAutocompleteSource].
+  Future<List<String>> getDistinctColumnValues(
+    String tableName,
+    String fieldName, {
+    String prefix = '',
+    String? excludeValue,
+    int limit = 20,
+  }) async {
+    final crdt = await _crdt;
+    assertSafeSqlIdentifier(tableName);
+    assertSafeSqlIdentifier(fieldName);
+
+    final args = <Object?>[prefix];
+    var where =
+        'is_deleted = 0 AND "$fieldName" IS NOT NULL AND "$fieldName" != \'\' '
+        'AND "$fieldName" LIKE ?1 || \'%\' COLLATE NOCASE';
+    if (excludeValue != null && excludeValue.isNotEmpty) {
+      args.add(excludeValue);
+      where += ' AND "$fieldName" != ?${args.length}';
+    }
+    args.add(limit);
+
+    final rows = await crdt.query(
+      'SELECT DISTINCT "$fieldName" AS v FROM "$tableName" WHERE $where '
+      'ORDER BY "$fieldName" LIMIT ?${args.length}',
+      args,
+    );
+    return [for (final row in rows) row['v'] as String];
+  }
 }
