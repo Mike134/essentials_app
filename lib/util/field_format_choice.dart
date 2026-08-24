@@ -63,6 +63,19 @@
 /// for the picker UI and `FieldConfig.inlineOptions`/`isInlineSelect` for
 /// how it renders. [resolve] handles this ambiguity too, same as `url`.
 ///
+/// **`linkRecord`/`lookup`/`rollup` are Essentials v2 Phase 4 entries** (see
+/// claude/essentials-v2-phase4-design.md) -- a distinct linking mechanism
+/// from [select]'s linked-lookup mode (single scalar FK id; a small
+/// reference table has exactly one of something). [linkRecord] stores a
+/// JSON array of target ids (`lib/util/link_record.dart`), supports
+/// linking to one *or many* rows (`options.multiple`), and is what
+/// [lookup]/[rollup] read from -- a `lookup` shows one field from the
+/// linked record(s); a `rollup` aggregates one. All three are genuinely new
+/// stored formats, unlike `url`/`inlineSelect`/`color` above -- each gets
+/// its own dedicated `SchemaRegistry`/`GenericDao`/render-layer handling,
+/// see `FieldConfig.isLinkRecord`/`isFieldLookup`/`isRollup` and
+/// `LinkedFieldService`.
+///
 /// **`color` shares [text]'s `value` for the same reason `url` does.**
 /// `FieldConfig.isColor` (hex-string color swatch + picker, grid and form)
 /// has been fully wired since v1 (`domain.color`/`class.color`) -- the gap
@@ -78,7 +91,7 @@ enum FieldFormatChoice {
   boolean('boolean', 'Yes/No'),
   date('date', 'Date'),
   dateTime('dateTime', 'Date & time'),
-  select('select', 'Linked to another table'),
+  select('select', 'Choose one (dropdown lookup)'),
   linkFile('link_file', 'Link to a file'),
   currency('currency', 'Currency'),
   percentage('percentage', 'Percentage'),
@@ -87,7 +100,10 @@ enum FieldFormatChoice {
   color('text', 'Color'),
   rating('rating', 'Rating'),
   formula('formula', 'Calculated (formula)'),
-  barcode('barcode', 'Barcode / QR code');
+  barcode('barcode', 'Barcode / QR code'),
+  linkRecord('link_record', 'Link to record(s) in another table'),
+  lookup('lookup', 'Show a value from a linked record'),
+  rollup('rollup', 'Calculate from linked records');
 
   const FieldFormatChoice(this.value, this.label);
 

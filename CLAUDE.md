@@ -7021,3 +7021,190 @@ metadata, and the UI for picking a linked table + display field. This will
 get its own short design pass before implementation starts, same discipline
 as every prior phase -- do not start implementation from just this pointer
 note.
+
+---
+
+## Essentials v2 Phase 4 — Cross-Table Linking, build-verified (2026-08-24)
+
+Design: `claude/essentials-v2-phase4-design.md` (mirrors the claude.ai
+Project doc of the same name). Both confirmed decisions from that doc held
+exactly as written: `link_record` cardinality is per-field
+(`options.multiple`), not fixed to single or multiple, and the
+reverse-relation panel shipped in this pass, not deferred. Built in the
+doc's own suggested order, steps 1-7, with the confirmed model-tier split:
+**Opus** for steps 2-3 (the `LinkedFieldService` computation engine and the
+JSON-array-aware referential-integrity SQL -- run as a dedicated subagent
+pass, same tiering reasoning as Phase 2's `formula` evaluator), **Sonnet**
+for the rest.
+
+**Step 1 -- data layer.** `lib/util/link_record.dart`'s `parseLinkedIds`/
+`encodeLinkedIds` (JSON array of target ids, lenient on malformed/blank ->
+`[]`, regardless of `multiple` -- storage never depends on cardinality, so
+flipping `multiple` later needs no data rewrite). `lib/models/table_config
+.dart` gained `LinkRecordConfig` (`table`/`displayColumn`/`multiple`/
+`onDelete`) and `FieldConfig.linkRecord`/`isLinkRecord`/`isFieldLookup`
+(`format == 'lookup'`)/`isRollup` (`format == 'rollup'`). `SchemaRegistry
+._buildField` sets `readOnly: true` for `lookup`/`rollup` (same mechanism
+`formula` already established) and parses `link_record`'s `options` into
+`LinkRecordConfig`; `_formatToFieldType` gained matching arms.
+
+**Steps 2-3 -- `LinkedFieldService` + referential integrity (Opus pass).**
+New `lib/util/linked_field/linked_field_service.dart`, deliberately mirroring
+`FormulaService`'s two-entry-point shape (read-time `applyToAll` wired into
+`GenericDao.getAll`, live-preview `computeAllForDisplay` wired into
+`SchemaRegistry.buildConfig`'s `computePreview`, merged with `FormulaService`'s
+own so a `formula` can reference a `rollup` column and see a real `num`) but
+necessarily async throughout, since a lookup/rollup reads *another table's*
+rows -- batches every distinct `(target table, id)` across all rows into one
+`id IN (...)` query per target table rather than N+1 per row. `GenericDao
+._linkedFieldRefs`/`findBlockingReferences`/`delete`'s cascade pass and
+`SchemaEditorService._tablesLinkingTo` all broadened to also match
+`format = 'link_record'`, with a `json_each`-based array-membership `WHERE`
+alongside the existing scalar match for `select`/linked -- both storage
+shapes coexist and are independently exercised by tests. A real, load-bearing
+bug found and fixed during this pass: `json_each` on a column holding
+malformed JSON raises for the *whole statement*, which `findBlockingReferences`
+was catching as "table doesn't exist" -- silently disabling RESTRICT for
+every other row in that table. Fixed with a `CASE WHEN json_valid(...)`
+guard, confining a bad row to itself. Full write-up (including the
+`resultType`/rollup-default judgment calls) in the subagent's own report;
+`LinkedFieldService`'s public API is documented in its own doc comment.
+
+**Step 4 -- `GenericDao.getLinkedRecordOptions`/`getReverseLinks`.**
+`getLinkedRecordOptions` mirrors `getLookupOptions` exactly (`SELECT *`,
+live rows only, ordered by `displayColumn`). `getReverseLinks(id)` --new
+`ReverseLink` class, grouped by referencing table -- finds every other
+table's live `link_record` field pointing at this table, then queries each
+via the same `json_each`/`json_valid`-guarded array-membership match steps
+2-3 already established, resolving each referencing table's own
+`display_name`/`display_field` directly (not a full `SchemaRegistry
+.buildConfig`, which would pull in far more than a label needs).
+
+**Step 5 -- `AddFieldScreen`/`ManageFieldsScreen`.** Three new
+`FieldFormatChoice` entries (`linkRecord`/`lookup`/`rollup`, each a
+genuinely new stored format, unlike `url`/`inlineSelect`/`color`'s
+value-sharing trick). `link_record`'s options UI is a near-verbatim copy of
+`select`'s "Linked to table"/"on_delete" block plus a new "Allow linking to
+more than one record" checkbox. `lookup`/`rollup`'s options UI is new:
+"Which link field" (filtered to this table's own `link_record` fields, which
+needed `_availableFields` widened from a bare name->label map to the full
+`FieldDefinitionRow` list so format/options are inspectable), "Which field
+on the linked table" (loaded once a link field is picked, narrowed to
+numeric-ish formats for a non-count `rollup` as a soft hint, not a hard
+filter), and (`rollup` only) an "Aggregate" dropdown (Sum/Average/Minimum/
+Maximum/Count). Both screens stay in sync deliberately -- the shared
+`rollupAggregateLabels`/`rollupSourceCandidates` helpers live in
+`add_field_screen.dart` and are imported by `manage_fields_screen.dart`
+rather than duplicated a third time.
+
+**Step 6 -- `GenericListScreen` grid rendering.** `lookup`/`rollup` needed
+**zero new rendering code** -- they ride the existing `field.readOnly`
+branch for free (numeric or text, wrap-aware, footer-aggregate-eligible,
+exactly like a `formula` column already is), confirming the design doc's
+own prediction. `link_record` got one new branch: a `readOnly: true`
+`TrinaColumn` (direct text-editing of a raw JSON array makes no sense) with
+a custom renderer showing the comma-joined display text plus a dedicated
+"Edit link(s)" icon opening a picker dialog (`_LinkRecordPickerDialog` --
+tap-to-select for single, checkbox-list + Done for multiple). Deliberately
+implemented as a dialog rather than routing through `TrinaColumn
+.editCellRenderer` (the mechanism column-autocomplete proved out and the
+design doc suggested reusing) -- a JSON-array cell has no sensible inline
+text-edit fallback the way autocomplete's text field does, so a modal
+picker was simpler and lower-risk while producing the identical end-user
+behavior; documented as a deliberate deviation in code, not a silent one.
+
+**Step 7 -- `GenericFormScreen`.** `link_record` renders as a
+`DropdownButtonFormField` (single) or a `CheckboxListTile` per option
+(multiple), backed by `parseLinkedIds`/`encodeLinkedIds`, calling
+`_recomputePreview()` on change so a dependent `lookup`/`rollup` field
+updates live in the form -- same UX `formula` fields already have.
+`lookup`/`rollup` needed no new form-rendering code either, same "already
+covered by `readOnly`" property as the grid. **The reverse-relation
+panel** is new: a collapsible `ExpansionTile` per other table with a live
+`link_record` field pointing back at this row (via `getReverseLinks`),
+shown only when editing an existing record (never Add -- no `id` yet),
+tapping a row builds that table's `TableConfig` fresh via `SchemaRegistry`
+and opens it in its own `GenericFormScreen`. Read-only by design -- no
+inline editing of the relationship from this panel, matching the design
+doc's explicit "a viewer, not a second editor for the same data."
+
+**Verification.** `flutter analyze` clean project-wide throughout. New
+test files: `test/link_record_test.dart` (pure, 11 tests),
+`test/linked_field_service_test.dart` (pure, 16),
+`test/linked_field_service_end_to_end_test.dart` (DB-backed, 17),
+`test/generic_dao_link_record_refs_test.dart` (DB-backed, 15),
+`test/generic_dao_step4_test.dart` (DB-backed, 4) -- every
+`SchemaEditorService.createTable`-using file run individually, never
+chained, per the standing rule from the Step 3 incident. Regression-checked
+individually: `schema_registry_test.dart`, `generic_dao_linked_fields_test
+.dart`, `generic_dao_insert_id_test.dart`, `schema_metadata_dao_test.dart`,
+`table_registry_v2_test.dart` -- all still pass, confirming `select`/linked
+and `link_record` genuinely coexist without regressing the older path.
+`flutter build windows` and `flutter build apk --debug` both clean (the
+pre-existing, documented `mobile_scanner`/KGP warning aside). Direct SQL
+check against the real `essentials.db` afterward: `PRAGMA integrity_check`
+`ok`, zero leaked physical test tables (every `gds4_`/etc.-tagged row is a
+tombstoned `table_definitions` entry with no physical table behind it,
+same harmless residue shape every prior phase's test runs have left).
+
+**Build-verified only -- not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, build a real linked pair through the finished UI (e.g.
+recreate something like the old `orders`/`order_items` shape -- an `orders`-
+like parent, an `order_items`-like child with a `link_record` field back to
+it, a `rollup` summing a cost field, a `lookup` showing a status), confirm
+grid/form editing and the reverse-relation panel all behave as designed,
+then F5/relaunch MIKE-12R to confirm sync -- same two-platform checkpoint
+discipline as every phase since Phase 1 Step 5.
+
+---
+
+## Essentials v2 Phase 4 — complete, real-device verified (2026-08-24)
+
+Mike's own multi-hour interactive pass, both devices, real linked tables
+(`Project`/`Task`, `select` + `link_record` fields, single- and
+multi-value, CRDT sync tested both directions, CSV import back-tested
+too) — found and closed out six real issues, full write-up in
+`claude/essentials-v2-phase4-design.md`'s "Findings from interactive
+testing" section:
+
+1. `select`/`link_record` label collision in the format picker (fixed
+   Phase 4 mid-session, see above).
+2. A crash opening `Task`'s grid -- a pre-existing `select`/linked field
+   defaulting to a `name` column that didn't exist on its target
+   (`condition`). Fixed with both a DAO-level fallback and a real "Which
+   field to show" picker in Add Field/Manage Fields.
+3. `NewTableScreen`'s `link_record` option silently produced a
+   non-functional field -- fixed by giving it the same full options block
+   `select` already had, and excluding formats that structurally can't
+   work at table-creation time (`lookup`/`rollup`/`inlineSelect`/`formula`)
+   from that screen's picker instead of half-supporting them.
+4. A migration-halt incident, mid-session -- a stray `DROP TABLE`
+   re-authored against an already-gone table (a real race: `dropTable`'s
+   precondition checks `is_deleted`, not physical existence) permanently
+   blocked MIKE-CU's whole schema engine until root-caused and the
+   poisoned migration retracted through the app's own synced API. **The
+   underlying race is not fixed** -- flagged as a real, if narrow, gap for
+   a future pass: `dropTable` should check physical existence via
+   `sqlite_master` before authoring a DDL statement that's certain to
+   fail if the table's already gone.
+5. Grids didn't refresh live when another device changed the same
+   table's data -- the same "sync works, display reactivity doesn't" gap
+   `SyncService.schemaChanges` already closed for nav/table-list changes,
+   never extended to row data. Fixed with a new `SyncService.dataChanges`
+   stream; `GenericListScreen` subscribes and debounced-reloads when its
+   own table is touched.
+6. The reverse-relation panel showed a bare row id for every linked
+   child -- no v2 table's UI has ever set `table_definitions.display_field`
+   (confirmed directly, true for every table so far), so the panel's own
+   fallback to it was really always falling through to `id`. Fixed:
+   `GenericDao.getReverseLinks` now falls back to the referencing table's
+   first field by position, and the panel shows both the id and that
+   value together, per Mike's explicit ask.
+
+`flutter analyze` clean, all affected/new tests pass individually (per
+the standing chained-test-file rule), `flutter build windows`/`apk
+--debug` both clean, real db integrity-checked after every fix.
+
+**Essentials v2 Phase 4 is done.** Next session: not yet decided --
+Mike's own real usage, or Phase 5+ per `claude/essentials-v2-architecture
+.md`'s roadmap sequencing.

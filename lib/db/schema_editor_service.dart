@@ -211,8 +211,8 @@ class SchemaEditorService {
   // propagated *before* the drop is ever authored) exists to prevent.
   // =====================================================================
 
-  /// Every other table with a live (`is_deleted = 0`) `select`/linked field
-  /// still pointing at [tableName] -- same enforcement query
+  /// Every other table with a live (`is_deleted = 0`) `select`/linked or
+  /// `link_record` field still pointing at [tableName] -- same enforcement query
   /// `GenericDao._linkedFieldRefs` uses for row-level RESTRICT, one layer
   /// up (a schema-level "would dropping this table break something,"
   /// matching `schema_admin.checkDropSafety`'s existing spirit -- CLAUDE.md
@@ -223,9 +223,20 @@ class SchemaEditorService {
   /// stage-2's job, not stage-1's.
   Future<List<String>> _tablesLinkingTo(SqliteCrdt crdt, String tableName) async {
     final rows = await crdt.query(
+      // Essentials v2 Phase 4: matches `link_record` fields too, not just
+      // `select`/linked -- exactly the same broadening
+      // `GenericDao._linkedFieldRefs` needed, for the same reason. A
+      // `link_record` field pointing at a table is every bit as much a
+      // reason to refuse dropping it; missing it here would let a
+      // `dropTable` succeed and leave a live field pointing at nothing.
+      // No format branch needed at this level (unlike the row-level match)
+      // -- this only asks "which tables reference this one", never "which
+      // rows".
       "SELECT DISTINCT table_name FROM field_definitions "
-      "WHERE is_deleted = 0 AND format = 'select' "
-      "AND options ->> 'mode' = 'linked' AND options ->> 'table' = ?1 "
+      "WHERE is_deleted = 0 "
+      "AND ((format = 'select' AND options ->> 'mode' = 'linked') "
+      "     OR format = 'link_record') "
+      "AND options ->> 'table' = ?1 "
       "AND table_name != ?1",
       [tableName],
     );

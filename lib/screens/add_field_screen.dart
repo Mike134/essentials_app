@@ -7,9 +7,64 @@ import '../db/schema_metadata_dao.dart';
 import '../models/table_config.dart';
 import '../util/color_default_value_field.dart';
 import '../util/field_format_choice.dart';
+import '../util/field_options.dart';
 import '../util/formula/formula_field_editor.dart';
 import '../util/formula/formula_service.dart';
 import '../util/inline_option_editor.dart';
+import '../util/linked_field/linked_field_service.dart';
+
+/// Display labels for [LinkedFieldService.aggregates], shared by
+/// [AddFieldScreen] and [ManageFieldsScreen]'s field editor -- both need
+/// the exact same "Aggregate" dropdown for a `rollup` field.
+const Map<String, String> rollupAggregateLabels = {
+  LinkedFieldService.aggregateSum: 'Sum',
+  LinkedFieldService.aggregateAvg: 'Average',
+  LinkedFieldService.aggregateMin: 'Minimum',
+  LinkedFieldService.aggregateMax: 'Maximum',
+  LinkedFieldService.aggregateCount: 'Count',
+};
+
+/// `field_definitions.format`s this app currently treats as "numeric
+/// enough" to be worth offering first for a `rollup`'s "Which field"
+/// picker when the aggregate isn't `count` -- a nice-to-have narrowing per
+/// claude/essentials-v2-phase4-design.md ("not a hard validation rule"),
+/// so an empty result here just means "show everything" rather than
+/// blocking the picker.
+const Set<String> _rollupNumericFormats = {'integer', 'real', 'currency', 'percentage'};
+
+/// Candidate fields on a `rollup`/`lookup`'s target table for the "Which
+/// field on the linked table" picker -- shared by [AddFieldScreen] and
+/// [ManageFieldsScreen]'s field editor.
+List<FieldDefinitionRow> rollupSourceCandidates(
+  List<FieldDefinitionRow> targetFields, {
+  required bool isRollup,
+  required String aggregate,
+}) {
+  if (!isRollup || aggregate == LinkedFieldService.aggregateCount) return targetFields;
+  final numeric = targetFields.where((f) => _rollupNumericFormats.contains(f.format)).toList();
+  return numeric.isNotEmpty ? numeric : targetFields;
+}
+
+/// Default "Which field to show" pick for a `select`/`link_record` field's
+/// target table -- `SchemaRegistry._lookupFor`/`_linkRecordFor` otherwise
+/// silently default to a literal `'name'` column that may not exist (a real
+/// crash found live: a target table's own text field named something other
+/// than `name`, e.g. `condition`, blew up `ORDER BY name` -- see
+/// `GenericDao._resolveDisplayColumn`'s own doc comment for the DAO-side
+/// safety net this UI-side default exists to make mostly unnecessary going
+/// forward). Prefers an actual `name` field if the target has one (keeps
+/// existing behavior for every target table that already has one, which is
+/// most of them); otherwise the target's first plain `text` field; falls
+/// back to `'id'` (always present) if neither exists.
+String autoDisplayField(List<FieldDefinitionRow> targetFields) {
+  for (final f in targetFields) {
+    if (f.fieldName == 'name') return 'name';
+  }
+  for (final f in targetFields) {
+    if (f.format == 'text') return f.fieldName;
+  }
+  return 'id';
+}
 
 /// Essentials v2 Phase 1's "Add Field" screen (build order step 7) --
 /// replaced the retired `AddColumnScreen`'s type picker with a format
@@ -51,10 +106,62 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
   String _resultType = FormulaService.resultTypeNumber;
   bool _autocomplete = true;
 
-  /// The selected table's existing fields (field name -> display name),
-  /// for the formula editor's insert-a-field chips. Reloaded whenever the
-  /// table changes; empty until it resolves, which the editor handles.
-  Map<String, String> _availableFields = const {};
+  /// `link_record`'s own "Allow linking to more than one record" checkbox
+  /// -- `options.multiple` (see `LinkRecordConfig`).
+  bool _linkMultiple = false;
+
+  /// `lookup`/`rollup`'s "Which link field" -- names a `link_record` field
+  /// on THIS table (`options.link_field`).
+  String? _linkFieldColumn;
+
+  /// `lookup`/`rollup`'s "Which field on the linked table"
+  /// (`options.source_field`).
+  String? _sourceField;
+
+  /// `rollup`'s "Aggregate" (`options.aggregate`) -- defaults to `sum`,
+  /// matching [LinkedFieldService.defaultAggregate].
+  String _rollupAggregate = LinkedFieldService.defaultAggregate;
+
+  /// `select`/`link_record`'s "Which field to show" (`options.displayField`)
+  /// -- see [autoDisplayField]'s doc comment for why this exists and what
+  /// it defaults to. `null` until [_linkedTableFields] resolves.
+  String? _displayField;
+
+  /// [_linkedTable]'s own fields, for the "Which field to show" picker --
+  /// reloaded whenever [_linkedTable] changes (a `select`/`link_record`
+  /// field can point at a different table each time).
+  List<FieldDefinitionRow> _linkedTableFields = const [];
+
+  /// The selected table's existing fields, for the formula editor's
+  /// insert-a-field chips (as a name -> display-name map) and for
+  /// `lookup`/`rollup`'s "Which link field" picker (filtered to this
+  /// table's own `link_record` fields). Reloaded whenever the table
+  /// changes; empty until it resolves, which the editor/picker both handle.
+  List<FieldDefinitionRow> _availableFieldRows = const [];
+
+  Map<String, String> get _availableFields => {
+    for (final f in _availableFieldRows) f.fieldName: f.displayName,
+  };
+
+  List<FieldDefinitionRow> get _linkRecordFields =>
+      _availableFieldRows.where((f) => f.format == 'link_record').toList();
+
+  /// The target table `link_field` names -- read from that field's own
+  /// already-loaded `options` JSON, no extra query needed.
+  String? _targetTableFor(String? linkFieldColumn) {
+    if (linkFieldColumn == null) return null;
+    for (final f in _availableFieldRows) {
+      if (f.fieldName == linkFieldColumn) {
+        return parseFieldOptions(f.optionsJson)['table'] as String?;
+      }
+    }
+    return null;
+  }
+
+  /// `lookup`/`rollup`'s target table's own fields, for the "Which field on
+  /// the linked table" picker -- reloaded whenever `_linkFieldColumn`
+  /// changes (each link field can point at a different table).
+  List<FieldDefinitionRow> _targetFields = const [];
 
   String? _identifierPreview;
   String? _error;
@@ -73,7 +180,37 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     final fields = await _metadata.loadFields(tableName, includeDeleted: false);
     if (!mounted || _selectedTable != tableName) return;
     setState(() {
-      _availableFields = {for (final f in fields) f.fieldName: f.displayName};
+      _availableFieldRows = fields;
+    });
+  }
+
+  Future<void> _loadTargetFields(String? linkFieldColumn) async {
+    final targetTable = _targetTableFor(linkFieldColumn);
+    if (targetTable == null) {
+      setState(() => _targetFields = const []);
+      return;
+    }
+    final fields = await _metadata.loadFields(targetTable, includeDeleted: false);
+    if (!mounted || _linkFieldColumn != linkFieldColumn) return;
+    setState(() => _targetFields = fields);
+  }
+
+  /// Loads [_linkedTableFields] for [tableName] (the target of a `select`/
+  /// `link_record` field) and seeds [_displayField] with [autoDisplayField]'s
+  /// pick -- called whenever the "Linked to table" dropdown changes.
+  Future<void> _loadLinkedTableFields(String? tableName) async {
+    if (tableName == null) {
+      setState(() {
+        _linkedTableFields = const [];
+        _displayField = null;
+      });
+      return;
+    }
+    final fields = await _metadata.loadFields(tableName, includeDeleted: false);
+    if (!mounted || _linkedTable != tableName) return;
+    setState(() {
+      _linkedTableFields = fields;
+      _displayField = autoDisplayField(fields);
     });
   }
 
@@ -107,6 +244,16 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     if (_displayNameController.text.trim().isEmpty) return false;
     if (_showsRequired && _required && _defaultValueController.text.trim().isEmpty) return false;
     if (_format == FieldFormatChoice.select && _linkedTable == null) return false;
+    if (_format == FieldFormatChoice.linkRecord && _linkedTable == null) return false;
+    if (_format == FieldFormatChoice.lookup) {
+      if (_linkFieldColumn == null || _sourceField == null) return false;
+    }
+    if (_format == FieldFormatChoice.rollup) {
+      if (_linkFieldColumn == null) return false;
+      if (_rollupAggregate != LinkedFieldService.aggregateCount && _sourceField == null) {
+        return false;
+      }
+    }
     if (_format == FieldFormatChoice.inlineSelect && !_hasValidInlineOptions) return false;
     if (_format == FieldFormatChoice.formula && !isUsableFormula(_expressionController.text)) {
       return false;
@@ -117,10 +264,14 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
   bool get _hasValidInlineOptions =>
       _inlineOptions.any((o) => o.key.isNotEmpty && o.label.isNotEmpty);
 
-  /// A formula field is never written and never validated by the form
-  /// (it's [FieldConfig.readOnly]), so "required" and a default value are
-  /// both meaningless for it -- hidden rather than shown-but-ignored.
-  bool get _showsRequired => _format != FieldFormatChoice.formula;
+  /// A formula/lookup/rollup field is never written and never validated by
+  /// the form (it's [FieldConfig.readOnly]), so "required" and a default
+  /// value are both meaningless for it -- hidden rather than
+  /// shown-but-ignored.
+  bool get _showsRequired =>
+      _format != FieldFormatChoice.formula &&
+      _format != FieldFormatChoice.lookup &&
+      _format != FieldFormatChoice.rollup;
 
   /// `real`/`currency`/`percentage`, plus a `formula` whose result is a
   /// number, all read an optional `decimals` display hint (see
@@ -145,6 +296,10 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
         'mode': 'linked',
         'table': _linkedTable,
         'on_delete': _onDelete.value,
+        // Explicit, not omitted -- see autoDisplayField's doc comment for
+        // why relying on SchemaRegistry's own 'name' default is what
+        // crashed for a real target table without one.
+        'displayField': _displayField ?? 'id',
       });
     }
     // `url` isn't a real stored format -- see FieldFormatChoice.url's doc
@@ -159,6 +314,29 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     // turning on FieldConfig.isColor instead of isLink.
     if (_format == FieldFormatChoice.color) {
       return jsonEncode({'isColor': true});
+    }
+    // `link_record` -- Essentials v2 Phase 4.
+    if (_format == FieldFormatChoice.linkRecord) {
+      return jsonEncode({
+        'table': _linkedTable,
+        'multiple': _linkMultiple,
+        'on_delete': _onDelete.value,
+        // Explicit, not omitted -- same reasoning as the select branch above.
+        'displayField': _displayField ?? 'id',
+      });
+    }
+    if (_format == FieldFormatChoice.lookup) {
+      return jsonEncode({'link_field': _linkFieldColumn, 'source_field': _sourceField});
+    }
+    if (_format == FieldFormatChoice.rollup) {
+      final rollupOptions = <String, Object?>{
+        'link_field': _linkFieldColumn,
+        'aggregate': _rollupAggregate,
+      };
+      if (_rollupAggregate != LinkedFieldService.aggregateCount) {
+        rollupOptions['source_field'] = _sourceField;
+      }
+      return jsonEncode(rollupOptions);
     }
     // `inlineSelect` isn't a real stored format either -- see
     // FieldFormatChoice.inlineSelect's doc comment. Filters out any
@@ -246,6 +424,34 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     }
   }
 
+  /// "Which field to show" -- shared by `select`'s and `linkRecord`'s
+  /// options blocks (both write `options.displayField`, see
+  /// [autoDisplayField]'s doc comment for why this exists at all). A plain
+  /// `id` entry is always offered first, since it's always valid and a
+  /// target table without a `name`/`text` field would otherwise have
+  /// nothing else to reasonably show.
+  Widget _buildDisplayFieldPicker() {
+    final validValues = {'id', for (final f in _linkedTableFields) f.fieldName};
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: DropdownButtonFormField<String>(
+        // Falls back to null (rather than a stale/not-yet-loaded value)
+        // whenever it doesn't match a currently-offered item --
+        // DropdownButtonFormField asserts on that in debug builds, the same
+        // known pitfall this app already hit for the isLookup dropdown (see
+        // GenericFormScreen's own doc comment on that fix).
+        initialValue: validValues.contains(_displayField) ? _displayField : null,
+        decoration: const InputDecoration(labelText: 'Which field to show'),
+        items: [
+          const DropdownMenuItem(value: 'id', child: Text('(row id)')),
+          for (final f in _linkedTableFields)
+            DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+        ],
+        onChanged: (value) => setState(() => _displayField = value),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -276,7 +482,10 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
                     : (value) {
                         setState(() {
                           _selectedTable = value;
-                          _availableFields = const {};
+                          _availableFieldRows = const [];
+                          _linkFieldColumn = null;
+                          _sourceField = null;
+                          _targetFields = const [];
                         });
                         _updatePreview();
                         if (value != null) _loadAvailableFields(value);
@@ -304,7 +513,16 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
               if (value == null) return;
               setState(() {
                 _format = value;
-                if (value != FieldFormatChoice.select) _linkedTable = null;
+                if (value != FieldFormatChoice.select && value != FieldFormatChoice.linkRecord) {
+                  _linkedTable = null;
+                  _linkedTableFields = const [];
+                  _displayField = null;
+                }
+                if (value != FieldFormatChoice.lookup && value != FieldFormatChoice.rollup) {
+                  _linkFieldColumn = null;
+                  _sourceField = null;
+                  _targetFields = const [];
+                }
               });
             },
           ),
@@ -373,10 +591,14 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
                   items: [
                     for (final t in tables) DropdownMenuItem(value: t.tableName, child: Text(t.displayName)),
                   ],
-                  onChanged: (value) => setState(() => _linkedTable = value),
+                  onChanged: (value) {
+                    setState(() => _linkedTable = value);
+                    _loadLinkedTableFields(value);
+                  },
                 );
               },
             ),
+            _buildDisplayFieldPicker(),
             const SizedBox(height: 12),
             DropdownButtonFormField<OnDeleteChoice>(
               initialValue: _onDelete,
@@ -386,6 +608,112 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
                   DropdownMenuItem(value: choice, child: Text(choice.label)),
               ],
               onChanged: (value) => setState(() => _onDelete = value ?? OnDeleteChoice.restrict),
+            ),
+          ],
+          if (_format == FieldFormatChoice.linkRecord) ...[
+            const SizedBox(height: 12),
+            FutureBuilder<List<TableDefinitionRow>>(
+              future: _tableNamesFuture,
+              builder: (context, snapshot) {
+                final tables = (snapshot.data ?? const [])
+                    .where((t) => t.tableName != _selectedTable)
+                    .toList();
+                return DropdownButtonFormField<String>(
+                  initialValue: _linkedTable,
+                  decoration: const InputDecoration(labelText: 'Linked to table'),
+                  items: [
+                    for (final t in tables) DropdownMenuItem(value: t.tableName, child: Text(t.displayName)),
+                  ],
+                  onChanged: (value) {
+                    setState(() => _linkedTable = value);
+                    _loadLinkedTableFields(value);
+                  },
+                );
+              },
+            ),
+            _buildDisplayFieldPicker(),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<OnDeleteChoice>(
+              initialValue: _onDelete,
+              decoration: const InputDecoration(labelText: 'When a linked row is deleted'),
+              items: [
+                for (final choice in OnDeleteChoice.values)
+                  DropdownMenuItem(value: choice, child: Text(choice.label)),
+              ],
+              onChanged: (value) => setState(() => _onDelete = value ?? OnDeleteChoice.restrict),
+            ),
+            const SizedBox(height: 12),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('Allow linking to more than one record'),
+              subtitle: const Text(
+                'Off: one-to-many -- this field picks a single record, but that '
+                'record can be linked from many rows here. On: many-to-many -- '
+                'this field can pick several records, and each of those can '
+                'likewise be linked from many rows here. Either way, the link is '
+                'stored only on this field -- open the linked record\'s own form '
+                'to see every row here that links to it.',
+              ),
+              value: _linkMultiple,
+              onChanged: (value) => setState(() => _linkMultiple = value ?? false),
+            ),
+          ],
+          if (_format == FieldFormatChoice.lookup || _format == FieldFormatChoice.rollup) ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _linkFieldColumn,
+              decoration: const InputDecoration(labelText: 'Which link field'),
+              items: [
+                for (final f in _linkRecordFields) DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  _linkFieldColumn = value;
+                  _sourceField = null;
+                });
+                _loadTargetFields(value);
+              },
+            ),
+            if (_linkRecordFields.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'This table has no "Link to another table" field yet -- add one first.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+          ],
+          if (_format == FieldFormatChoice.rollup) ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _rollupAggregate,
+              decoration: const InputDecoration(labelText: 'Aggregate'),
+              items: [
+                for (final entry in rollupAggregateLabels.entries)
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+              ],
+              onChanged: (value) => setState(
+                () => _rollupAggregate = value ?? LinkedFieldService.defaultAggregate,
+              ),
+            ),
+          ],
+          if ((_format == FieldFormatChoice.lookup || _format == FieldFormatChoice.rollup) &&
+              (_format == FieldFormatChoice.lookup ||
+                  _rollupAggregate != LinkedFieldService.aggregateCount)) ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _sourceField,
+              decoration: const InputDecoration(labelText: 'Which field on the linked table'),
+              items: [
+                for (final f in rollupSourceCandidates(
+                  _targetFields,
+                  isRollup: _format == FieldFormatChoice.rollup,
+                  aggregate: _rollupAggregate,
+                ))
+                  DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+              ],
+              onChanged: (value) => setState(() => _sourceField = value),
             ),
           ],
           if (_format == FieldFormatChoice.inlineSelect) ...[

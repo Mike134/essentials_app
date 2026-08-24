@@ -3,6 +3,8 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 import '../models/table_config.dart';
 import '../util/field_options.dart';
 import '../util/formula/formula_service.dart';
+import '../util/link_record.dart';
+import '../util/linked_field/linked_field_service.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
 
@@ -26,21 +28,69 @@ class StillInUseException implements Exception {
       "Can't delete -- this $tableName record is still in use by other records.";
 }
 
-/// One other real table's `select`/linked field pointing at
-/// [GenericDao.config]'s table -- Essentials v2 Phase 1's replacement for
-/// a real declared SQL foreign key, since no v2 table ever declares one
-/// (see claude/essentials-v2-phase1-design.md, "Critical risks" #3).
+/// One other real table's linking field pointing at [GenericDao.config]'s
+/// table -- Essentials v2 Phase 1's replacement for a real declared SQL
+/// foreign key, since no v2 table ever declares one (see
+/// claude/essentials-v2-phase1-design.md, "Critical risks" #3).
 /// [onDelete] is `field_definitions.options.on_delete`, defaulting to
 /// `'RESTRICT'` when unset -- matches this project's long-standing
 /// default posture (every relationship blocks deletion unless explicitly
 /// marked otherwise; see CLAUDE.md "Parent-child (one-to-many)
 /// relationships").
+///
+/// Covers **two** formats as of Essentials v2 Phase 4, which is what
+/// [isMultiValue] exists to tell apart -- they store their reference
+/// completely differently, so the row-level matching SQL differs:
+/// - `select` in linked mode -- one scalar target id in the column
+///   (`WHERE column = ?1`).
+/// - `link_record` -- a JSON *array* of target ids
+///   (`json_each`-based array-membership match, see
+///   [GenericDao._referenceMatchSql]).
 class _LinkedFieldRef {
-  _LinkedFieldRef(this.table, this.column, this.onDelete);
+  _LinkedFieldRef(this.table, this.column, this.onDelete, {required this.isMultiValue});
 
   final String table;
   final String column;
   final String onDelete;
+
+  /// `true` for a `link_record` field (JSON array storage), `false` for a
+  /// `select`/linked field (single scalar id).
+  final bool isMultiValue;
+}
+
+/// One other table's records linking back to a specific row via a live
+/// `link_record` field -- [GenericDao.getReverseLinks]'s per-table group.
+class ReverseLink {
+  ReverseLink({
+    required this.tableName,
+    required this.displayName,
+    required this.displayColumn,
+    required this.fieldDisplayName,
+    required this.rows,
+  });
+
+  /// The referencing table's physical identifier.
+  final String tableName;
+
+  /// The referencing table's `table_definitions.display_name`.
+  final String displayName;
+
+  /// Column to show for each row in [rows] alongside its `id` -- that
+  /// table's own `table_definitions.display_field` if set, else its first
+  /// field by position (see [GenericDao.getReverseLinks]'s own doc
+  /// comment for why the fallback matters: no v2 table's UI actually sets
+  /// `display_field` yet, so relying on it alone left every reverse-relation
+  /// row showing a bare id). `null` only for a referencing table with no
+  /// fields at all.
+  final String? displayColumn;
+
+  /// The `link_record` field's own display name -- context for when a
+  /// table has more than one field linking back here.
+  final String fieldDisplayName;
+
+  /// Every live row on [tableName] whose `link_record` field's array
+  /// includes the id being looked up.
+  final List<Map<String, Object?>> rows;
 }
 
 /// CRUD operations for a single table, driven entirely by a [TableConfig].
@@ -82,14 +132,24 @@ class GenericDao {
       args,
     );
 
-    // Essentials v2 Phase 2 step 6: `formula` fields have a real physical
-    // column that is deliberately never written, so their value is
-    // computed here on the way out -- the read-time equivalent of what
-    // v1's `subscription_computed` view did in SQL. A no-op returning
-    // `rows` untouched for every table without a formula field, which is
-    // almost all of them (see FormulaService.applyTo).
-    if (!FormulaService.hasFormulaFields(config.fields)) return rows;
-    return [for (final row in rows) FormulaService.applyTo(config.fields, row)];
+    // Essentials v2 Phase 2 step 6 / Phase 4 step 2: `formula`, `lookup`
+    // and `rollup` fields all have a real physical column that is
+    // deliberately never written, so their values are computed here on the
+    // way out -- the read-time equivalent of what v1's
+    // `subscription_computed` view did in SQL. Both steps are a no-op
+    // returning `rows` untouched for a table without such a field, which
+    // is almost all of them (see FormulaService.applyTo /
+    // LinkedFieldService.applyToAll).
+    //
+    // Linked fields FIRST, then formulas: a `formula` referencing a
+    // `rollup` column (`{task_count} * 2`) then resolves against the real
+    // computed number, since FormulaService reads its inputs straight out
+    // of the row it's handed. The reverse order would silently give it
+    // NULL. Nothing depends on the other direction -- a `lookup`/`rollup`
+    // reads another *table*'s stored columns, never this row's formulas.
+    final linked = await LinkedFieldService.applyToAll(crdt, config.fields, rows);
+    if (!FormulaService.hasFormulaFields(config.fields)) return linked;
+    return [for (final row in linked) FormulaService.applyTo(config.fields, row)];
   }
 
   /// Inserts a new row and returns its real `id` column value. `id` is a
@@ -229,10 +289,45 @@ class GenericDao {
           onDeleteFilter: (onDelete) => onDelete == 'CASCADE',
         );
         for (final ref in cascadeRefs) {
-          await txn.execute(
-            'DELETE FROM ${ref.table} WHERE ${ref.column} = ?1',
+          if (!ref.isMultiValue) {
+            await txn.execute(
+              'DELETE FROM "${ref.table}" WHERE "${ref.column}" = ?1',
+              [id],
+            );
+            continue;
+          }
+          // A `link_record` cascade is deliberately two steps -- collect
+          // the matching ids with a SELECT, then delete each by plain
+          // scalar id -- rather than one `DELETE ... WHERE EXISTS
+          // (json_each ...)`.
+          //
+          // Not stylistic: sqlite_crdt rewrites every DELETE into a
+          // soft-delete UPDATE by *re-parsing* the statement
+          // (CrdtWriteExecutor), an already-verified-fragile path in this
+          // codebase (the `sqlparser` bug that silently dropped a column
+          // named `key` from a rewritten CREATE TABLE -- CLAUDE.md
+          // "Syncing at the Record Level" migration 007). A json_each
+          // subquery inside a rewritten write statement is exactly the
+          // kind of construct that could get mangled silently. The read
+          // path (`query`) round-trip has been verified for json_each; the
+          // write path stays on the trivially-safe scalar form already
+          // proven by every other delete in this app. At this app's scale
+          // the extra statements cost nothing.
+          //
+          // Per the design doc: this deletes the WHOLE referencing row
+          // when any one of its linked ids is deleted -- not a partial
+          // prune of that id out of the array. Same "cascade wipes the
+          // child row" semantics select/linked already has.
+          final matches = await txn.query(
+            'SELECT id FROM "${ref.table}" WHERE ${_referenceMatchSql(ref)}',
             [id],
           );
+          for (final match in matches) {
+            await txn.execute(
+              'DELETE FROM "${ref.table}" WHERE id = ?1',
+              [match['id']],
+            );
+          }
         }
         await txn.execute('DELETE FROM ${config.tableName} WHERE id = ?1', [id]);
       });
@@ -274,7 +369,7 @@ class GenericDao {
       List<Map<String, Object?>> count;
       try {
         count = await crdt.query(
-          'SELECT COUNT(*) AS c FROM ${ref.table} WHERE ${ref.column} = ?1 AND is_deleted = 0',
+          'SELECT COUNT(*) AS c FROM "${ref.table}" WHERE ${_referenceMatchSql(ref)}',
           [id],
         );
       } on DatabaseException {
@@ -308,16 +403,18 @@ class GenericDao {
   }) async {
     final tableName = config.tableName;
     final rows = await crdt.query(
-      "SELECT table_name, field_name, options FROM field_definitions "
-      "WHERE is_deleted = 0 AND format = 'select' "
-      "AND options ->> 'mode' = 'linked' AND options ->> 'table' = ?1",
+      "SELECT table_name, field_name, format, options FROM field_definitions "
+      "WHERE is_deleted = 0 "
+      "AND ((format = 'select' AND options ->> 'mode' = 'linked') "
+      "     OR format = 'link_record') "
+      "AND options ->> 'table' = ?1",
       [tableName],
     );
 
     final refs = <_LinkedFieldRef>[];
     for (final row in rows) {
       final otherTable = row['table_name'] as String;
-      if (otherTable == tableName) continue; // no v2 table self-references today; matches the old PRAGMA path's same skip.
+      if (otherTable == tableName) continue; // no v2 table self-references today; matches the old PRAGMA path's same skip. Unchanged for Phase 4 -- a self-referencing link_record is explicitly out of scope (claude/essentials-v2-phase4-design.md, "Explicitly out of scope").
       assertSafeSqlIdentifier(otherTable);
       final fieldName = row['field_name'] as String;
       assertSafeSqlIdentifier(fieldName);
@@ -326,10 +423,67 @@ class GenericDao {
       final onDelete = ((options['on_delete'] as String?) ?? 'restrict').toUpperCase();
       if (!onDeleteFilter(onDelete)) continue;
 
-      refs.add(_LinkedFieldRef(otherTable, fieldName, onDelete));
+      refs.add(
+        _LinkedFieldRef(
+          otherTable,
+          fieldName,
+          onDelete,
+          isMultiValue: (row['format'] as String?) == linkRecordFormat,
+        ),
+      );
     }
     return refs;
   }
+
+  /// `field_definitions.format` for a `link_record` field -- the one format
+  /// whose reference is a JSON array rather than a scalar id.
+  static const String linkRecordFormat = 'link_record';
+
+  /// A `WHERE` fragment matching every *live* row of [ref]'s table that
+  /// references id `?1`, for whichever storage shape [ref] uses.
+  ///
+  /// The `link_record` (array) form uses SQLite's JSON1 `json_each`
+  /// table-valued function (the same extension this class already relies on
+  /// via `->>`) inside an `EXISTS` subquery rather than a top-level join:
+  /// `EXISTS` keeps this a single composable `WHERE` fragment usable
+  /// unchanged by both a `COUNT(*)` and an id-collecting `SELECT`, and never
+  /// double-counts a row whose array happens to contain the same id twice.
+  ///
+  /// `CAST(... AS INTEGER)` deliberately, not a bare `=`: `json_each.value`
+  /// carries the JSON element's own storage class, so an array that ever
+  /// held `["42"]` instead of `[42]` would silently compare unequal to a
+  /// bound integer (SQLite doesn't apply affinity to a function result).
+  /// `encodeLinkedIds` always writes real integers, but [parseLinkedIds] is
+  /// deliberately lenient about strings, so the matching side is too --
+  /// otherwise the two halves of the same feature could disagree about
+  /// whether a row is linked.
+  ///
+  /// **The `CASE WHEN json_valid(...)` guard is load-bearing, not
+  /// defensive tidiness** -- confirmed empirically against real `sqlite3`,
+  /// not assumed. `json_each` on a column value that isn't valid JSON
+  /// raises `malformed JSON` for the *whole statement*, not just that row:
+  /// one row holding junk in its link column (a hand edit, a CSV import, a
+  /// half-written value) would make this entire query throw, which
+  /// [findBlockingReferences] catches as "the table doesn't exist" and
+  /// turns into **no blockers at all** -- silently disabling RESTRICT
+  /// protection for every other row in that table. Substituting `'[]'` for
+  /// an unparseable value keeps a single bad row local to itself: it links
+  /// to nothing, and every well-formed row still matches normally. NULL
+  /// needs no special case (`json_valid(NULL)` is falsy, and `json_each`
+  /// over `'[]'` yields no rows either way).
+  ///
+  /// Round-trip-verified against the installed `sqlparser` 0.41.2: every
+  /// `sql_crdt` read goes through `SqlUtil.transformAutomaticExplicitSql`,
+  /// which re-parses and re-serializes the whole statement, so a construct
+  /// it mangles would break silently (exactly how the documented bare-`key`
+  /// -column bug behaved). `json_each` in both a join and an `EXISTS`
+  /// subquery survives that round trip intact.
+  static String _referenceMatchSql(_LinkedFieldRef ref) => ref.isMultiValue
+      ? 'is_deleted = 0 AND EXISTS (SELECT 1 FROM json_each('
+            'CASE WHEN json_valid("${ref.table}"."${ref.column}") '
+            'THEN "${ref.table}"."${ref.column}" ELSE \'[]\' END) '
+            'WHERE CAST(json_each.value AS INTEGER) = ?1)'
+      : '"${ref.column}" = ?1 AND is_deleted = 0';
 
   /// `SELECT *`, not just [LookupConfig.valueColumn]/[LookupConfig.displayColumn]
   /// -- the only two columns either consumer (this screen's `lookupMaps`,
@@ -344,10 +498,150 @@ class GenericDao {
     final crdt = await _crdt;
     assertSafeSqlIdentifier(lookup.table);
     assertSafeSqlIdentifier(lookup.displayColumn);
+    final displayColumn = await _resolveDisplayColumn(crdt, lookup.table, lookup.displayColumn);
+    // Aliased back onto the *configured* key when it had to fall back --
+    // every consumer (this screen's lookupMaps, the form's dropdown) reads
+    // `option[lookup.displayColumn]`, the original key, so without this a
+    // fallback would leave that key entirely absent (read as the literal
+    // string "null" once string-interpolated) instead of showing the id.
+    final alias = displayColumn == lookup.displayColumn
+        ? ''
+        : ', $displayColumn AS ${lookup.displayColumn}';
     return crdt.query(
-      'SELECT * FROM ${lookup.table} '
-      'WHERE is_deleted = 0 ORDER BY ${lookup.displayColumn}',
+      'SELECT *$alias FROM ${lookup.table} '
+      'WHERE is_deleted = 0 ORDER BY $displayColumn',
     );
+  }
+
+  /// Every live row of a `link_record` field's target table, for the
+  /// grid/form picker -- `SELECT *` so a "Use Color" row-coloring source or
+  /// similar can read a target's own extra columns too, same reasoning as
+  /// [getLookupOptions].
+  Future<List<Map<String, Object?>>> getLinkedRecordOptions(LinkRecordConfig linkRecord) async {
+    final crdt = await _crdt;
+    assertSafeSqlIdentifier(linkRecord.table);
+    assertSafeSqlIdentifier(linkRecord.displayColumn);
+    final displayColumn = await _resolveDisplayColumn(
+      crdt,
+      linkRecord.table,
+      linkRecord.displayColumn,
+    );
+    // Same aliasing-on-fallback reasoning as getLookupOptions above.
+    final alias = displayColumn == linkRecord.displayColumn
+        ? ''
+        : ', "$displayColumn" AS "${linkRecord.displayColumn}"';
+    return crdt.query(
+      'SELECT *$alias FROM "${linkRecord.table}" '
+      'WHERE is_deleted = 0 ORDER BY "$displayColumn"',
+    );
+  }
+
+  /// [configuredColumn] if it's actually a physical column on [table], else
+  /// `'id'` -- a real, always-present fallback.
+  ///
+  /// Both [LookupConfig.displayColumn] and [LinkRecordConfig.displayColumn]
+  /// default to `'name'` when a field's own `options.displayField` doesn't
+  /// override it (see `SchemaRegistry._lookupFor`/`_linkRecordFor`), and
+  /// nothing yet stops a target table without a real `name` column from
+  /// being picked -- confirmed to crash for real: `SELECT * FROM condition
+  /// WHERE is_deleted = 0 ORDER BY name` against a table whose own text
+  /// field happens to be named `condition`, not `name`. This is the "never
+  /// crash the whole table over one bad field's metadata" posture every
+  /// other Phase 4 read path already follows (see `LinkedFieldService`'s
+  /// own doc comment) -- a wrong display column degrades to showing raw
+  /// ids, ugly but not fatal, and (per `AddFieldScreen`/`ManageFieldsScreen`'s
+  /// new "Which field to show" picker) a *newly* created field should never
+  /// actually hit this fallback going forward.
+  Future<String> _resolveDisplayColumn(
+    CrdtApi crdt,
+    String table,
+    String configuredColumn,
+  ) async {
+    if (configuredColumn == 'id') return 'id';
+    final columns = await crdt.query('PRAGMA table_info("$table")');
+    final exists = columns.any((c) => c['name'] == configuredColumn);
+    return exists ? configuredColumn : 'id';
+  }
+
+  /// Every other-table record whose own `link_record` field points back at
+  /// [config.tableName]'s row `id` -- the reverse-relation panel's data
+  /// source (Essentials v2 Phase 4, "confirmed decisions": ships in this
+  /// pass, not deferred). Grouped by referencing table, since more than one
+  /// other table -- or more than one field on the same other table -- can
+  /// link here.
+  ///
+  /// Read-only: this never edits the relationship, only reports it (per the
+  /// design doc, "Removing/changing a link stays the other record's own
+  /// `link_record` field").
+  Future<List<ReverseLink>> getReverseLinks(int id) async {
+    final crdt = await _crdt;
+    final tableName = config.tableName;
+
+    final fieldRows = await crdt.query(
+      "SELECT table_name, field_name, display_name FROM field_definitions "
+      "WHERE is_deleted = 0 AND format = 'link_record' AND options ->> 'table' = ?1",
+      [tableName],
+    );
+
+    final results = <ReverseLink>[];
+    final tableDefCache = <String, Map<String, Object?>?>{};
+    final firstFieldCache = <String, String?>{};
+
+    for (final fieldRow in fieldRows) {
+      final otherTable = fieldRow['table_name'] as String;
+      if (!isSafeSqlIdentifier(otherTable)) continue;
+      final fieldName = fieldRow['field_name'] as String;
+      if (!isSafeSqlIdentifier(fieldName)) continue;
+      final fieldDisplayName = fieldRow['display_name'] as String;
+
+      if (!tableDefCache.containsKey(otherTable)) {
+        final defRows = await crdt.query(
+          'SELECT display_name, display_field FROM table_definitions '
+          'WHERE table_name = ?1 AND is_deleted = 0',
+          [otherTable],
+        );
+        tableDefCache[otherTable] = defRows.isEmpty ? null : defRows.first;
+      }
+      final tableDef = tableDefCache[otherTable];
+      if (tableDef == null) continue; // stale metadata -- the other table's own definition is gone/soft-deleted.
+
+      if (!firstFieldCache.containsKey(otherTable)) {
+        final firstFieldRows = await crdt.query(
+          'SELECT field_name FROM field_definitions '
+          'WHERE table_name = ?1 AND is_deleted = 0 ORDER BY position ASC LIMIT 1',
+          [otherTable],
+        );
+        firstFieldCache[otherTable] = firstFieldRows.isEmpty
+            ? null
+            : firstFieldRows.first['field_name'] as String;
+      }
+
+      List<Map<String, Object?>> rows;
+      try {
+        rows = await crdt.query(
+          'SELECT * FROM "$otherTable" WHERE is_deleted = 0 '
+          'AND EXISTS (SELECT 1 FROM json_each('
+          'CASE WHEN json_valid("$otherTable"."$fieldName") '
+          'THEN "$otherTable"."$fieldName" ELSE \'[]\' END) '
+          'WHERE CAST(json_each.value AS INTEGER) = ?1)',
+          [id],
+        );
+      } on DatabaseException {
+        continue; // the referencing table no longer physically exists.
+      }
+      if (rows.isEmpty) continue;
+
+      results.add(
+        ReverseLink(
+          tableName: otherTable,
+          displayName: tableDef['display_name'] as String,
+          displayColumn: (tableDef['display_field'] as String?) ?? firstFieldCache[otherTable],
+          fieldDisplayName: fieldDisplayName,
+          rows: rows,
+        ),
+      );
+    }
+    return results;
   }
 
   /// Type-ahead suggestions for a `text`-format field, drawn from other

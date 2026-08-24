@@ -5,7 +5,15 @@
 /// input, but this is cheap insurance against a maliciously- or
 /// accidentally-named table/column breaking a query into something else.
 void assertSafeSqlIdentifier(String identifier) {
-  if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(identifier)) {
+  if (!isSafeSqlIdentifier(identifier)) {
     throw ArgumentError('Refusing to use suspicious SQL identifier: $identifier');
   }
 }
+
+/// The non-throwing form of [assertSafeSqlIdentifier], for a caller that
+/// must degrade rather than fail -- `LinkedFieldService` runs on the read
+/// path for every grid load and treats an unusable identifier in stale
+/// `field_definitions.options` metadata as "this field has no computable
+/// value" (blank cell), not as a reason to blow up the whole table.
+bool isSafeSqlIdentifier(String identifier) =>
+    RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(identifier);

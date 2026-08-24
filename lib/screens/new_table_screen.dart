@@ -5,6 +5,43 @@ import 'package:flutter/material.dart';
 import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
 import '../util/field_format_choice.dart';
+import 'add_field_screen.dart' show autoDisplayField;
+
+/// Formats [NewTableScreen]'s own inline field row can fully support --
+/// everything else falls into one of two buckets, deliberately excluded
+/// from this screen's Format picker rather than half-supported the way
+/// `link_record` used to be (see this file's own history: picking it here
+/// used to silently produce a field with no target table at all, since
+/// only the pre-existing `select` format ever got its options actually
+/// wired up):
+///
+/// - [FieldFormatChoice.lookup]/[FieldFormatChoice.rollup] reference a
+///   `link_record` field on THIS SAME table (the one being created) --
+///   for the very first field added, that field doesn't exist yet. Not a
+///   UI gap, a genuine ordering constraint -- these can only ever make
+///   sense once the table (and its link field) already exist, i.e. via
+///   [AddFieldScreen]/`ManageFieldsScreen` afterward.
+/// - [FieldFormatChoice.inlineSelect]/[FieldFormatChoice.formula] need a
+///   real dedicated editor (an option-list builder, an expression
+///   builder) -- building those inline here would defeat the point of
+///   this screen staying close to the minimum needed to get a table
+///   started (see the class doc comment below). Same "left to AddFieldScreen"
+///   treatment.
+///
+/// Every other format either needs no extra options at all
+/// (text/integer/real/boolean/date/dateTime, currency/percentage/rating/
+/// barcode -- all degrade to sensible defaults with none captured) or is
+/// fully supported inline below (`select`/`link_record`'s target-table +
+/// on-delete + "which field to show" + "allow multiple" block, `url`/
+/// `color`'s options flag).
+final List<FieldFormatChoice> _supportedInitialFieldFormats = [
+  for (final choice in FieldFormatChoice.values)
+    if (choice != FieldFormatChoice.lookup &&
+        choice != FieldFormatChoice.rollup &&
+        choice != FieldFormatChoice.inlineSelect &&
+        choice != FieldFormatChoice.formula)
+      choice,
+];
 
 class _PendingField {
   _PendingField({
@@ -12,19 +49,31 @@ class _PendingField {
     required this.format,
     this.linkedTable,
     this.onDelete,
+    this.multiple = false,
+    this.displayField,
   });
 
   final String displayName;
   final FieldFormatChoice format;
 
-  /// Only meaningful when [format] is [FieldFormatChoice.select] -- the
-  /// existing table this field links to, and what happens to it when
-  /// that linked row is deleted. Always an *already-existing* table
-  /// (never the one being created here, which doesn't exist yet at
-  /// field-definition time) -- same target-table picker
-  /// [AddFieldScreen] already uses for exactly this reason.
+  /// Only meaningful when [format] is [FieldFormatChoice.select] or
+  /// [FieldFormatChoice.linkRecord] -- the existing table this field
+  /// links to, and what happens to it when that linked row is deleted.
+  /// Always an *already-existing* table (never the one being created
+  /// here, which doesn't exist yet at field-definition time) -- same
+  /// target-table picker [AddFieldScreen] already uses for exactly this
+  /// reason.
   final String? linkedTable;
   final OnDeleteChoice? onDelete;
+
+  /// [FieldFormatChoice.linkRecord] only -- see `LinkRecordConfig
+  /// .multiple`'s own doc comment for what this controls.
+  final bool multiple;
+
+  /// [FieldFormatChoice.select]/[FieldFormatChoice.linkRecord] only --
+  /// see `autoDisplayField`'s doc comment for why this is never left to
+  /// silently default to a literal `'name'` column that might not exist.
+  final String? displayField;
 }
 
 /// Essentials v2 Phase 1's "New Table" screen (build order step 7) --
@@ -35,12 +84,17 @@ class _PendingField {
 /// -design.md's "New UI": display name, icon, initial fields, and the
 /// generated identifier shown live "so it's never a surprise."
 ///
-/// Initial fields are name+format, plus a target-table picker for a
-/// `select`/linked field -- everything else ([FieldFormatChoice] options
-/// beyond that, default value, required) is still left to [AddFieldScreen]/
-/// [ManageFieldsScreen] once the table exists, keeping this screen close
-/// to the minimum needed to get a usable table started rather than
-/// duplicating that entire editor inline.
+/// Initial fields are name+format, plus (for `select`/[FieldFormatChoice
+/// .linkRecord]) the full target-table/on-delete/"which field to show"/
+/// "allow multiple" block [AddFieldScreen] itself uses -- default value and
+/// required are still left to [AddFieldScreen]/[ManageFieldsScreen] once
+/// the table exists, and [FieldFormatChoice.lookup]/[FieldFormatChoice
+/// .rollup]/[FieldFormatChoice.inlineSelect]/[FieldFormatChoice.formula]
+/// are excluded from the Format picker entirely -- see
+/// [_supportedInitialFieldFormats]'s own doc comment for exactly why each
+/// one can't (or, for the two option-editor formats, deliberately doesn't)
+/// belong here. Keeps this screen close to the minimum needed to get a
+/// usable table started rather than duplicating that entire editor inline.
 ///
 /// **Linked fields were originally excluded here entirely** -- the
 /// original reasoning was "there's nothing to link to until this table
@@ -54,6 +108,17 @@ class _PendingField {
 /// The target-table picker only ever offers already-existing tables
 /// (never this one, which doesn't exist yet at field-definition time),
 /// so the original constraint never actually applied to this case.
+///
+/// **`link_record` specifically was picked here for months without
+/// actually working** -- it appeared in the Format dropdown (which simply
+/// listed every [FieldFormatChoice]), but only [FieldFormatChoice.select]'s
+/// branch ever populated the target-table/on-delete UI or wrote real
+/// `options` JSON; picking `link_record` silently produced a field with no
+/// `table` key at all (`SchemaRegistry._linkRecordFor` returns `null`
+/// without one, so it never actually became a link). Found live -- fixed
+/// by giving `link_record` the identical full options block `select`
+/// already had, rather than leaving a format in the picker that visibly
+/// "went away" the moment it was chosen.
 class NewTableScreen extends StatefulWidget {
   const NewTableScreen({super.key});
 
@@ -73,6 +138,9 @@ class _NewTableScreenState extends State<NewTableScreen> {
   FieldFormatChoice _fieldFormat = FieldFormatChoice.text;
   String? _linkedTable;
   OnDeleteChoice _onDelete = OnDeleteChoice.restrict;
+  bool _linkMultiple = false;
+  String? _displayField;
+  List<FieldDefinitionRow> _linkedTableFields = const [];
   final _pendingFields = <_PendingField>[];
 
   late Future<List<TableDefinitionRow>> _tableNamesFuture;
@@ -110,10 +178,33 @@ class _NewTableScreenState extends State<NewTableScreen> {
     });
   }
 
+  bool get _isLinkedFormat =>
+      _fieldFormat == FieldFormatChoice.select || _fieldFormat == FieldFormatChoice.linkRecord;
+
   bool get _canAddPendingField {
     if (_fieldNameController.text.trim().isEmpty) return false;
-    if (_fieldFormat == FieldFormatChoice.select && _linkedTable == null) return false;
+    if (_isLinkedFormat && _linkedTable == null) return false;
     return true;
+  }
+
+  /// Loads [_linkedTableFields] for [tableName] and seeds [_displayField]
+  /// with [autoDisplayField]'s pick -- same shape as [AddFieldScreen]
+  /// /`ManageFieldsScreen`'s own loader, called whenever the "Linked to
+  /// table" dropdown changes.
+  Future<void> _loadLinkedTableFields(String? tableName) async {
+    if (tableName == null) {
+      setState(() {
+        _linkedTableFields = const [];
+        _displayField = null;
+      });
+      return;
+    }
+    final fields = await _metadata.loadFields(tableName, includeDeleted: false);
+    if (!mounted || _linkedTable != tableName) return;
+    setState(() {
+      _linkedTableFields = fields;
+      _displayField = autoDisplayField(fields);
+    });
   }
 
   void _addPendingField() {
@@ -124,14 +215,19 @@ class _NewTableScreenState extends State<NewTableScreen> {
         _PendingField(
           displayName: name,
           format: _fieldFormat,
-          linkedTable: _fieldFormat == FieldFormatChoice.select ? _linkedTable : null,
-          onDelete: _fieldFormat == FieldFormatChoice.select ? _onDelete : null,
+          linkedTable: _isLinkedFormat ? _linkedTable : null,
+          onDelete: _isLinkedFormat ? _onDelete : null,
+          multiple: _fieldFormat == FieldFormatChoice.linkRecord ? _linkMultiple : false,
+          displayField: _isLinkedFormat ? (_displayField ?? 'id') : null,
         ),
       );
       _fieldNameController.clear();
       _fieldFormat = FieldFormatChoice.text;
       _linkedTable = null;
       _onDelete = OnDeleteChoice.restrict;
+      _linkMultiple = false;
+      _displayField = null;
+      _linkedTableFields = const [];
     });
   }
 
@@ -180,13 +276,7 @@ class _NewTableScreenState extends State<NewTableScreen> {
           tableName: tableName,
           displayName: field.displayName,
           format: field.format.value,
-          optionsJson: field.linkedTable == null
-              ? null
-              : jsonEncode({
-                  'mode': 'linked',
-                  'table': field.linkedTable,
-                  'on_delete': field.onDelete!.value,
-                }),
+          optionsJson: _pendingFieldOptionsJson(field),
         );
       }
       if (!mounted) return;
@@ -205,6 +295,60 @@ class _NewTableScreenState extends State<NewTableScreen> {
         _error = 'Failed: $e';
       });
     }
+  }
+
+  /// Real bug, found live: every format other than `select` silently wrote
+  /// `optionsJson: null` here, regardless of what it actually needs to
+  /// function -- `url`/`color` (a plain flag) quietly became indistinguishable
+  /// from plain text, and `link_record` (a real target table) never
+  /// actually became a link at all (no `table` key -> `SchemaRegistry
+  /// ._linkRecordFor` returns `null` -> `FieldConfig.isLinkRecord` false).
+  /// Mirrors [AddFieldScreen._buildOptionsJson]'s per-format branches for
+  /// every format [_supportedInitialFieldFormats] actually offers.
+  String? _pendingFieldOptionsJson(_PendingField field) {
+    if (field.format == FieldFormatChoice.select) {
+      return jsonEncode({
+        'mode': 'linked',
+        'table': field.linkedTable,
+        'on_delete': field.onDelete!.value,
+        'displayField': field.displayField ?? 'id',
+      });
+    }
+    if (field.format == FieldFormatChoice.linkRecord) {
+      return jsonEncode({
+        'table': field.linkedTable,
+        'multiple': field.multiple,
+        'on_delete': field.onDelete!.value,
+        'displayField': field.displayField ?? 'id',
+      });
+    }
+    if (field.format == FieldFormatChoice.url) {
+      return jsonEncode({'isLink': true});
+    }
+    if (field.format == FieldFormatChoice.color) {
+      return jsonEncode({'isColor': true});
+    }
+    return null;
+  }
+
+  /// Same as [AddFieldScreen._buildDisplayFieldPicker] -- see that method's
+  /// doc comment, including why the guard against a not-yet-loaded
+  /// [_displayField] value matters.
+  Widget _buildDisplayFieldPicker() {
+    final validValues = {'id', for (final f in _linkedTableFields) f.fieldName};
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: DropdownButtonFormField<String>(
+        initialValue: validValues.contains(_displayField) ? _displayField : null,
+        decoration: const InputDecoration(labelText: 'Which field to show'),
+        items: [
+          const DropdownMenuItem(value: 'id', child: Text('(row id)')),
+          for (final f in _linkedTableFields)
+            DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+        ],
+        onChanged: (value) => setState(() => _displayField = value),
+      ),
+    );
   }
 
   @override
@@ -259,7 +403,8 @@ class _NewTableScreenState extends State<NewTableScreen> {
               subtitle: Text(
                 field.linkedTable == null
                     ? field.format.label
-                    : '${field.format.label} to ${field.linkedTable}',
+                    : '${field.format.label} to ${field.linkedTable}'
+                          '${field.multiple ? ' (multiple)' : ''}',
               ),
               trailing: IconButton(
                 icon: const Icon(Icons.close),
@@ -285,12 +430,17 @@ class _NewTableScreenState extends State<NewTableScreen> {
                   initialValue: _fieldFormat,
                   decoration: const InputDecoration(labelText: 'Format'),
                   items: [
-                    for (final choice in FieldFormatChoice.values)
+                    for (final choice in _supportedInitialFieldFormats)
                       DropdownMenuItem(value: choice, child: Text(choice.label)),
                   ],
                   onChanged: (value) => setState(() {
                     _fieldFormat = value ?? FieldFormatChoice.text;
-                    if (_fieldFormat != FieldFormatChoice.select) _linkedTable = null;
+                    if (!_isLinkedFormat) {
+                      _linkedTable = null;
+                      _linkedTableFields = const [];
+                      _displayField = null;
+                      _linkMultiple = false;
+                    }
                   }),
                 ),
               ),
@@ -302,7 +452,7 @@ class _NewTableScreenState extends State<NewTableScreen> {
               ),
             ],
           ),
-          if (_fieldFormat == FieldFormatChoice.select) ...[
+          if (_isLinkedFormat) ...[
             const SizedBox(height: 12),
             FutureBuilder<List<TableDefinitionRow>>(
               future: _tableNamesFuture,
@@ -314,10 +464,14 @@ class _NewTableScreenState extends State<NewTableScreen> {
                   items: [
                     for (final t in tables) DropdownMenuItem(value: t.tableName, child: Text(t.displayName)),
                   ],
-                  onChanged: (value) => setState(() => _linkedTable = value),
+                  onChanged: (value) {
+                    setState(() => _linkedTable = value);
+                    _loadLinkedTableFields(value);
+                  },
                 );
               },
             ),
+            _buildDisplayFieldPicker(),
             const SizedBox(height: 12),
             DropdownButtonFormField<OnDeleteChoice>(
               initialValue: _onDelete,
@@ -328,6 +482,16 @@ class _NewTableScreenState extends State<NewTableScreen> {
               ],
               onChanged: (value) => setState(() => _onDelete = value ?? OnDeleteChoice.restrict),
             ),
+            if (_fieldFormat == FieldFormatChoice.linkRecord) ...[
+              const SizedBox(height: 12),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text('Allow linking to more than one record'),
+                value: _linkMultiple,
+                onChanged: (value) => setState(() => _linkMultiple = value ?? false),
+              ),
+            ],
           ],
           const SizedBox(height: 20),
           if (_error != null) ...[

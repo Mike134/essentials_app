@@ -29,6 +29,52 @@ class LookupConfig {
   final String valueColumn;
 }
 
+/// Describes a `link_record` field -- Essentials v2 Phase 4 -- a general
+/// one-or-many relationship to another table's rows, distinct from
+/// [LookupConfig]'s single-scalar-FK shape (see
+/// claude/essentials-v2-phase4-design.md's "What the code already does
+/// today" table for why both coexist). The stored column value is always a
+/// JSON array of target-table ids (see `lib/util/link_record.dart`),
+/// regardless of [multiple] -- flipping [multiple] later needs no data
+/// rewrite.
+class LinkRecordConfig {
+  const LinkRecordConfig({
+    required this.table,
+    this.displayColumn = 'name',
+    this.multiple = false,
+    this.onDelete = 'restrict',
+  });
+
+  /// The referenced table.
+  final String table;
+
+  /// Column shown to the user for each linked row (e.g. `name`).
+  final String displayColumn;
+
+  /// Whether the picker allows selecting more than one row. UI-layer only
+  /// -- storage is always a JSON array either way.
+  ///
+  /// **Relationship shape, in relational terms:** `false` is a one-to-many
+  /// relationship (this field picks one [table] row, but that row can be
+  /// linked from many rows on this side -- e.g. many `Task`s each pointing
+  /// at one `Project`). `true` is many-to-many (this field can pick several
+  /// [table] rows, and each of those can independently be linked from many
+  /// rows on this side too -- e.g. many `Task`s each linking several
+  /// `Person`s as assignees, with any `Person` assignable to any number of
+  /// `Task`s). Either way there is no join table and no field on [table]'s
+  /// own side -- the relationship is stored entirely as this field's JSON
+  /// array, and the reverse direction ("which rows on this side link to a
+  /// given [table] row") is derived on demand by [GenericDao.getReverseLinks]
+  /// rather than mirrored into a second field. See
+  /// claude/essentials-v2-phase4-design.md's "Confirmed decisions".
+  final bool multiple;
+
+  /// `restrict` | `cascade` | `ignore` -- same three-way choice and
+  /// enforcement shape as [LookupConfig]'s own `options.on_delete` (see
+  /// `GenericDao._linkedFieldRefs`).
+  final String onDelete;
+}
+
 /// One choice in a `select` field's *inline* option list (`format:
 /// 'select'`, `options.mode == 'inline'`) -- Essentials v2 Phase 2 build
 /// order step 4 (see claude/essentials-v2-phase2-design.md's "Inline
@@ -78,6 +124,7 @@ class FieldConfig {
     this.format,
     this.options = const {},
     this.inlineOptions,
+    this.linkRecord,
   });
 
   /// The literal SQLite column name.
@@ -171,6 +218,29 @@ class FieldConfig {
   /// one-line description) out.
   bool get isAutocompleteText =>
       format == 'text' && type == FieldType.text && !isLink && !isColor && options['autocomplete'] != false;
+
+  /// Non-null for a `link_record` field (Essentials v2 Phase 4) -- a
+  /// general one-or-many relationship to another table's rows, rendered as
+  /// a picker (single dropdown or multi-select checklist, per
+  /// [LinkRecordConfig.multiple]) in both grid and form. See
+  /// `lib/util/link_record.dart` for the JSON-array storage shape.
+  final LinkRecordConfig? linkRecord;
+
+  bool get isLinkRecord => linkRecord != null;
+
+  /// True for a `lookup` field -- read-only, computed at read time by
+  /// `LinkedFieldService`, displaying a value from the record(s) a sibling
+  /// `link_record` field on this table points at. Mirrors [isFormula]'s
+  /// shape (both let the render layer tell "which read-only-computed kind
+  /// is this" apart at the four established touchpoints) -- already
+  /// implied by [readOnly], this just names the specific kind.
+  bool get isFieldLookup => format == 'lookup';
+
+  /// True for a `rollup` field -- read-only, computed at read time by
+  /// `LinkedFieldService`, aggregating a value across every record a
+  /// sibling `link_record` field on this table points at. Same shape as
+  /// [isFieldLookup].
+  bool get isRollup => format == 'rollup';
 }
 
 /// Drives the generic list + form screens for one SQLite table. One config

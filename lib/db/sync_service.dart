@@ -125,6 +125,24 @@ class SyncService {
   static final _schemaChangesController = StreamController<void>.broadcast();
   static Stream<void> get schemaChanges => _schemaChangesController.stream;
 
+  /// Fires with the set of table names an incoming changeset touched,
+  /// for *any* table -- not just the schema tables [schemaChanges] narrows
+  /// to. [GenericListScreen] listens for this to reload its grid live when
+  /// another device adds/edits/deletes a row in the table it's currently
+  /// showing, instead of only on this screen's own explicit actions
+  /// (add/edit/delete/cell-edit/table-switch).
+  ///
+  /// Found live: a record added on one device only ever showed up on
+  /// another device's already-open grid after leaving and returning to
+  /// that table -- the exact same "sync itself works, the *display* side's
+  /// reactivity doesn't" gap [schemaChanges] was built to close for nav/
+  /// table-list changes, just never extended to row data. Same
+  /// before-the-merge-completes timing caveat as [schemaChanges] --
+  /// listeners should debounce a short beat before reloading rather than
+  /// assuming the merge has landed by the time this fires.
+  static final _dataChangesController = StreamController<Set<String>>.broadcast();
+  static Stream<Set<String>> get dataChanges => _dataChangesController.stream;
+
   /// Resolves the server address (see [_resolveServerUri]) and connects.
   /// Safe to call once at app startup; [CrdtSyncClient] handles its own
   /// reconnection with exponential backoff after that.
@@ -164,6 +182,9 @@ class SyncService {
             recordCounts.containsKey('field_definitions') ||
             recordCounts.containsKey('migration_log')) {
           _schemaChangesController.add(null);
+        }
+        if (recordCounts.isNotEmpty) {
+          _dataChangesController.add(recordCounts.keys.toSet());
         }
       },
       changesetBuilder: ({onlyTables, onlyNodeId, exceptNodeId, modifiedOn, modifiedAfter}) =>

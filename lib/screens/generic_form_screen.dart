@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../db/generic_dao.dart';
+import '../db/schema_registry.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/color_picker.dart';
@@ -9,6 +10,7 @@ import '../util/bool_value.dart';
 import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/field_formats/field_format_handler.dart';
+import '../util/link_record.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
 
@@ -86,6 +88,20 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   final Map<String, Future<List<Map<String, Object?>>>> _lookupOptions = {};
   final Map<String, String?> _inlineSelectValues = {};
   final Map<String, FocusNode> _focusNodes = {};
+
+  /// Essentials v2 Phase 4 -- `link_record` fields' in-progress selection
+  /// (parsed from the stored JSON array) and their target-table option
+  /// list, same shape/purpose as [_lookupValues]/[_lookupOptions] but keyed
+  /// off [FieldConfig.linkRecord] instead of [FieldConfig.lookup].
+  final Map<String, List<int>> _linkRecordValues = {};
+  final Map<String, Future<List<Map<String, Object?>>>> _linkRecordOptions = {};
+
+  /// The reverse-relation panel's data -- every other-table record whose
+  /// own `link_record` field points back at this row. `null` when adding a
+  /// new row (there's no `id` yet to reverse-look-up against) or when the
+  /// table has no such thing to load yet.
+  Future<List<ReverseLink>>? _reverseLinksFuture;
+
   bool _saving = false;
 
   @override
@@ -123,6 +139,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         // "no selection" convention as everywhere else.
         final key = existingValue as String?;
         _inlineSelectValues[field.column] = (key == null || key.isEmpty) ? null : key;
+      } else if (field.isLinkRecord) {
+        // Essentials v2 Phase 4 -- parseLinkedIds tolerates null/blank/
+        // malformed JSON (-> []), same lenient parsing every other reader
+        // of a link_record column already relies on.
+        _linkRecordValues[field.column] = parseLinkedIds(existingValue);
+        _linkRecordOptions[field.column] = _dao.getLinkedRecordOptions(field.linkRecord!);
       } else {
         _controllers[field.column] =
             TextEditingController(text: existingValue?.toString() ?? '');
@@ -144,6 +166,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           _focusNodes[field.column] = focusNode;
         }
       }
+    }
+
+    // Essentials v2 Phase 4's reverse-relation panel -- only for an
+    // existing row (no `id` yet on Add, same reasoning
+    // [TableConfig.openRowDetail]'s own doc comment already gives for why
+    // it's "never consulted for the Add flow").
+    if (widget.isEditing) {
+      _reverseLinksFuture = _dao.getReverseLinks(widget.existing!['id'] as int);
     }
   }
 
@@ -172,6 +202,8 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         values[field.column] = _lookupValues[field.column];
       } else if (field.isInlineSelect) {
         values[field.column] = _inlineSelectValues[field.column];
+      } else if (field.isLinkRecord) {
+        values[field.column] = encodeLinkedIds(_linkRecordValues[field.column] ?? const []);
       } else {
         final text = _controllers[field.column]!.text.trim();
         if (text.isEmpty) {
@@ -324,6 +356,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                 ),
               ),
             for (final field in widget.config.fields) _buildField(field),
+            if (widget.isEditing) _buildReverseLinksSection(),
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _saving ? null : _save,
@@ -382,6 +415,10 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           _recomputePreview();
         },
       );
+    }
+
+    if (field.isLinkRecord) {
+      return _buildLinkRecordField(field);
     }
 
     if (field.isLookup) {
@@ -532,6 +569,162 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             : null,
       ),
     );
+  }
+
+  /// Essentials v2 Phase 4's `link_record` form field -- a
+  /// [DropdownButtonFormField] (mirroring [FieldConfig.isLookup]'s own
+  /// dropdown almost exactly) when [LinkRecordConfig.multiple] is `false`,
+  /// or a [CheckboxListTile] per option when it's `true`, per
+  /// claude/essentials-v2-phase4-design.md's "Form rendering" section.
+  Widget _buildLinkRecordField(FieldConfig field) {
+    final linkRecord = field.linkRecord!;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: FutureBuilder<List<Map<String, Object?>>>(
+        future: _linkRecordOptions[field.column],
+        builder: (context, snapshot) {
+          final options = snapshot.data ?? const [];
+          final selected = _linkRecordValues[field.column] ?? const <int>[];
+
+          if (!linkRecord.multiple) {
+            final currentValue = selected.isEmpty ? null : selected.first;
+            // Same "don't offer a value the not-yet-loaded items list
+            // doesn't contain yet" guard field.isLookup's own dropdown
+            // above already uses, and for the identical reason (a debug
+            // -build-only DropdownButtonFormField assert).
+            final hasCurrentValue = options.any((o) => o['id'] == currentValue);
+            return DropdownButtonFormField<int>(
+              initialValue: hasCurrentValue ? currentValue : null,
+              decoration: InputDecoration(labelText: field.label),
+              items: [
+                if (!field.required) const DropdownMenuItem<int>(child: Text('-')),
+                for (final option in options)
+                  DropdownMenuItem<int>(
+                    value: option['id'] as int,
+                    child: Text('${option[linkRecord.displayColumn]}'),
+                  ),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  _linkRecordValues[field.column] = value == null ? const [] : [value];
+                });
+                _recomputePreview();
+              },
+              validator: field.required
+                  ? (value) => value == null ? '${field.label} is required' : null
+                  : null,
+            );
+          }
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(field.label, style: Theme.of(context).textTheme.bodySmall),
+              ),
+              if (options.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    'Nothing to link to yet.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              for (final option in options)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: Text('${option[linkRecord.displayColumn]}'),
+                  value: selected.contains(option['id']),
+                  onChanged: (checked) {
+                    setState(() {
+                      final ids = [...selected];
+                      final id = option['id'] as int;
+                      if (checked ?? false) {
+                        if (!ids.contains(id)) ids.add(id);
+                      } else {
+                        ids.remove(id);
+                      }
+                      _linkRecordValues[field.column] = ids;
+                    });
+                    _recomputePreview();
+                  },
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Essentials v2 Phase 4's reverse-relation panel, per
+  /// claude/essentials-v2-phase4-design.md's "New: the reverse-relation
+  /// panel" section -- every other-table record whose own `link_record`
+  /// field points back at this row, grouped by referencing table,
+  /// read-only (tap a row to open its own form; removing/changing a link
+  /// stays that record's own field). `null` future (see
+  /// [_reverseLinksFuture]'s doc comment) collapses to nothing shown, same
+  /// as an empty result.
+  Widget _buildReverseLinksSection() {
+    final future = _reverseLinksFuture;
+    if (future == null) return const SizedBox.shrink();
+    return FutureBuilder<List<ReverseLink>>(
+      future: future,
+      builder: (context, snapshot) {
+        final groups = snapshot.data ?? const [];
+        if (groups.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 12),
+            const Divider(),
+            for (final group in groups)
+              ExpansionTile(
+                title: Text('${group.displayName} (${group.rows.length})'),
+                subtitle: Text('via ${group.fieldDisplayName}'),
+                children: [
+                  for (final row in group.rows)
+                    ListTile(
+                      dense: true,
+                      // Shows both the id and the first user-entered
+                      // column, not one or the other -- with more than one
+                      // linked record, "click and see" was the only way
+                      // to tell them apart otherwise (Mike's own real
+                      // testing feedback). group.displayColumn is `null`
+                      // only for a referencing table with no fields at
+                      // all, in which case there's nothing else to show.
+                      title: Text(
+                        group.displayColumn == null
+                            ? '${row['id']}'
+                            : '${row['id']} — ${row[group.displayColumn] ?? ''}',
+                      ),
+                      onTap: () => _openReverseLinkRow(group.tableName, row),
+                    ),
+                ],
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Opens [row] (from another table, per the reverse-relation panel) in
+  /// its own [GenericFormScreen] -- building that table's [TableConfig]
+  /// fresh via [SchemaRegistry] rather than a lightweight partial view,
+  /// same "the destination screen is a real, fully-capable form" reasoning
+  /// [GenericListScreen]'s own row-tap navigation already follows.
+  Future<void> _openReverseLinkRow(String tableName, Map<String, Object?> row) async {
+    try {
+      final config = await SchemaRegistry().buildConfig(tableName);
+      if (!mounted) return;
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => GenericFormScreen(config: config, existing: row)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't open record: $e")));
+    }
   }
 
   /// See claude/essentials-v2-column-autocomplete-design.md. A plain

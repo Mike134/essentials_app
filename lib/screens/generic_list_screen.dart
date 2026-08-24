@@ -8,6 +8,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:trina_grid/trina_grid.dart';
 
 import '../db/generic_dao.dart';
+import '../db/sync_service.dart';
 import '../db/table_view_settings_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
@@ -17,6 +18,7 @@ import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
 import '../util/field_formats/field_format_handler.dart';
+import '../util/link_record.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
 import '../util/strings.dart';
@@ -97,6 +99,17 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   TrinaGridStateManager? _stateManager;
   Timer? _saveTimer;
+
+  /// Live-refresh subscription -- see [SyncService.dataChanges]'s own doc
+  /// comment for why this exists at all (sync itself already works; this
+  /// screen's own reactivity to a change made on *another* device didn't,
+  /// found live: a row added elsewhere only ever showed up here after
+  /// leaving and returning to this table). Debounced the same short beat
+  /// [SyncService.dataChanges] itself recommends -- `onChangesetReceived`
+  /// fires before the merge is actually awaited, so reloading instantly
+  /// risks reading pre-merge data.
+  StreamSubscription<Set<String>>? _dataChangeSubscription;
+  Timer? _dataChangeDebounce;
 
   /// The rows [build] most recently rendered -- read by [_copySelected] to
   /// look the selected row up by `id`, the same "by id, not off the grid's
@@ -183,6 +196,20 @@ class _GenericListScreenState extends State<GenericListScreen> {
     super.initState();
     _dao = GenericDao(widget.config);
     _reload();
+    _dataChangeSubscription = SyncService.dataChanges.listen(_onDataChanged);
+  }
+
+  /// Reloads this screen's data shortly after another device's change
+  /// arrives -- but only if it actually touched this table; every other
+  /// table's own screen (if open) gets the same notification and filters
+  /// it the same way. See [_dataChangeSubscription]'s own doc comment for
+  /// why this is debounced rather than reloading the instant this fires.
+  void _onDataChanged(Set<String> tables) {
+    if (!tables.contains(widget.config.tableName)) return;
+    _dataChangeDebounce?.cancel();
+    _dataChangeDebounce = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) _reload();
+    });
   }
 
   /// **Real bug, found live (CLAUDE.md "Essentials v2 Phase 1" -- Step 9
@@ -258,6 +285,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
       rows: data.rows,
       lookupMaps: data.lookupMaps,
       lookupColorMaps: data.lookupColorMaps,
+      linkRecordOptionMaps: data.linkRecordOptionMaps,
       settingsDao: settingsDao,
       columnSettings: columnSettings,
       viewSetting: viewSetting,
@@ -279,7 +307,20 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final rows = await _dao.getAll();
     final lookupMaps = <String, Map<int, String>>{};
     final lookupColorMaps = <String, Map<int, Color>>{};
+    final linkRecordOptionMaps = <String, Map<int, String>>{};
     for (final field in widget.config.fields) {
+      if (field.isLinkRecord) {
+        // Essentials v2 Phase 4 -- id -> display-text map for the grid cell
+        // renderer's comma-joined display and the picker dialog's option
+        // list, same shape as isLookup's own lookupMaps below.
+        final linkRecord = field.linkRecord!;
+        final options = await _dao.getLinkedRecordOptions(linkRecord);
+        linkRecordOptionMaps[field.column] = {
+          for (final option in options)
+            option['id'] as int: '${option[linkRecord.displayColumn]}',
+        };
+        continue;
+      }
       if (!field.isLookup) continue;
       final lookup = field.lookup!;
       final options = await _dao.getLookupOptions(lookup);
@@ -294,7 +335,12 @@ class _GenericListScreenState extends State<GenericListScreen> {
       }
       lookupColorMaps[field.column] = colorMap;
     }
-    return _ListData(rows: rows, lookupMaps: lookupMaps, lookupColorMaps: lookupColorMaps);
+    return _ListData(
+      rows: rows,
+      lookupMaps: lookupMaps,
+      lookupColorMaps: lookupColorMaps,
+      linkRecordOptionMaps: linkRecordOptionMaps,
+    );
   }
 
   /// [row] opens the plain/detail form pre-filled for *editing* that row;
@@ -945,6 +991,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
   List<TrinaColumn> _buildColumns(
     List<Map<String, Object?>> rows,
     Map<String, Map<int, String>> lookupMaps,
+    Map<String, Map<int, String>> linkRecordOptionMaps,
     Map<String, ColumnSetting> columnSettings,
   ) {
     final idColumn = _withColumnSetting(
@@ -989,7 +1036,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               IconButton(
-                icon: const Icon(Icons.edit_outlined, size: 18),
+                // A form/document icon, not a pencil -- the form view isn't
+                // just "edit this row" anymore (Essentials v2 Phase 4's
+                // reverse-relation panel means opening it can also be about
+                // *seeing* a record's linked/parent-child data, not only
+                // changing it), so a document-shaped icon reads more
+                // accurately than an edit pencil. Per Mike's request.
+                icon: const Icon(Icons.article_outlined, size: 18),
+                tooltip: 'Open form',
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
                 visualDensity: VisualDensity.compact,
@@ -1013,7 +1067,12 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final columnsById = <String, TrinaColumn>{
       'id': idColumn,
       for (final field in widget.config.fields)
-        field.column: _buildFieldColumn(field, lookupMaps, columnSettings[field.column]),
+        field.column: _buildFieldColumn(
+          field,
+          lookupMaps,
+          linkRecordOptionMaps,
+          columnSettings[field.column],
+        ),
       _actionsField: actionsColumn,
     };
 
@@ -1087,6 +1146,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
   TrinaColumn _buildFieldColumn(
     FieldConfig field,
     Map<String, Map<int, String>> lookupMaps,
+    Map<String, Map<int, String>> linkRecordOptionMaps,
     ColumnSetting? setting,
   ) {
     final handler = _formatHandlerFor(field);
@@ -1183,6 +1243,54 @@ class _GenericListScreenState extends State<GenericListScreen> {
                   force: true,
                 );
               },
+            );
+          },
+        ),
+        setting,
+      );
+    }
+
+    if (field.isLinkRecord) {
+      // Essentials v2 Phase 4 -- a general one-or-many relationship, stored
+      // as a JSON array of target ids (see lib/util/link_record.dart),
+      // structurally unlike isLookup's single scalar FK id below. `readOnly`
+      // here is deliberate: TrinaGrid's own double-click text editor makes
+      // no sense against a raw JSON array, so the *only* way in is the
+      // dedicated tap target below opening a picker dialog -- same
+      // "readOnly column, dedicated tap target is the real editor" shape
+      // the boolean checkbox column above already uses (force: true on the
+      // resulting changeCellValue call, for the same reason).
+      final linkRecord = field.linkRecord!;
+      final options = linkRecordOptionMaps[field.column] ?? const <int, String>{};
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.text(),
+          readOnly: true,
+          width: 220,
+          renderer: (rendererContext) {
+            if (rendererContext.row.type.isGroup) return const SizedBox.shrink();
+            final ids = parseLinkedIds(rendererContext.cell.value);
+            final text = ids.map((id) => options[id] ?? '#$id').join(', ');
+            return Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    text,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: _resolveRowColor(rendererContext.row)),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.link, size: 16),
+                  tooltip: linkRecord.multiple ? 'Edit links' : 'Edit link',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _editLinkRecordCell(rendererContext, field),
+                ),
+              ],
             );
           },
         ),
@@ -1380,6 +1488,46 @@ class _GenericListScreenState extends State<GenericListScreen> {
     );
   }
 
+  /// Essentials v2 Phase 4's grid-side `link_record` editor -- a dialog
+  /// listing every target-table row (checkbox per row when
+  /// [LinkRecordConfig.multiple], tap-to-select-and-close otherwise), per
+  /// claude/essentials-v2-phase4-design.md's "Grid rendering" section.
+  ///
+  /// Implemented as a dedicated tap-target-opens-dialog (the same shape
+  /// this screen already uses for [FieldConfig.isColor]'s swatch and
+  /// [FieldConfig.isLookup]'s dropdown, just via a modal picker instead of
+  /// an inline one) rather than routing the picker through
+  /// [TrinaColumn.editCellRenderer] -- a JSON-array cell value has no
+  /// sensible plain-text inline edit to fall back to the way autocomplete's
+  /// text field does, so there's no reason to fight that hook for a
+  /// checkbox-list UI it was never built to host; a dialog achieves the
+  /// identical end-user picker behavior the design doc describes.
+  Future<void> _editLinkRecordCell(
+    TrinaColumnRendererContext rendererContext,
+    FieldConfig field,
+  ) async {
+    final linkRecord = field.linkRecord!;
+    final currentIds = parseLinkedIds(rendererContext.cell.value).toSet();
+    final options = await _dao.getLinkedRecordOptions(linkRecord);
+    if (!mounted) return;
+    final result = await showDialog<List<int>>(
+      context: context,
+      builder: (context) => _LinkRecordPickerDialog(
+        title: field.label,
+        options: options,
+        displayColumn: linkRecord.displayColumn,
+        multiple: linkRecord.multiple,
+        initialSelectedIds: currentIds,
+      ),
+    );
+    if (result == null) return;
+    rendererContext.stateManager.changeCellValue(
+      rendererContext.cell,
+      encodeLinkedIds(result),
+      force: true,
+    );
+  }
+
   /// See claude/essentials-v2-column-autocomplete-design.md. Wraps
   /// TrinaGrid's own default text cell editor via [TrinaColumn
   /// .editCellRenderer] -- confirmed against the installed `trina_grid`
@@ -1500,6 +1648,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
     // actually expects is the correct fix, not a same-shape workaround.
     final handler = _formatHandlerFor(field);
     if (handler != null) return handler.cellValueFor(field, raw);
+    if (field.isLinkRecord) {
+      // The raw stored TEXT is already the JSON array string this column's
+      // renderer/picker expect -- see the isLinkRecord branch of
+      // _buildFieldColumn. Never null in practice (SchemaEditorService's
+      // physical column has no default, but every write path always writes
+      // a real encodeLinkedIds() string, including '[]' for "nothing
+      // linked") -- the fallback is defensive only.
+      return raw?.toString() ?? '[]';
+    }
     if (field.isLookup) return parseLookupValue(raw);
     if (field.isInlineSelect) {
       // The stored key IS the item type TrinaColumnType.select<String?>
@@ -1545,6 +1702,11 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final handler = _formatHandlerFor(field);
     if (handler != null) {
       value = handler.valueForSave(field, value);
+    } else if (field.isLinkRecord) {
+      // Already a real encodeLinkedIds() JSON array string, written
+      // directly by _editLinkRecordCell's picker dialog -- nothing to
+      // normalize. The column is readOnly to TrinaGrid's own text editor
+      // (see _buildFieldColumn), so this is the only way this branch fires.
     } else if (field.isLookup) {
       // Already the selected option's raw id (or null) -- the select
       // column's items are ids themselves (see _buildFieldColumn), unlike
@@ -1632,7 +1794,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
           _currentRows = rows;
           _lookupColorMaps = data.lookupColorMaps;
           return TrinaGrid(
-            columns: _buildColumns(rows, lookupMaps, data.columnSettings),
+            columns: _buildColumns(rows, lookupMaps, data.linkRecordOptionMaps, data.columnSettings),
             rows: _buildRows(rows),
             configuration: TrinaGridConfiguration(
               columnSize: const TrinaGridColumnSizeConfig(
@@ -1762,6 +1924,8 @@ class _GenericListScreenState extends State<GenericListScreen> {
       _saveTimer!.cancel();
       unawaited(_persistGridSettings());
     }
+    _dataChangeSubscription?.cancel();
+    _dataChangeDebounce?.cancel();
     super.dispose();
   }
 }
@@ -1779,11 +1943,21 @@ final Map<String, TrinaFilterType> _filterTypesByName = {
 /// editing/deleting, and for any non-lookup cell value) plus, per lookup
 /// field, an id -> display-text map (used only to render grid cells).
 class _ListData {
-  const _ListData({required this.rows, required this.lookupMaps, required this.lookupColorMaps});
+  const _ListData({
+    required this.rows,
+    required this.lookupMaps,
+    required this.lookupColorMaps,
+    required this.linkRecordOptionMaps,
+  });
 
   final List<Map<String, Object?>> rows;
   final Map<String, Map<int, String>> lookupMaps;
   final Map<String, Map<int, Color>> lookupColorMaps;
+
+  /// Essentials v2 Phase 4 -- id -> display-text map per `link_record`
+  /// field, same shape/purpose as [lookupMaps] but keyed off
+  /// [FieldConfig.linkRecord] instead of [FieldConfig.lookup].
+  final Map<String, Map<int, String>> linkRecordOptionMaps;
 }
 
 /// Everything one grid build needs -- [_ListData]'s rows/lookupMaps plus
@@ -1800,6 +1974,7 @@ class _ScreenData {
     required this.rows,
     required this.lookupMaps,
     required this.lookupColorMaps,
+    required this.linkRecordOptionMaps,
     required this.settingsDao,
     required this.columnSettings,
     required this.viewSetting,
@@ -1808,6 +1983,7 @@ class _ScreenData {
   final List<Map<String, Object?>> rows;
   final Map<String, Map<int, String>> lookupMaps;
   final Map<String, Map<int, Color>> lookupColorMaps;
+  final Map<String, Map<int, String>> linkRecordOptionMaps;
   final TableViewSettingsDao settingsDao;
   final Map<String, ColumnSetting> columnSettings;
   final ViewSetting? viewSetting;
@@ -2195,4 +2371,84 @@ class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
     TrinaAggregateColumnType.max => 'Max',
     TrinaAggregateColumnType.count => 'Count',
   };
+}
+
+/// Essentials v2 Phase 4's `link_record` grid picker, opened by
+/// [_GenericListScreenState._editLinkRecordCell] -- lists every row of the
+/// target table, single-select (tap one, dialog closes immediately) or
+/// multi-select (checkbox per row, "Done" to commit), per
+/// claude/essentials-v2-phase4-design.md's "Grid rendering" section.
+class _LinkRecordPickerDialog extends StatefulWidget {
+  const _LinkRecordPickerDialog({
+    required this.title,
+    required this.options,
+    required this.displayColumn,
+    required this.multiple,
+    required this.initialSelectedIds,
+  });
+
+  final String title;
+  final List<Map<String, Object?>> options;
+  final String displayColumn;
+  final bool multiple;
+  final Set<int> initialSelectedIds;
+
+  @override
+  State<_LinkRecordPickerDialog> createState() => _LinkRecordPickerDialogState();
+}
+
+class _LinkRecordPickerDialogState extends State<_LinkRecordPickerDialog> {
+  late final Set<int> _selected = {...widget.initialSelectedIds};
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 360,
+        height: 420,
+        child: widget.options.isEmpty
+            ? const Center(child: Text('No records to link to yet.'))
+            : ListView(
+                shrinkWrap: true,
+                children: [
+                  if (!widget.multiple)
+                    ListTile(
+                      title: const Text('(none)'),
+                      selected: _selected.isEmpty,
+                      onTap: () => Navigator.pop(context, <int>[]),
+                    ),
+                  for (final option in widget.options)
+                    if (option['id'] is int)
+                      widget.multiple
+                          ? CheckboxListTile(
+                              title: Text('${option[widget.displayColumn]}'),
+                              value: _selected.contains(option['id']),
+                              onChanged: (checked) => setState(() {
+                                final id = option['id'] as int;
+                                if (checked ?? false) {
+                                  _selected.add(id);
+                                } else {
+                                  _selected.remove(id);
+                                }
+                              }),
+                            )
+                          : ListTile(
+                              title: Text('${option[widget.displayColumn]}'),
+                              selected: _selected.contains(option['id']),
+                              onTap: () => Navigator.pop(context, [option['id'] as int]),
+                            ),
+                ],
+              ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        if (widget.multiple)
+          FilledButton(
+            onPressed: () => Navigator.pop(context, _selected.toList()),
+            child: const Text('Done'),
+          ),
+      ],
+    );
+  }
 }

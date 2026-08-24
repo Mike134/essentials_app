@@ -11,6 +11,7 @@ import '../util/field_options.dart';
 import '../util/formula/formula_field_editor.dart';
 import '../util/formula/formula_service.dart';
 import '../util/inline_option_editor.dart';
+import '../util/linked_field/linked_field_service.dart';
 import '../util/permanent_delete_gate.dart';
 import 'add_field_screen.dart';
 
@@ -391,9 +392,13 @@ class _ManageFieldsScreenState extends State<ManageFieldsScreen> {
       if (field.required) 'required',
       if (field.defaultValue != null) 'default: ${field.defaultValue}',
     ];
-    if (choice == FieldFormatChoice.select) {
+    if (choice == FieldFormatChoice.select || choice == FieldFormatChoice.linkRecord) {
       final table = options['table'] as String?;
       if (table != null) parts.insert(1, 'to $table');
+    }
+    if (choice == FieldFormatChoice.lookup || choice == FieldFormatChoice.rollup) {
+      final linkField = options['link_field'] as String?;
+      if (linkField != null) parts.insert(1, 'via $linkField');
     }
     if (choice == FieldFormatChoice.formula) {
       final expression = (options['expression'] as String?)?.trim();
@@ -430,10 +435,48 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
   late String _resultType;
   late bool _autocomplete;
 
+  /// `link_record`'s "Allow linking to more than one record".
+  late bool _linkMultiple;
+
+  /// `lookup`/`rollup`'s "Which link field"/"Which field on the linked
+  /// table"/aggregate -- same shape as [AddFieldScreen]'s own state.
+  String? _linkFieldColumn;
+  String? _sourceField;
+  late String _rollupAggregate;
+
   /// Sibling fields available to a formula, excluding this field itself
   /// -- a field referencing itself is the one cycle that's both trivially
-  /// avoidable and certain to be a mistake, so it isn't offered.
-  Map<String, String> _availableFields = const {};
+  /// avoidable and certain to be a mistake, so it isn't offered. Also
+  /// backs `lookup`/`rollup`'s "Which link field" picker (filtered to
+  /// `link_record` fields) -- same dual purpose as [AddFieldScreen]'s
+  /// `_availableFieldRows`.
+  List<FieldDefinitionRow> _availableFieldRows = const [];
+
+  Map<String, String> get _availableFields => {
+    for (final f in _availableFieldRows)
+      if (f.fieldName != widget.field.fieldName) f.fieldName: f.displayName,
+  };
+
+  List<FieldDefinitionRow> get _linkRecordFields => _availableFieldRows
+      .where((f) => f.format == 'link_record' && f.fieldName != widget.field.fieldName)
+      .toList();
+
+  String? _targetTableFor(String? linkFieldColumn) {
+    if (linkFieldColumn == null) return null;
+    for (final f in _availableFieldRows) {
+      if (f.fieldName == linkFieldColumn) {
+        return parseFieldOptions(f.optionsJson)['table'] as String?;
+      }
+    }
+    return null;
+  }
+
+  List<FieldDefinitionRow> _targetFields = const [];
+
+  /// `select`/`link_record`'s "Which field to show" -- same shape as
+  /// [AddFieldScreen]'s own state, see [autoDisplayField]'s doc comment.
+  String? _displayField;
+  List<FieldDefinitionRow> _linkedTableFields = const [];
 
   String? _error;
   bool _saving = false;
@@ -455,6 +498,11 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     _format = FieldFormatChoice.resolve(field.format, options);
     _linkedTable = options['table'] as String?;
     _onDelete = OnDeleteChoice.fromValue(options['on_delete'] as String?);
+    _linkMultiple = options['multiple'] == true;
+    _linkFieldColumn = options['link_field'] as String?;
+    _sourceField = options['source_field'] as String?;
+    _displayField = options['displayField'] as String?;
+    _rollupAggregate = (options['aggregate'] as String?) ?? LinkedFieldService.defaultAggregate;
     _currencySymbolController = TextEditingController(text: (options['symbol'] as String?) ?? '');
     _decimalsController = TextEditingController(text: options['decimals']?.toString() ?? '');
     _inlineOptions = InlineOption.parseList(options['options']);
@@ -469,10 +517,44 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     final fields = await widget.metadata.loadFields(widget.field.tableName, includeDeleted: false);
     if (!mounted) return;
     setState(() {
-      _availableFields = {
-        for (final f in fields)
-          if (f.fieldName != widget.field.fieldName) f.fieldName: f.displayName,
-      };
+      _availableFieldRows = fields;
+    });
+    // The target-field picker needs the target table's own fields too, once
+    // this field's existing `link_field` (if any) is known.
+    if (_linkFieldColumn != null) _loadTargetFields(_linkFieldColumn);
+    // Same for select/link_record's "Which field to show" picker.
+    if (_linkedTable != null) _loadLinkedTableFields(_linkedTable, seedDefault: false);
+  }
+
+  Future<void> _loadTargetFields(String? linkFieldColumn) async {
+    final targetTable = _targetTableFor(linkFieldColumn);
+    if (targetTable == null) {
+      setState(() => _targetFields = const []);
+      return;
+    }
+    final fields = await widget.metadata.loadFields(targetTable, includeDeleted: false);
+    if (!mounted || _linkFieldColumn != linkFieldColumn) return;
+    setState(() => _targetFields = fields);
+  }
+
+  /// Same as [AddFieldScreen._loadLinkedTableFields], except [seedDefault]
+  /// lets [initState]'s own initial load (above) preserve an existing
+  /// field's already-saved `_displayField` instead of overwriting it with
+  /// [autoDisplayField]'s pick -- only a genuine "Linked to table" *change*
+  /// (the picker's own `onChanged`) should reset it.
+  Future<void> _loadLinkedTableFields(String? tableName, {bool seedDefault = true}) async {
+    if (tableName == null) {
+      setState(() {
+        _linkedTableFields = const [];
+        if (seedDefault) _displayField = null;
+      });
+      return;
+    }
+    final fields = await widget.metadata.loadFields(tableName, includeDeleted: false);
+    if (!mounted || _linkedTable != tableName) return;
+    setState(() {
+      _linkedTableFields = fields;
+      if (seedDefault) _displayField = autoDisplayField(fields);
     });
   }
 
@@ -491,6 +573,16 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     if (_displayNameController.text.trim().isEmpty) return false;
     if (_showsRequired && _required && _defaultValueController.text.trim().isEmpty) return false;
     if (_format == FieldFormatChoice.select && _linkedTable == null) return false;
+    if (_format == FieldFormatChoice.linkRecord && _linkedTable == null) return false;
+    if (_format == FieldFormatChoice.lookup) {
+      if (_linkFieldColumn == null || _sourceField == null) return false;
+    }
+    if (_format == FieldFormatChoice.rollup) {
+      if (_linkFieldColumn == null) return false;
+      if (_rollupAggregate != LinkedFieldService.aggregateCount && _sourceField == null) {
+        return false;
+      }
+    }
     if (_format == FieldFormatChoice.inlineSelect && !_hasValidInlineOptions) return false;
     if (_format == FieldFormatChoice.formula && !isUsableFormula(_expressionController.text)) {
       return false;
@@ -502,7 +594,10 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
       _inlineOptions.any((o) => o.key.isNotEmpty && o.label.isNotEmpty);
 
   /// Same reasoning as [AddFieldScreen]'s own `_showsRequired`.
-  bool get _showsRequired => _format != FieldFormatChoice.formula;
+  bool get _showsRequired =>
+      _format != FieldFormatChoice.formula &&
+      _format != FieldFormatChoice.lookup &&
+      _format != FieldFormatChoice.rollup;
 
   /// Same shared "one field, several formats" shape as [AddFieldScreen]'s
   /// own `_showsDecimals` -- see that getter's doc comment.
@@ -517,7 +612,14 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
 
   String? _buildOptionsJson() {
     if (_format == FieldFormatChoice.select) {
-      return jsonEncode({'mode': 'linked', 'table': _linkedTable, 'on_delete': _onDelete.value});
+      return jsonEncode({
+        'mode': 'linked',
+        'table': _linkedTable,
+        'on_delete': _onDelete.value,
+        // Explicit, not omitted -- see AddFieldScreen's identical branch/
+        // autoDisplayField's doc comment for why.
+        'displayField': _displayField ?? 'id',
+      });
     }
     // See AddFieldScreen._buildOptionsJson's identical branch -- `url`
     // isn't a real stored format, just plain 'text' plus this flag.
@@ -527,6 +629,28 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     // See AddFieldScreen._buildOptionsJson's identical branch.
     if (_format == FieldFormatChoice.color) {
       return jsonEncode({'isColor': true});
+    }
+    // See AddFieldScreen._buildOptionsJson's identical branch.
+    if (_format == FieldFormatChoice.linkRecord) {
+      return jsonEncode({
+        'table': _linkedTable,
+        'multiple': _linkMultiple,
+        'on_delete': _onDelete.value,
+        'displayField': _displayField ?? 'id',
+      });
+    }
+    if (_format == FieldFormatChoice.lookup) {
+      return jsonEncode({'link_field': _linkFieldColumn, 'source_field': _sourceField});
+    }
+    if (_format == FieldFormatChoice.rollup) {
+      final rollupOptions = <String, Object?>{
+        'link_field': _linkFieldColumn,
+        'aggregate': _rollupAggregate,
+      };
+      if (_rollupAggregate != LinkedFieldService.aggregateCount) {
+        rollupOptions['source_field'] = _sourceField;
+      }
+      return jsonEncode(rollupOptions);
     }
     // See AddFieldScreen._buildOptionsJson's identical branch.
     if (_format == FieldFormatChoice.inlineSelect) {
@@ -592,6 +716,30 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     }
   }
 
+  /// Same as [AddFieldScreen._buildDisplayFieldPicker] -- see that method's
+  /// doc comment. The guard against a not-yet-loaded [_displayField] value
+  /// matters *more* here than there: this dialog seeds [_displayField]
+  /// synchronously from the field's already-saved options in [initState],
+  /// before [_linkedTableFields] has had a chance to load asynchronously --
+  /// a real window where the saved value genuinely doesn't match anything
+  /// in [items] yet.
+  Widget _buildDisplayFieldPicker() {
+    final validValues = {'id', for (final f in _linkedTableFields) f.fieldName};
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: DropdownButtonFormField<String>(
+        initialValue: validValues.contains(_displayField) ? _displayField : null,
+        decoration: const InputDecoration(labelText: 'Which field to show'),
+        items: [
+          const DropdownMenuItem(value: 'id', child: Text('(row id)')),
+          for (final f in _linkedTableFields)
+            DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+        ],
+        onChanged: (value) => setState(() => _displayField = value),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -620,7 +768,16 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                   if (value == null) return;
                   setState(() {
                     _format = value;
-                    if (value != FieldFormatChoice.select) _linkedTable = null;
+                    if (value != FieldFormatChoice.select && value != FieldFormatChoice.linkRecord) {
+                      _linkedTable = null;
+                      _linkedTableFields = const [];
+                      _displayField = null;
+                    }
+                    if (value != FieldFormatChoice.lookup && value != FieldFormatChoice.rollup) {
+                      _linkFieldColumn = null;
+                      _sourceField = null;
+                      _targetFields = const [];
+                    }
                   });
                 },
               ),
@@ -687,10 +844,14 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                       items: [
                         for (final t in tables) DropdownMenuItem(value: t.tableName, child: Text(t.displayName)),
                       ],
-                      onChanged: (value) => setState(() => _linkedTable = value),
+                      onChanged: (value) {
+                        setState(() => _linkedTable = value);
+                        _loadLinkedTableFields(value);
+                      },
                     );
                   },
                 ),
+                _buildDisplayFieldPicker(),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<OnDeleteChoice>(
                   initialValue: _onDelete,
@@ -700,6 +861,113 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                       DropdownMenuItem(value: choice, child: Text(choice.label)),
                   ],
                   onChanged: (value) => setState(() => _onDelete = value ?? OnDeleteChoice.restrict),
+                ),
+              ],
+              if (_format == FieldFormatChoice.linkRecord) ...[
+                const SizedBox(height: 12),
+                FutureBuilder<List<TableDefinitionRow>>(
+                  future: _tableNamesFuture,
+                  builder: (context, snapshot) {
+                    final tables = (snapshot.data ?? const [])
+                        .where((t) => t.tableName != widget.field.tableName)
+                        .toList();
+                    return DropdownButtonFormField<String>(
+                      initialValue: _linkedTable,
+                      decoration: const InputDecoration(labelText: 'Linked to table'),
+                      items: [
+                        for (final t in tables) DropdownMenuItem(value: t.tableName, child: Text(t.displayName)),
+                      ],
+                      onChanged: (value) {
+                        setState(() => _linkedTable = value);
+                        _loadLinkedTableFields(value);
+                      },
+                    );
+                  },
+                ),
+                _buildDisplayFieldPicker(),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<OnDeleteChoice>(
+                  initialValue: _onDelete,
+                  decoration: const InputDecoration(labelText: 'When a linked row is deleted'),
+                  items: [
+                    for (final choice in OnDeleteChoice.values)
+                      DropdownMenuItem(value: choice, child: Text(choice.label)),
+                  ],
+                  onChanged: (value) => setState(() => _onDelete = value ?? OnDeleteChoice.restrict),
+                ),
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Allow linking to more than one record'),
+                  subtitle: const Text(
+                    'Off: one-to-many -- this field picks a single record, but that '
+                    'record can be linked from many rows here. On: many-to-many -- '
+                    'this field can pick several records, and each of those can '
+                    'likewise be linked from many rows here. Either way, the link is '
+                    'stored only on this field -- open the linked record\'s own form '
+                    'to see every row here that links to it.',
+                  ),
+                  value: _linkMultiple,
+                  onChanged: (value) => setState(() => _linkMultiple = value ?? false),
+                ),
+              ],
+              if (_format == FieldFormatChoice.lookup || _format == FieldFormatChoice.rollup) ...[
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _linkFieldColumn,
+                  decoration: const InputDecoration(labelText: 'Which link field'),
+                  items: [
+                    for (final f in _linkRecordFields)
+                      DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+                  ],
+                  onChanged: (value) {
+                    setState(() {
+                      _linkFieldColumn = value;
+                      _sourceField = null;
+                    });
+                    _loadTargetFields(value);
+                  },
+                ),
+                if (_linkRecordFields.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text(
+                      'This table has no "Link to another table" field yet -- add one first.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+              ],
+              if (_format == FieldFormatChoice.rollup) ...[
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _rollupAggregate,
+                  decoration: const InputDecoration(labelText: 'Aggregate'),
+                  items: [
+                    for (final entry in rollupAggregateLabels.entries)
+                      DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+                  ],
+                  onChanged: (value) => setState(
+                    () => _rollupAggregate = value ?? LinkedFieldService.defaultAggregate,
+                  ),
+                ),
+              ],
+              if ((_format == FieldFormatChoice.lookup || _format == FieldFormatChoice.rollup) &&
+                  (_format == FieldFormatChoice.lookup ||
+                      _rollupAggregate != LinkedFieldService.aggregateCount)) ...[
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _sourceField,
+                  decoration: const InputDecoration(labelText: 'Which field on the linked table'),
+                  items: [
+                    for (final f in rollupSourceCandidates(
+                      _targetFields,
+                      isRollup: _format == FieldFormatChoice.rollup,
+                      aggregate: _rollupAggregate,
+                    ))
+                      DropdownMenuItem(value: f.fieldName, child: Text(f.displayName)),
+                  ],
+                  onChanged: (value) => setState(() => _sourceField = value),
                 ),
               ],
               if (_format == FieldFormatChoice.inlineSelect) ...[

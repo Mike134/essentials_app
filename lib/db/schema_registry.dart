@@ -3,6 +3,7 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 import '../models/table_config.dart';
 import '../util/field_options.dart';
 import '../util/formula/formula_service.dart';
+import '../util/linked_field/linked_field_service.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
 
@@ -132,21 +133,44 @@ class SchemaRegistry {
       fields.add(_buildField(row));
     }
 
+    // Essentials v2 Phase 2 step 6 / Phase 4 step 2: a table with
+    // `formula`, `lookup` or `rollup` fields gets the same live-preview
+    // hook `subscription`'s hand-written computePreview used to supply in
+    // v1 -- [GenericFormScreen] already calls this on every field change/
+    // focus-loss, and already only wires up those listeners when it's
+    // non-null, so these fields update live in the form with zero changes
+    // to that screen. Null for every table with none of them, exactly as
+    // before.
+    final hasFormulas = FormulaService.hasFormulaFields(fields);
+    final hasLinkedComputed = LinkedFieldService.hasLinkedComputedFields(fields);
+
     return TableConfig(
       tableName: tableName,
       displayName: tableRow['display_name'] as String,
       displayColumn: (tableRow['display_field'] as String?) ?? 'id',
       orderBy: tableRow['order_by'] as String?,
       fields: fields,
-      // Essentials v2 Phase 2 step 6: a table with `formula` fields gets
-      // the same live-preview hook `subscription`'s hand-written
-      // computePreview used to supply in v1 -- [GenericFormScreen] already
-      // calls this on every field change/focus-loss, and already only
-      // wires up those listeners when it's non-null, so formula fields
-      // update live in the form with zero changes to that screen. Null
-      // for every table without one, exactly as before.
-      computePreview: FormulaService.hasFormulaFields(fields)
-          ? (values) async => FormulaService.computeAllForDisplay(fields, values)
+      computePreview: (hasFormulas || hasLinkedComputed)
+          ? (values) async {
+              final preview = <String, Object?>{};
+              // Linked fields resolve first, and their RAW values (not
+              // their display text) are what feed the formula pass --
+              // mirroring GenericDao.getAll's own ordering, so a `formula`
+              // referencing a `rollup` column sees a real num rather than
+              // a pre-formatted string. displayTexts() then renders the
+              // same already-computed raw values for the form, so nothing
+              // is computed twice.
+              var merged = values;
+              if (hasLinkedComputed) {
+                final raw = await LinkedFieldService.computeAll(await _db, fields, values);
+                merged = {...values, ...raw};
+                preview.addAll(LinkedFieldService.displayTexts(fields, raw));
+              }
+              if (hasFormulas) {
+                preview.addAll(FormulaService.computeAllForDisplay(fields, merged));
+              }
+              return preview;
+            }
           : null,
     );
   }
@@ -158,34 +182,58 @@ class SchemaRegistry {
 
     final lookup = _lookupFor(format, options);
     final inlineOptions = _inlineOptionsFor(format, options);
+    final linkRecord = _linkRecordFor(format, options);
     final isFormula = format == FormulaService.formatName;
+    // Essentials v2 Phase 4: `lookup`/`rollup` are read-only, computed at
+    // read time by LinkedFieldService, same shape `formula` already
+    // established (see FieldConfig.isFieldLookup/isRollup's doc comments).
+    final isLinkedComputed = LinkedFieldService.isLinkedComputedFormat(format);
+    final isReadOnlyComputed = isFormula || isLinkedComputed;
 
     return FieldConfig(
       column: fieldName,
       label: row['display_name'] as String,
       type: _formatToFieldType(format, lookup: lookup, options: options),
-      // A formula field's physical column is never written -- its value is
-      // computed at read time by FormulaService (see that class's own doc
-      // comment for why the column exists at all). readOnly is what
-      // actually enforces that: both write paths
-      // (GenericFormScreen._currentValues, GenericListScreen
+      // A formula/lookup/rollup field's physical column is never written --
+      // its value is computed at read time (FormulaService/
+      // LinkedFieldService). readOnly is what actually enforces that: both
+      // write paths (GenericFormScreen._currentValues, GenericListScreen
       // ._onGridChanged) already skip readOnly fields, and the grid
       // already renders them as non-editable -- the same mechanism v1's
       // `subscription_computed` view columns used, reused unchanged.
-      readOnly: isFormula,
-      // A required formula field is meaningless -- readOnly fields are
+      readOnly: isReadOnlyComputed,
+      // A required computed field is meaningless -- readOnly fields are
       // never part of what the form validates or writes -- and
       // SchemaEditorService.addField would have put a real NOT NULL on
-      // the column. The Add Field UI hides the checkbox for this format;
+      // the column. The Add Field UI hides the checkbox for these formats;
       // this makes stale metadata (or a hand-edited row) harmless too.
-      required: !isFormula && (row['required'] as int) == 1,
+      required: !isReadOnlyComputed && (row['required'] as int) == 1,
       lookup: lookup,
       inlineOptions: inlineOptions,
+      linkRecord: linkRecord,
       defaultValue: row['default_value'] as String?,
       isLink: options['isLink'] == true,
       isColor: options['isColor'] == true,
       format: format,
       options: options,
+    );
+  }
+
+  /// `options` shape for a `link_record` field (Essentials v2 Phase 4):
+  /// `{table, displayField, multiple, on_delete}` -- see
+  /// claude/essentials-v2-phase4-design.md's "Data model" section.
+  /// `displayField` naming matches `select`/linked's own `options
+  /// ['displayField']` key exactly, for consistency with that sibling
+  /// format.
+  LinkRecordConfig? _linkRecordFor(String format, Map<String, Object?> options) {
+    if (format != 'link_record') return null;
+    final table = options['table'] as String?;
+    if (table == null) return null;
+    return LinkRecordConfig(
+      table: table,
+      displayColumn: options['displayField'] as String? ?? 'name',
+      multiple: options['multiple'] == true,
+      onDelete: (options['on_delete'] as String?) ?? 'restrict',
     );
   }
 
@@ -246,6 +294,30 @@ class SchemaRegistry {
           ? FieldType.text
           : FieldType.real;
     }
+    // `lookup`/`rollup` (Essentials v2 Phase 4) share `formula`'s own
+    // `options.resultType`-driven text-vs-real choice -- so a `rollup`
+    // summing a currency field can still right-align and format as a
+    // number in the grid, exactly like a `formula` field does today.
+    //
+    // The *default* differs by format though, and deliberately so --
+    // delegated to [LinkedFieldService.producesNumber] rather than
+    // re-derived here, so the type this method picks and the value
+    // LinkedFieldService actually computes can never disagree. A `rollup`
+    // defaults to numeric (it's an aggregate); a `lookup` defaults to text
+    // (it produces the comma-joined display text of one or more linked
+    // records, which a numeric column would render as blank). See that
+    // method's own doc comment.
+    if (format == LinkedFieldService.lookupFormat || format == LinkedFieldService.rollupFormat) {
+      return LinkedFieldService.producesNumberFor(format, options)
+          ? FieldType.real
+          : FieldType.text;
+    }
+    // `link_record` is never actually rendered through the plain-text path
+    // -- FieldConfig.isLinkRecord is checked before it, same precedence
+    // isLookup/isInlineSelect already get. This is just what an
+    // unrecognized-elsewhere fallback would be, kept safe rather than left
+    // to synthesize a new enum value no other code expects.
+    if (format == 'link_record') return FieldType.text;
     return switch (format) {
       'integer' => FieldType.integer,
       'real' => FieldType.real,
