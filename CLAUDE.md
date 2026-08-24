@@ -7208,3 +7208,126 @@ the standing chained-test-file rule), `flutter build windows`/`apk
 **Essentials v2 Phase 4 is done.** Next session: not yet decided --
 Mike's own real usage, or Phase 5+ per `claude/essentials-v2-architecture
 .md`'s roadmap sequencing.
+
+---
+
+## Essentials v2 Phase 6 — Global Search, complete, real-device verified (2026-08-24)
+
+Design: `claude/essentials-v2-phase6-design.md`. One unified FTS5 index
+across every user table's plain stored-text fields (`text`/`url`/
+`link_file`/`barcode` -- not resolved `select`/`link_record`/`lookup`
+display values, a deliberate, deferred follow-up per the confirmed scope).
+Reached via a new "Search" entry in `HomeShell`'s nav rail/drawer.
+
+**A real, serious architectural finding, not anticipated by the design
+doc's two flagged unknowns -- found the hard way, mid-build, and it
+changed the whole shape of the feature.** The first implementation put
+`search_index` (an FTS5 virtual table) directly inside `essentials.db`,
+created via the existing `migration_log`/`SchemaEditorService` pipeline
+(build order step 2's original plan). This broke `sql_crdt` outright:
+`SqliteCrdt.open()`'s own `init()` -- and `getChangeset()`, on every sync
+-- unconditionally call `getTables()`, which returns *every* physical
+table in `sqlite_schema` (confirmed by reading `sqlite_crdt`'s source: a
+bare `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE
+'sqlite_%'`, no filtering hook), then blindly assume each one has
+`modified`/`hlc`/`node_id` columns. An FTS5 virtual table (plus its own
+shadow tables -- `<name>_data`/`_idx`/`_content`/`_docsize`/`_config`, all
+real `sqlite_schema` entries) has none of those. The very next fresh
+`SqliteCrdt.open()` against the real `essentials.db` threw outright (`no
+such column: modified`) -- caught immediately by a test re-opening the
+connection, not shipped, but a real live incident against the actual
+local db, not a theoretical one.
+
+**Fix: `search_index` lives in its own, completely separate SQLite file**
+(`search_index.db`, alongside `essentials.db` -- `DatabaseHelper
+.resolveSearchIndexDatabasePath()`), never a table inside `essentials.db`,
+never touched by `sqlite_crdt`/`crdt_sync`/Syncthing at all. `SearchIndexService`
+opens its own plain `sqflite_common_ffi` connection to that file directly
+-- no `migration_log`, no `SchemaEditorService` involvement at all for its
+own table creation (`ensureIndexTable`, a plain local `CREATE VIRTUAL
+TABLE IF NOT EXISTS`). `SchemaEditorService`'s short-lived `createInfraTable`
+helper (added for the abandoned first design) was removed entirely once
+this redesign landed.
+
+**A second, real incident: the abandoned first design's own stray
+`migration_log` row didn't get cleaned up when the physical table was
+first emergency-fixed, and it propagated.** Dropping the physical table
+via a bypass connection didn't touch the `migration_log` row that had
+authored it (still `is_deleted = 0`) or its `migration_status`
+(`succeeded` for MIKE-CU). That live row synced out normally once
+anything connected to the server, got applied there too (`hub.db` grew
+the same stray `search_index` table, `migration_status` showing `server`
+succeeded), and from there synced to MIKE-12R -- whose very next real app
+launch crashed with the identical `no such column: modified` error,
+before any of this session's own code fixes had ever reached that
+device. **Recovered on all three copies, same discipline as every prior
+sync incident in this project:** retracted the stray `migration_log` row
+through the real synced API (not just dropping the physical table again);
+stopped the tray-hosted server, dropped the stray table directly from
+`hub.db`, confirmed `integrity_check: ok`, restarted the server, confirmed
+it was listening again; pulled MIKE-12R's `essentials.db`, dropped the
+stray table locally, confirmed `integrity_check`/`foreign_key_check`
+clean, pushed back, pulled again and confirmed byte-identical before
+trusting it, relaunched -- confirmed clean via screenshot. This can't
+recur from the current code -- nothing in `SearchIndexService` touches
+`migration_log` anymore.
+
+**A real backfill gap, found by Mike's own first real search** (searching
+"new" found nothing, while "project" worked) -- confirmed directly against
+real data, not guessed: two lookup tables with real rows (`condition`/
+`status`) had **zero** rows in the index, while two tables edited after
+this feature went live were fully indexed. `ensureIndexTable()` only ever
+created the empty table; nothing backfilled data that already existed in
+the database at that point -- the index only grew from writes made
+afterward. **Fixed:** `ensureIndexTable()` now runs a full `reindexAll()`
+backfill (fire-and-forget) the first time it ever creates the table on a
+device. Also backfilled directly against the real, already-existing
+Windows index so the fix didn't have to wait for a relaunch.
+
+**Orphan cleanup, built as an explicit follow-up once the above was
+confirmed working:** `SearchIndexService.cleanupOrphans()` (called from
+`HomeShell`'s bootstrap, fire-and-forget, alongside `ensureIndexTable`)
+removes `search_index` rows for a table that's been permanently dropped
+-- same "startup pass, scoped to currently-live tables" shape
+`OrphanCleanupService` already established for the settings tables, just
+reaching into `search_index`'s own separate file, which that class has no
+access to. **A real bug caught by this feature's own test suite before
+shipping:** the first version checked `SchemaRegistry.discoverTableNames()`
+(metadata-visibility-based, which also excludes a merely stage-1
+-soft-deleted table) rather than physical existence in `essentials.db`
+-- would have purged a soft-deleted-but-still-recoverable table's search
+entries too, contradicting the method's own stated intent (a restored
+table should come back with its index intact, not stale/empty). Fixed to
+check `sqlite_master` directly, matching `OrphanCleanupService`'s own
+established reasoning for the identical distinction.
+
+**Also fixed, flagged as a known gap from Phase 4's own findings, not
+part of Phase 6's original scope but a natural fit while touching this
+code:** `SchemaEditorService.dropTable`/`dropField` now no-op instead of
+authoring a second, doomed migration when the physical table/column is
+already gone (see Phase 4's finding #4 above) -- confirmed this exact bug
+had already poisoned 4 real, harmless, already-retracted `migration_status`
+rows in the live db from two earlier sessions.
+
+`flutter analyze` clean throughout every fix. All new/touched test files
+pass individually (`search_index_content_test.dart`, `search_index_service
+_test.dart`, plus the two new `schema_editor_service_drop_test.dart`
+regression tests for the double-drop race) -- per the standing rule, every
+`SchemaEditorService.createTable`-using file run on its own, never
+chained. Both `flutter build windows`/`apk --debug` clean at every
+checkpoint.
+
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R.** Confirmed live on-device (driven directly, not just
+build-verified): searching "project" correctly returns all 4 `Project`
+records grouped under "Project (4)"; searching "new" correctly finds the
+`Condition` row ("New, never used.") with the match bolded in the
+snippet, on both platforms. The remote-reindex path (a record edited on
+one device becoming searchable on the other) was exercised as a side
+effect of the incident recovery above, not yet separately re-confirmed
+after all fixes landed -- worth a quick explicit check next time either
+device is touched, not urgent.
+
+**Essentials v2 Phase 6 is done.** Next session: not yet decided -- Mike's
+own real usage, or Phase 5/3/7 per `claude/essentials-v2-architecture
+.md`'s roadmap sequencing.

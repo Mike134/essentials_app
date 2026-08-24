@@ -7,6 +7,7 @@ import '../util/link_record.dart';
 import '../util/linked_field/linked_field_service.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
+import 'search_index_service.dart';
 
 /// Thrown by [GenericDao.delete] when the row is still referenced by an
 /// `ON DELETE RESTRICT` foreign key elsewhere -- the project default for
@@ -152,6 +153,30 @@ class GenericDao {
     return [for (final row in linked) FormulaService.applyTo(config.fields, row)];
   }
 
+  /// One record by [id], or `null` if it doesn't exist / was soft-deleted --
+  /// same read pipeline as [getAll] (readSource, linked-field/formula
+  /// computation) but scoped to a single row. Used by `SearchScreen` to
+  /// open a search result directly (`search_index.record_id` is enough,
+  /// per claude/essentials-v2-phase6-design.md's "Search UI" section)
+  /// without re-running the whole table's [getAll] first.
+  Future<Map<String, Object?>?> getById(int id) async {
+    final crdt = await _crdt;
+    final source = config.readSource ?? config.tableName;
+    assertSafeSqlIdentifier(source);
+
+    final rows = await crdt.query(
+      'SELECT * FROM $source WHERE id = ?1 AND is_deleted = 0',
+      [id],
+    );
+    if (rows.isEmpty) return null;
+
+    final linked = await LinkedFieldService.applyToAll(crdt, config.fields, rows);
+    final row = linked.first;
+    return FormulaService.hasFormulaFields(config.fields)
+        ? FormulaService.applyTo(config.fields, row)
+        : row;
+  }
+
   /// Inserts a new row and returns its real `id` column value. `id` is a
   /// rowid alias on every real table as of the "Syncing at the Record
   /// Level" id-scheme migration (`INTEGER PRIMARY KEY DEFAULT (...)` or
@@ -227,6 +252,12 @@ class GenericDao {
       final result = await txn.query('SELECT last_insert_rowid() AS id');
       id = result.first['id'] as int;
     });
+    // Essentials v2 Phase 6 (Global Search) -- reindexed after the
+    // transaction commits, not inside it: SearchIndexService opens its own
+    // separate bypass connection to search_index (see that class's own
+    // doc comment for why), so there's no reason to hold this connection's
+    // transaction open any longer than the actual insert needs.
+    await SearchIndexService().reindexRecord(config.tableName, id);
     return id;
   }
 
@@ -257,6 +288,9 @@ class GenericDao {
       'UPDATE ${config.tableName} SET $setClause WHERE id = ?${columns.length + 1}',
       [...columns.map((c) => values[c]), id],
     );
+    // Essentials v2 Phase 6 (Global Search) -- see the matching comment on
+    // insert() above.
+    await SearchIndexService().reindexRecord(config.tableName, id);
   }
 
   /// Deletes the row, cascading explicitly to any child rows a
@@ -277,6 +311,16 @@ class GenericDao {
   /// [SchemaEditorService.createTable].
   Future<void> delete(int id) async {
     final crdt = await _crdt;
+    // Essentials v2 Phase 6 (Global Search) -- every cascaded child table
+    // touched, collected inside the transaction below (where the cascade
+    // itself happens) but only acted on after it commits, since
+    // SearchIndexService's reindexTable/removeFromIndex go through a
+    // separate bypass connection, not this one. A whole-table reindex,
+    // not per-row -- the cascade deletes its children via a bulk `WHERE`
+    // clause, so their individual ids are never materialized here (same
+    // reasoning SyncService.dataChanges's own listener already uses for
+    // "no per-row detail available").
+    final cascadedTables = <String>{};
     try {
       await crdt.transaction((txn) async {
         // Deliberately queries via txn, not the parent crdt -- sql_crdt's
@@ -288,6 +332,7 @@ class GenericDao {
           txn,
           onDeleteFilter: (onDelete) => onDelete == 'CASCADE',
         );
+        cascadedTables.addAll(cascadeRefs.map((r) => r.table));
         for (final ref in cascadeRefs) {
           if (!ref.isMultiValue) {
             await txn.execute(
@@ -336,6 +381,10 @@ class GenericDao {
         throw StillInUseException(config.tableName);
       }
       rethrow;
+    }
+    await SearchIndexService().removeFromIndex(config.tableName, id);
+    for (final table in cascadedTables) {
+      await SearchIndexService().reindexTable(table);
     }
   }
 

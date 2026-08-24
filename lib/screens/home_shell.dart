@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../config/table_registry.dart';
 import '../db/migration_service.dart';
+import '../db/search_index_service.dart';
 import '../db/sidebar_grouping_dao.dart';
 import '../db/sync_service.dart';
 import '../models/table_config.dart';
@@ -11,6 +12,7 @@ import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
 import 'generic_list_screen.dart';
+import 'search_screen.dart';
 import 'settings_screen.dart';
 
 /// Synthetic bucket for any table with no `table_group` row yet -- not a
@@ -122,6 +124,28 @@ class _HomeShellState extends State<HomeShell> {
     await migrations.applyPending();
     await migrations.fetchFromServer();
     await migrations.applyPending();
+
+    // Essentials v2 Phase 6 (Global Search) -- creates search_index on
+    // this device if it doesn't exist yet (cheap no-op every call after
+    // the first, see SearchIndexService.ensureIndexTable's own doc
+    // comment). Awaited, unlike the two fire-and-forget calls below: every
+    // GenericDao.insert/update/delete this session calls into
+    // SearchIndexService, and those calls should never race the table's
+    // own creation.
+    await SearchIndexService().ensureIndexTable();
+    // Reclaims search_index rows left behind by a table that's been
+    // permanently dropped since the last launch -- see
+    // SearchIndexService.cleanupOrphans' own doc comment. Fire-and-forget,
+    // same reasoning as ensureIndexTable's own first-run backfill: cheap
+    // startup maintenance, nothing else needs to wait on it.
+    unawaited(SearchIndexService().cleanupOrphans());
+    // Subscribes (once, process-wide) to SyncService.dataChanges so a
+    // record synced in from another device becomes searchable here too --
+    // the remote-write half of Phase 6's two reindex hooks (the local-write
+    // half is wired directly into GenericDao itself). Safe to call before
+    // SyncService.connect() below resolves -- it subscribes to the stream,
+    // not the connection.
+    SearchIndexService.listenForRemoteChanges();
 
     // Fire-and-forget -- see ThemeController.load's doc comment for why
     // this is the right place to trigger it (first point the db is known
@@ -505,8 +529,27 @@ class _HomeShellState extends State<HomeShell> {
           for (final table in group.tables) _railItem(table, groups),
       ],
       const Divider(height: 1),
+      _railSearchItem(),
       _railSettingsItem(),
     ];
+  }
+
+  Widget _railSearchItem() {
+    return InkWell(
+      onTap: () => Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const SearchScreen())),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        child: Column(
+          children: [
+            Icon(Icons.search),
+            SizedBox(height: 4),
+            Text('Search', style: TextStyle(fontSize: 12)),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _railSettingsItem() {
@@ -651,6 +694,16 @@ class _HomeShellState extends State<HomeShell> {
           const DrawerHeader(child: Text('Essentials')),
           for (final group in groups) ..._drawerGroupChildren(group, groups),
           const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.search),
+            title: const Text('Search'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const SearchScreen()));
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.settings_outlined),
             title: const Text('Settings'),

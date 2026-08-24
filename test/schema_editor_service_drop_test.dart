@@ -136,6 +136,37 @@ void main() {
       },
     );
 
+    test(
+      'a second dropTable call on an already-physically-gone table no-ops '
+      'instead of authoring a second, doomed migration',
+      () async {
+        // Regression test for claude/essentials-v2-phase4-design.md's
+        // "Findings from interactive testing" #4 -- a stray DROP TABLE
+        // re-authored against a table already gone permanently blocked
+        // MIKE-CU's whole schema engine, once for real. dropTable's own
+        // precondition (`table_definitions.is_deleted == 1`) stays true
+        // forever once tombstoned, so nothing about it changes between
+        // calls -- only a physical-existence check catches this.
+        final tableName = await createTestTable('SETV2 Drop Table Twice');
+        await metadata.softDeleteTable(tableName);
+        await editor.dropTable(tableName);
+
+        final logCountBefore = await db.query(
+          'SELECT COUNT(*) AS c FROM migration_log WHERE sql_text = ?1',
+          ['DROP TABLE "$tableName"'],
+        );
+
+        // Must not throw, and must not author a second migration_log row.
+        await editor.dropTable(tableName);
+
+        final logCountAfter = await db.query(
+          'SELECT COUNT(*) AS c FROM migration_log WHERE sql_text = ?1',
+          ['DROP TABLE "$tableName"'],
+        );
+        expect(logCountAfter.single['c'], logCountBefore.single['c']);
+      },
+    );
+
     test('refuses a table still linked to by another table\'s live field', () async {
       final target = await createTestTable('SETV2 Drop Linked Target');
       final source = await createTestTable('SETV2 Drop Linked Source');
@@ -231,6 +262,31 @@ void main() {
       final regenerated = await editor.previewFieldIdentifier(tableName, 'Notes');
       expect(regenerated, 'notes', reason: 'the physical column name is genuinely free again');
     });
+
+    test(
+      'a second dropField call on an already-physically-gone column no-ops '
+      'instead of authoring a second, doomed migration',
+      () async {
+        // Same race/fix as dropTable's own regression test above.
+        final tableName = await createTestTable('SETV2 Drop Field Twice');
+        await editor.addField(tableName: tableName, displayName: 'Notes', format: 'text');
+        await metadata.softDeleteField(tableName, 'notes');
+        await editor.dropField(tableName, 'notes');
+
+        final logCountBefore = await db.query(
+          'SELECT COUNT(*) AS c FROM migration_log WHERE sql_text = ?1',
+          ['ALTER TABLE "$tableName" DROP COLUMN "notes"'],
+        );
+
+        await editor.dropField(tableName, 'notes');
+
+        final logCountAfter = await db.query(
+          'SELECT COUNT(*) AS c FROM migration_log WHERE sql_text = ?1',
+          ['ALTER TABLE "$tableName" DROP COLUMN "notes"'],
+        );
+        expect(logCountAfter.single['c'], logCountBefore.single['c']);
+      },
+    );
   });
 
   group('permanent_delete_gate', () {

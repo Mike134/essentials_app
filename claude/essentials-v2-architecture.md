@@ -165,9 +165,9 @@ This mirrors Excel's behavior: a cell holds a value, and a format specification 
 | `barcode` | Camera scan (Android) / text (Windows) | As-is | — |
 | `formula` | Read-only (computed) | Result of expression | `{ expression: '...', engine: 'simple' }` |
 | `link_file` | File picker / URL input | Path or URL | — |
-| `link_record` | Record picker | Configured display field | `{ table: 'table_name', display_field: 'field_name' }` — **Phase 4** |
-| `lookup` | Read-only (resolved) | Value from linked record | `{ link_field: 'field_name', source_field: 'field_name' }` — **Phase 4** |
-| `rollup` | Read-only (computed) | Aggregate value | `{ link_field: 'field_name', source_field: 'field_name', aggregate: 'sum' }` — **Phase 4** |
+| `link_record` | Record picker (single or multi) | Configured display field | `{ table: 'table_name', displayField: 'field_name', multiple: bool, on_delete: '...' }` — **shipped Phase 4, 2026-08-24** |
+| `lookup` | Read-only (resolved) | Value from linked record | `{ link_field: 'field_name', source_field: 'field_name' }` — **shipped Phase 4, 2026-08-24** |
+| `rollup` | Read-only (computed) | Aggregate value | `{ link_field: 'field_name', source_field: 'field_name', aggregate: 'sum' }` — **shipped Phase 4, 2026-08-24** |
 | `attachment` | File picker (embed) | Thumbnail + filename | — **dropped from Phase 2, not yet scheduled — see below** |
 
 **Phase 1 shipped:** `text, integer, real, boolean, date, dateTime, select` (linked-table sub-mode only).
@@ -293,8 +293,8 @@ With Phase 1 and Phase 2 done, the actual build order for what comes next was de
 1a. **`color` field format** (small fix, not its own phase) — **DONE, 2026-08-23, real-device verified on MIKE-CU and MIKE-12R.** See the Field Model section above.
 1b. **Boolean read-back bug fix** (found incidentally during CSV import work, not planned) — **DONE, 2026-08-23, real-device verified on MIKE-CU and MIKE-12R.** See the Field Model section above.
 1c. **Column autocomplete** (side task, not a phase) — **DONE, 2026-08-24, real-device verified on MIKE-CU and MIKE-12R.** Type-ahead suggestions in `text`-format fields, sourced from distinct prior values in that column, in both the grid (`GenericListScreen`) and the form (`GenericFormScreen`). Full design and implementation notes in `claude/essentials-v2-column-autocomplete-design.md`. One real bug found and fixed during interactive verification (grid editor's `Autocomplete` needed the real `FocusNode` `trina_grid`'s `editCellRenderer` already hands it, not a disconnected internal one) — see that doc's "Implementation notes" section. One known, accepted gap: keyboard arrow/Enter highlight-navigation works in the form but not the grid, because `trina_grid`'s own cell `FocusNode` claims those key events first for cell navigation — not pursued further this session (bigger lift than the task warranted), documented in code at `GenericListScreen._buildGridAutocompleteEditor`. Mouse/touch tap-to-select and typed-value Enter/Tab/Escape are unaffected in both places.
-2. **Phase 4 — Cross-Table Linking** — **design complete 2026-08-24, ready for Claude Code.** See the dedicated section below and `claude/essentials-v2-phase4-design.md`.
-3. **Phase 6 — Global Search**
+2. **Phase 4 — Cross-Table Linking** — **DONE, 2026-08-24, real-device verified on MIKE-CU and MIKE-12R.** See the dedicated section below and `claude/essentials-v2-phase4-design.md`.
+3. **Phase 6 — Global Search** — **design complete 2026-08-24, ready for Claude Code once Phase 4 wraps.** See the dedicated section below and `claude/essentials-v2-phase6-design.md`.
 4. **Phase 5 — Scripts & Events**
 5. **Phase 3 — View Types**
 6. **Phase 7 — Import / Export / Templates** (the rest of it: Memento backup import, starter template library, full DB export/backup)
@@ -334,18 +334,30 @@ Not a phase — a side task, scoped to importing into an existing table's plain 
 ### Column autocomplete — **DONE, 2026-08-24, real-device verified on MIKE-CU and MIKE-12R**
 Not a phase — a small side task, same category as the `color` fix and CSV import, done deliberately before Phase 4 starts. Scope narrowed during design to `text`-format fields only (`url`/`barcode`/`link_file`/`text_multiline` were considered and dropped — their values are typically distinct per row, so suggestions would mostly be noise). Suggestions come from a live `SELECT DISTINCT` against the column, prefix-matched, no cache table. Per-field opt-out via `options.autocomplete: false`, toggle in `AddFieldScreen`/`ManageFieldsScreen`. Shipped in both the grid (`trina_grid`'s `TrinaColumn.editCellRenderer` hook, confirmed present in the installed 2.2.2) and the form (Flutter's built-in `Autocomplete<String>`), sharing one debounced suggestion source (`ColumnAutocompleteSource`, `lib/util/column_autocomplete.dart`). Full design, implementation notes, and the one real bug found and fixed (grid editor's missing paired `FocusNode`) in `claude/essentials-v2-column-autocomplete-design.md`.
 
-### Phase 4 — Cross-Table Linking — **design complete 2026-08-24, ready for Claude Code**
+### Phase 4 — Cross-Table Linking — **DONE, 2026-08-24, real-device verified on MIKE-CU and MIKE-12R**
 - Link to record field type
 - Lookup and Rollup field types
 - Link Definitions metadata
 - UI for selecting linked table and display field
 
-Full design in `claude/essentials-v2-phase4-design.md`, grounded in a read of the live schema engine, `GenericDao`, `GenericListScreen`/`GenericFormScreen`, and `AddFieldScreen`/`ManageFieldsScreen`. Two scope calls confirmed with Mike before handoff: `link_record` cardinality is configurable per field (`options.multiple`), not fixed to one or the other; and a reverse-relation panel (a linked-to record's form shows every other-table record linking back to it) ships in this pass, not deferred. `link_record` is new alongside `select`/linked (the existing single-FK-to-a-lookup-table mechanism), not a replacement for it — both coexist, and `link_record`'s JSON-array-of-ids TEXT storage needs `GenericDao._linkedFieldRefs`'s referential-integrity query extended for array-membership matching (`json_each`), not just a new format string recognized. `lookup`/`rollup` reuse `formula`'s existing read-only, computed-at-read-time pattern (`TableConfig.computePreview`, `GenericDao.getAll`) rather than a new mechanism.
+Full design in `claude/essentials-v2-phase4-design.md`, grounded in a read of the live schema engine, `GenericDao`, `GenericListScreen`/`GenericFormScreen`, and `AddFieldScreen`/`ManageFieldsScreen`. Two scope calls confirmed with Mike before handoff: `link_record` cardinality is configurable per field (`options.multiple`), not fixed to one or the other; and a reverse-relation panel (a linked-to record's form shows every other-table record linking back to it) ships in this pass, not deferred. `link_record` is new alongside `select`/linked (the existing single-FK-to-a-lookup-table mechanism), not a replacement for it — both coexist, and `link_record`'s JSON-array-of-ids TEXT storage needed `GenericDao._linkedFieldRefs`'s referential-integrity query extended for array-membership matching (`json_each`), not just a new format string recognized. `lookup`/`rollup` reuse `formula`'s existing read-only, computed-at-read-time pattern (`TableConfig.computePreview`, `GenericDao.getAll`) rather than a new mechanism.
 
-### Phase 6 — Global Search — **sequenced before Phase 5, see "Roadmap sequencing" above**
+**Mike's own multi-hour, both-devices interactive pass found six real issues, all documented and all but one fixed the same session** — full write-up in `claude/essentials-v2-phase4-design.md`'s "Findings from interactive testing" section:
+- `select` and `link_record`'s Add Field labels were one word apart in the same dropdown (`'Linked to another table'` vs `'Link to another table'`) — Mike picked the wrong one on his first try. Relabeled both to be unmistakable.
+- A pre-existing (not `link_record`-caused) crash: a `select`/linked field whose target table's display column wasn't literally named `name` threw `no such column` opening the grid. Fixed with a defensive fallback (`GenericDao._resolveDisplayColumn`) covering every field created before this fix, plus a real "Which field to show" picker on new fields going forward so this can't recur.
+- `NewTableScreen` silently dropped `link_record` (and, same bug, `url`/`color`) — offered in the picker but never wrote real options, producing a field that looked created but wasn't actually linked. Fixed, and turned into a standing rule: a format only belongs in New Table's picker if it can be **fully** supported there, never listed-but-degraded.
+- Two migration-halt incidents from the same root cause (`SchemaEditorService.dropTable` called twice on the same table — its precondition checks only `is_deleted`, not physical existence, so a second call authors a DDL guaranteed to fail and halts the whole device's migration queue). Recovered live both times. **The underlying fix is not yet done** — flagged as a real, standing gap worth a future small pass: `dropTable` should check `sqlite_master` directly and no-op or refuse cleanly instead of authoring a doomed DDL statement.
+- Grids never refreshed live when another device changed the same table's data (sync itself always worked; nothing told an open `GenericListScreen` to reload). Fixed with a new `SyncService.dataChanges` stream, the same shape `schemaChanges` already used for nav — **this is also the mechanism `claude/essentials-v2-phase6-design.md` already designs Phase 6's remote-write reindexing around**, so Phase 6 depends on this fix being in, not just concurrent with it.
+- The reverse-relation panel showed bare row ids with nothing to distinguish them — root cause was that no v2 table has ever actually set `display_field`. Fixed with a fallback to the table's own first field by position, shown alongside the id.
+
+**One open item carried forward, not blocking anything:** the `dropTable`-called-twice migration-halt bug above. Worth fixing before it bites a third time, but not scheduled to a specific phase.
+
+### Phase 6 — Global Search — **design complete 2026-08-24, ready for Claude Code once Phase 4 wraps — sequenced before Phase 5, see "Roadmap sequencing" above**
 - Full-text search across all tables
 - SQLite FTS5 virtual tables per user table (or a unified search index)
 - Search UI — results grouped by table, click-through to record
+
+Full design in `claude/essentials-v2-phase6-design.md`, grounded in a read of `GenericDao`, `SyncService`, `MigrationService`, `database_helper.dart`, and `SchemaEditorService`. Two scope calls confirmed with Mike, resolving this section's own former "Open Decisions" entry: **one unified FTS5 virtual table** across every user table, not one per table (a per-table index would need its own migration every time a searchable field is added/removed/reformatted — real ongoing maintenance burden no other part of the schema engine carries); and **first pass indexes plain stored text only** (`text`/`text_multiline`/`url`/`barcode`/`link_file`), not resolved `select`/`link_record`/`lookup` display values — which is what lets Phase 6 be built independently of Phase 4's completion, in either order. No SQL triggers anywhere in this design (none exist anywhere in this codebase today, and this project already learned once, the hard way, that `ON DELETE CASCADE` never fires because `crdt.execute()` rewrites DELETE into an UPDATE — see Phase 1's "Critical risks" #3): local writes reindex via `GenericDao.insert`/`update`/`delete`, remote writes reindex via `SyncService.dataChanges` (the same stream `GenericListScreen` already uses to live-reload on remote edits) — both already-proven mechanisms, nothing new. Two things flagged for Claude Code to verify against the actual installed packages before committing to the shape: whether FTS5 is compiled into the SQLite build on both platforms, and whether `crdt.execute()` passes a virtual table with no CRDT bookkeeping columns through cleanly.
 
 ### Phase 5 — Scripts & Events — **sequenced after Phase 6, see "Roadmap sequencing" above**
 - `flutter_js` integration
@@ -394,7 +406,7 @@ These do not change:
 
 - **Home screen / dashboard** — configurable home with pinned tables and recent records, or simple table list?
 - **App name** — "Essentials" is a working title; needs a real name before UI embeds it everywhere
-- **Global search strategy** — FTS5 per-table virtual tables vs. unified search index
+- ~~**Global search strategy**~~ — resolved 2026-08-24: one unified FTS5 virtual table, not per-table. See `claude/essentials-v2-phase6-design.md`.
 - **Starter template set** — which 5–10 templates ship built-in?
 - **Record history UI** — CRDT timestamps give implicit history; surface it to users?
 - **Attachment phase number** — where local storage + sync (dropped from Phase 2) lands in the roadmap; not yet decided.

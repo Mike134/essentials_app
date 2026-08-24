@@ -142,6 +142,14 @@ class DatabaseHelper {
     }
   }
 
+  /// Public wrapper around [_resolveDatabasePath] -- exposed for [_verifyRealSchema]
+  /// only in the pre-CRDT era; kept public since callers may reasonably want
+  /// the real path for diagnostics. **Not** what `SearchIndexService` uses
+  /// for its own file -- see [resolveSearchIndexDatabasePath] and that
+  /// class's own doc comment for why `search_index` deliberately lives in a
+  /// completely separate SQLite file, never a table inside this one.
+  Future<String> resolveDatabasePath() => _resolveDatabasePath();
+
   Future<String> _resolveDatabasePath() async {
     if (Platform.isWindows) {
       return join(_windowsDirectory, _fileName);
@@ -150,6 +158,48 @@ class DatabaseHelper {
     if (Platform.isAndroid) {
       await _ensureAndroidStoragePermission();
       return join(_androidDirectory, _fileName);
+    }
+
+    throw UnsupportedError(
+      'essentials_app only targets Windows desktop and Android.',
+    );
+  }
+
+  static const String _searchIndexFileName = 'search_index.db';
+
+  /// Essentials v2 Phase 6 (Global Search) -- the path to `search_index`'s
+  /// own, completely separate SQLite file, alongside `essentials.db` in the
+  /// same directory on each platform.
+  ///
+  /// **Not a table inside `essentials.db` -- confirmed, the hard way, this
+  /// cannot be one.** `sql_crdt`'s own `init()` (run on every single
+  /// `SqliteCrdt.open()`) and `getChangeset()` (run on every sync) both call
+  /// `getTables()`, which unconditionally returns *every* physical table in
+  /// `sqlite_schema` except `sqlite_%`-prefixed ones -- no opt-out, no
+  /// filtering hook (confirmed by reading `sqlite_crdt`'s source:
+  /// `getTables()` is a bare `SELECT name FROM sqlite_schema WHERE type =
+  /// 'table' AND name NOT LIKE 'sqlite_%'`). Both then blindly assume every
+  /// table returned has `modified`/`hlc`/`node_id` columns. An FTS5 virtual
+  /// table (plus its own shadow tables --
+  /// `<name>_data`/`_idx`/`_content`/`_docsize`/`_config`, all real
+  /// `sqlite_schema` entries) has none of those -- the very first attempt at
+  /// this (a `search_index` table inside `essentials.db`) broke
+  /// `SqliteCrdt.open()` outright for the whole app on the very next launch
+  /// (`SqliteException: no such column: modified`), caught only by
+  /// `flutter test` immediately re-opening a fresh connection against the
+  /// same real db -- not a theoretical risk, an actual incident, fixed by
+  /// dropping the table and moving to this separate-file design instead.
+  /// A completely separate file sidesteps this category of problem
+  /// entirely: `sqlite_crdt` never touches it, never scans it, never knows
+  /// it exists.
+  Future<String> resolveSearchIndexDatabasePath() async {
+    if (Platform.isWindows) {
+      return join(_windowsDirectory, _searchIndexFileName);
+    }
+
+    if (Platform.isAndroid) {
+      await _ensureAndroidStoragePermission();
+      return join(_androidDirectory, _searchIndexFileName);
     }
 
     throw UnsupportedError(

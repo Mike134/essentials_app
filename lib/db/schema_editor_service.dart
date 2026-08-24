@@ -264,6 +264,22 @@ class SchemaEditorService {
   ///
   /// Throws [StateError] if [tableName] isn't already stage-1 soft-deleted,
   /// or if another table still has a live linked field pointing at it.
+  ///
+  /// **No-ops (doesn't author a second `DROP TABLE`) if the physical table
+  /// is already gone** -- a real, confirmed race, not a hypothetical one
+  /// (see claude/essentials-v2-phase4-design.md's "Findings from
+  /// interactive testing" #4): the precondition above only checks
+  /// `table_definitions.is_deleted`, which stays `1` forever once
+  /// tombstoned (Step 9's own "no true hard-delete exists" finding) --
+  /// calling [dropTable] a second time on a table already dropped once
+  /// would otherwise pass that check and author a genuinely doomed second
+  /// `DROP TABLE` migration (`no such table`), which `MigrationService
+  /// .applyPending`'s halt-on-failure logic then permanently blocks every
+  /// *later* migration behind, on every device that receives it -- hit for
+  /// real once already, requiring the poisoned migration to be manually
+  /// retracted. Same "check physical existence first" fix already applied
+  /// to `test/support/schema_test_cleanup.dart`'s `dropTestTable` for the
+  /// identical reason.
   Future<void> dropTable(String tableName) async {
     assertSafeSqlIdentifier(tableName);
     final crdt = await _db;
@@ -278,6 +294,12 @@ class SchemaEditorService {
     if ((existing.first['is_deleted'] as int) != 1) {
       throw StateError('"$tableName" must be deleted first (stage 1) before it can be permanently deleted.');
     }
+
+    final physical = await crdt.query(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+      [tableName],
+    );
+    if (physical.isEmpty) return;
 
     final linkedFrom = await _tablesLinkingTo(crdt, tableName);
     if (linkedFrom.isNotEmpty) {
@@ -341,6 +363,9 @@ class SchemaEditorService {
   /// Throws [StateError] if [fieldName] isn't already stage-1 soft-deleted,
   /// or if it's part of a real SQL index (see [_isIndexed] -- should never
   /// actually happen for a v2 field).
+  ///
+  /// **No-ops if the physical column is already gone** -- same race, same
+  /// fix as [dropTable]'s own doc comment describes.
   Future<void> dropField(String tableName, String fieldName) async {
     assertSafeSqlIdentifier(tableName);
     assertSafeSqlIdentifier(fieldName);
@@ -356,6 +381,11 @@ class SchemaEditorService {
     if ((existing.first['is_deleted'] as int) != 1) {
       throw StateError('"$fieldName" must be deleted first (stage 1) before it can be permanently deleted.');
     }
+    // PRAGMA table_info on a table that no longer physically exists returns
+    // an empty result (not an error), which correctly falls into the same
+    // "already gone, no-op" branch as a genuinely-dropped column.
+    final physicalColumns = await crdt.query('PRAGMA table_info("$tableName")');
+    if (!physicalColumns.any((c) => c['name'] == fieldName)) return;
     if (await _isIndexed(crdt, tableName, fieldName)) {
       throw StateError('"$fieldName" is part of an index or constraint and can\'t be dropped this way.');
     }

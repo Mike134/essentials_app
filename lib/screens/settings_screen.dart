@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../db/search_index_service.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
 import '../util/color_picker.dart';
@@ -28,6 +29,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _fontColorController;
   late final TextEditingController _backgroundColorController;
+  bool _rebuildingSearchIndex = false;
 
   @override
   void initState() {
@@ -84,6 +86,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
     await controller.setBackgroundColorOverride(color);
+  }
+
+  /// Essentials v2 Phase 6 (Global Search) manual escape hatch, for the
+  /// known, accepted staleness gap `SearchIndexService`'s own doc comment
+  /// describes -- a field's format changing or a new field being added
+  /// touches only `field_definitions` metadata, no row data, so no reindex
+  /// hook fires for it. This forces a full rebuild across every table.
+  Future<void> _rebuildSearchIndex() async {
+    setState(() => _rebuildingSearchIndex = true);
+    try {
+      await SearchIndexService().reindexAll();
+    } finally {
+      if (mounted) setState(() => _rebuildingSearchIndex = false);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Search index rebuilt.')),
+    );
   }
 
   void _showInvalidHexMessage() {
@@ -348,6 +368,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: const Text('Manage tables'),
                   ),
                 ],
+              ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text('Search', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text(
+                'Search normally stays current on its own. Rebuild it here if a '
+                "field's format changed or a new field was added and search "
+                "results still show its old shape.",
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: _rebuildingSearchIndex ? null : _rebuildSearchIndex,
+                child: _rebuildingSearchIndex
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Rebuild search index'),
               ),
             ],
           );
