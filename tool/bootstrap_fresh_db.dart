@@ -55,14 +55,15 @@ const infraSchemaStatements = <String>[
   // rename/delete/reorder pure metadata operations with zero DDL.
   '''
     CREATE TABLE "table_definitions" (
-      "table_name"    TEXT PRIMARY KEY,
-      "display_name"  TEXT NOT NULL,
-      "description"   TEXT,
-      "icon"          TEXT,
-      "display_field" TEXT,
-      "order_by"      TEXT,
-      "position"      INTEGER,
-      "created_at"    TEXT NOT NULL
+      "table_name"     TEXT PRIMARY KEY,
+      "display_name"   TEXT NOT NULL,
+      "description"    TEXT,
+      "icon"           TEXT,
+      "display_field"  TEXT,
+      "order_by"       TEXT,
+      "position"       INTEGER,
+      "created_at"     TEXT NOT NULL,
+      "calendar_field" TEXT
     )
   ''',
   // One row per field. Supersedes v1's `field_metadata` entirely -- that table
@@ -140,6 +141,28 @@ const infraSchemaStatements = <String>[
       "table_name"     TEXT PRIMARY KEY,
       "group_name"     TEXT NOT NULL,
       "group_position" INTEGER
+    )
+  ''',
+
+  // ---------- Views (Essentials v2 Phase 3) ----------
+  // Saved List/Kanban (per-table, table_name set) / Calendar (aggregate,
+  // table_name NULL) views -- shared/synced, same bucket as
+  // table_definitions/field_definitions. `view_id` is the timestamp+random
+  // scheme, not AUTOINCREMENT, same collision-avoidance reasoning as
+  // migration_log.id. MUST stay identical to schema.sql / server/bin/
+  // server.dart's schemaStatements.
+  '''
+    CREATE TABLE "view_definitions" (
+      "view_id"      INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+      ),
+      "table_name"   TEXT,
+      "view_type"    TEXT NOT NULL,
+      "display_name" TEXT NOT NULL,
+      "position"     INTEGER,
+      "config"       TEXT,
+      "created_at"   TEXT NOT NULL
     )
   ''',
 

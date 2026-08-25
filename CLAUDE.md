@@ -7331,3 +7331,381 @@ device is touched, not urgent.
 **Essentials v2 Phase 6 is done.** Next session: not yet decided -- Mike's
 own real usage, or Phase 5/3/7 per `claude/essentials-v2-architecture
 .md`'s roadmap sequencing.
+
+## Essentials v2 Phase 3 — View Types, complete, real-device verified (2026-08-25)
+
+Design in `claude/essentials-v2-phase3-design.md`. Confirmed per the
+roadmap sequencing (`claude/essentials-v2-architecture.md`) as next after
+Phase 6. Built in the design doc's own order -- `view_definitions` table +
+DAO, List, Kanban, view-management polish, Calendar -- each step
+build-verified then pushed to both MIKE-CU and MIKE-12R for Mike's own
+interactive pass before moving on, same discipline as every prior phase.
+Grid stays exactly as it was, per the design doc's own confirmed decision
+-- every table still gets an implicit Grid view, first in the switcher,
+never a `view_definitions` row.
+
+### Step 1 -- `view_definitions` + `ViewDefinitionsDao`
+
+New table (`view_id` timestamp+random PK, nullable `table_name` -- NULL
+only for the one aggregate Calendar row, `view_type` 'list'|'kanban'|
+'calendar', `display_name`, `position`, `config` JSON, `created_at` +
+the four CRDT bookkeeping columns), bootstrapped via
+`tool/add_view_definitions_table.dart` (same hardened,
+`--device-id`-required-unless-default-path pattern `tool
+/add_calendar_field_column.dart` reused later for Step 5's schema
+change). `ViewDefinitionsDao` (`lib/db/view_definitions_dao.dart`):
+`loadViewsForTable`/`loadAllViewsForTable`/`loadCalendarView`/
+`createView`/`renameView`/`updateViewConfig`/`reorderViews`/
+`softDeleteView`/`restoreView` -- same shape/conventions as
+`SchemaMetadataDao` (whole-set position replace, `is_deleted` tombstone,
+no stage-2 hard delete for views in this phase).
+
+**First real occurrence, this phase, of a confirmed systemic
+`crdt_sync` risk -- see "The recurring batch-atomicity sync bug" below
+for the full pattern, hit three times total across this phase.** Creating
+the table on CU bundled `migration_log`'s own DDL row together with real
+`view_definitions` row data in one changeset; the server had no physical
+`view_definitions` table yet at that exact moment, so the merge crashed
+(`ON CONFLICT ()`) and rolled back the *entire* batch, migration row
+included -- silently stranding the peer with no way to ever learn about
+the fix. Recovered by hand this first time, including a self-caught
+mistake along the way (re-running the bootstrap script against `hub.db`
+authored a *second*, duplicate migration under the wrong device identity
+`MIKE-CU` instead of `server`) fixed with a one-off
+`tool/dedupe_view_definitions_migration.dart` before it could poison
+anything further.
+
+### Step 2 -- List view
+
+`ListViewScreen` (`lib/screens/list_view_screen.dart`) + `ViewSwitcherBar`
+(`lib/screens/view_switcher_bar.dart`, the shared `AppBar.bottom` chrome
+-- switch/create/rename/delete a view -- reused by every non-Grid view
+type). Grouped-by-primary-field display with a live entry count per
+group, two-level sort (primary/secondary + direction), optional extra
+Line-2 fields, Expand-all/Collapse-all. `lib/util/saved_view_data.dart`
+factored out the row-loading + lookup/`link_record`/inline-select
+display-text resolution both List and (later) Kanban need, rather than
+duplicating `GenericListScreen`'s own version a second and third time.
+
+**Real bugs found by Mike's own testing, all fixed same session:**
+- `_ListViewConfigDialog`'s `SegmentedButton` overflowed on a narrow
+  Android screen (a `Row` with a label + `Spacer` + button that never fit)
+  -- fixed with a `Column` layout and a responsive dialog width, same
+  "cap to available width" pattern used repeatedly elsewhere in this app.
+- List view was missing Add and Copy -- `GenericListScreen` had both
+  (batch-1-era Copy, this-phase-era Add-parity expectation); `ListViewScreen`
+  was net-new and simply hadn't gotten them yet. Added a FAB (`GenericFormScreen`)
+  and a per-row copy icon (`GenericFormScreen(copyFrom: row)`), matching
+  Grid's existing behavior exactly.
+- A real crash on MIKE-12R: `setState(() => _dataFuture = _load())` --
+  the now-familiar arrow-closure-returns-a-Future bug (see Auto Memory
+  `setstate_arrow_closure_bug.md`), hit in `_reload()`/`didUpdateWidget`.
+  Fixed, then proactively grepped for the identical pattern across every
+  file touched this phase and found (and fixed) three more latent
+  instances before they could crash live: `manage_tables_screen.dart`'s
+  `_reload()`, and two in `view_switcher_bar.dart` (`_reload()`, and
+  `_createView`'s `Future.value(views)` assignment).
+- Renaming/deleting the *currently open* view didn't reflect until
+  switching tabs and back, on either device. Two structural gaps, not
+  one: `SyncService.dataChanges`/`schemaChanges` only ever fire for
+  **remote incoming** changesets, never a local write, so a local rename
+  had no live-refresh path at all; and `HomeShell` only refreshes its
+  cached `ViewDefinition` when `onViewSelected` fires with a genuinely
+  different view. Fixed both directions: `ListViewScreen` (and later
+  `KanbanViewScreen`) gained their own `SyncService.dataChanges`
+  subscription filtered on `'view_definitions'` for the remote case, and
+  `ViewSwitcherBar._renameView`/`_deleteView` explicitly call
+  `widget.onViewSelected(...)` when the affected view is the currently
+  active one, for the local case. Mike confirmed both fixed, immediately,
+  on both platforms.
+
+### Step 3 -- Kanban view
+
+`KanbanViewScreen` (`lib/screens/kanban_view_screen.dart`) -- one
+inline-select field's configured options become columns, in their
+already-set order; a blank value gets an implicit "(none)" column; a
+stored value that matches none of the field's current options (a deleted
+option, a stray CSV import) gets its own ad-hoc column rather than hiding
+the record -- same "format is a presentation hint, never a hard
+constraint" posture this app already holds everywhere else. Drag-and-drop
+between columns is a plain `GenericDao.update()` on the group field, the
+same write path every other edit already uses.
+
+Mike asked for a real test table to exercise it against --
+`tool/create_kanban_test_table.dart`/`remove_kanban_test_table.dart`
+(paired create/cleanup scripts, the pattern reused again for Calendar in
+Step 5): a `Kanban Test` table with a deliberately-non-alphabetical
+3-option Status field, one blank-status row, and one row with an
+unmatched "blocked" status.
+
+**Real bugs found:**
+- A debug-only crash on MIKE-12R opening the "blocked" row's form:
+  `DropdownButtonFormField` asserts exactly one `items` entry matches the
+  current value (or the value is `null`) -- the unmatched stored value
+  broke that. Release builds never showed it (`assert` is stripped), same
+  reason this class of bug has slipped through before in this project.
+  Fixed with an ad-hoc `DropdownMenuItem` for any unmatched value, labeled
+  `"$value (not a listed option)"`, plus the analogous silent-blank gap
+  in the grid's own cell formatter.
+- No horizontal scrollbar on the Windows board -- added a `ScrollController`
+  + `Scrollbar(thumbVisibility: true)`.
+- **The batch-atomicity sync bug recurred, this time for real business
+  data, not just an infra table** -- confirming it as systemic rather than
+  a one-off. Recovered proactively this time via a new, reusable tool
+  (`tool/adopt_migrations.dart`, see below) applied to both `hub.db` and a
+  pulled-then-pushed-back MIKE-12R copy *before* letting them reconnect
+  organically, avoiding the crash on 12R's side entirely rather than
+  cleaning it up after.
+
+### Step 4 -- View management polish
+
+`ManageViewsScreen` (`lib/screens/manage_views_screen.dart`) --
+reorder (drag), rename, soft-delete/restore for every view belonging to a
+table, reached via a new "Manage views" icon on `ViewSwitcherBar`
+(shown once at least one view exists). `ViewSwitcherBar`'s own
+"create view" dialog widened from List-only to a type `SegmentedButton`
+(List/Kanban) + name field.
+
+**Real findings from Mike's testing:**
+- Both List and Kanban screens showed the *view's* name as the AppBar
+  title, not the table's -- inconsistent with Grid, and confusing since
+  "you can tell which view you're in by the buttons" already. Fixed in
+  both screens: `title: Text(widget.config.displayName)`, matching Grid.
+- Mike created a view on CU and a different one on 12R and neither showed
+  up on the other -- investigated directly (row/hlc comparison across all
+  three copies) and found neither the server process nor CU's app was
+  actually running at that moment. Not a code defect; confirmed once both
+  were actually up and given real reconnect time, both views converged
+  correctly on all three copies -- and a follow-up delete-on-CU/
+  propagates-to-12R check (which Mike ran unprompted) confirmed the same.
+
+### Step 5 -- Calendar view (this session's main work)
+
+`CalendarScreen` (`lib/screens/calendar_screen.dart`) -- the one
+aggregate, table-agnostic surface (reached as its own top-level nav
+destination, `HomeShell`'s rail/drawer, next to Search), Day/Week/Month
+granularity, a "Lists" checklist toggling which eligible tables
+contribute, entry color from a table's own `color`-format field if it
+has one, tap-through to the real `GenericFormScreen`. `lib/util
+/calendar_field.dart`'s `CalendarFieldConfig`/`resolveCalendarField`/
+`eligibleCalendarFields` -- a table is eligible only if it has a
+date/dateTime-format field; `table_definitions.calendar_field` (new
+column, `tool/add_calendar_field_column.dart`) stores an explicit
+single-field or start/end-range choice per table, defaulting to the
+first eligible field by position, single mode, if never set.
+`SchemaMetadataDao.updateCalendarField` + a new calendar-field picker
+section in `ManageTablesScreen`'s table editor dialog (mode toggle +
+field dropdown(s), hidden entirely for a table with no eligible field --
+"eligibility, not error states," the same rule Phase 4's New Table fix
+already established).
+
+**Real bugs and design changes, found and fixed live, in the order Mike
+hit them:**
+
+1. **Every calendar entry showed its raw numeric id instead of a real
+   title.** `Calendar Test`'s displayColumn heuristic fell through to the
+   bare `id` (no `NOT NULL`/`UNIQUE` column to derive one from -- every
+   field on that table is plain optional TEXT). `fieldByColumn` correctly
+   returns `null` for `id` (structural, never a real `FieldConfig`), and
+   the fallback at the time was the literal id string. Fixed: fall back
+   to the table's first field by position whenever `displayColumn`
+   resolves to `id`.
+2. **The narrow-Android header row overflowed** (`RIGHT OVERFLOWED BY 65
+   PIXELS`, the date label wrapping one character per line) -- the
+   prev/label/next/Today row plus the Day/Week/Month `SegmentedButton`
+   never fit on one line on a phone. Fixed with a `LayoutBuilder` split at
+   the same `wideLayoutBreakpoint` `HomeShell`'s own rail/drawer switch
+   uses: one row on Windows, two stacked rows (nav row, then centered
+   granularity switch) on Android.
+3. **Mike asked for Month view to scroll continuously, a week at a time,
+   instead of paginating by whole months.** Rebuilt as a bounded-but-large
+   (1900-2100, ~10,400 weeks) `ListView.builder` of week rows, keyed off a
+   fixed epoch so the index math never depends on `_anchor`. The
+   prev/next arrows now scroll one week (`ScrollController.animateTo`)
+   instead of jumping `DateTime(year, month +/- 1, 1)`; "Today" and
+   Day/Week-granularity navigation resync the list via a `_monthScrollDirty`
+   flag consumed on the next build, rather than fighting the scroll
+   listener's own live updates mid-gesture.
+4. **Mike pointed at a reference calendar app (TickTick) that dims days
+   outside the framed month, even on a page-based view, and asked for the
+   same clarity** -- a continuous week-scroll has no hard month "page"
+   boundary the way a paginated grid does, so a row spanning two months
+   (e.g. Aug 31 / Sep 1 side by side) read as ambiguous with no dimming at
+   all. Restored the dimming, but keyed to a *derived* "current month"
+   rather than the scrolled-to week's Monday directly -- see the header-lag
+   fix below for why.
+5. **The header lagged what was mostly on screen -- "should have already
+   changed to September... a week late."** Root cause: the month label
+   and dimming boundary were both driven by `_anchor.month`, and `_anchor`
+   was the scrolled-to week's **Monday** -- so a week that was 6/7 Sep
+   days but started on an Aug-31 Monday still read as "August." Fixed
+   with `_monthLabelReference` = **Thursday** of the current week (the
+   same convention ISO week-numbering already uses for exactly this edge
+   case -- Thursday is always the week's middle day), used uniformly by
+   both the header text and the dimming check.
+6. **Rows appeared "cut off" or with numbers "missing completely"** after
+   scrolling and releasing mid-row -- a plain fixed-`itemExtent`
+   `ListView.builder` has no snapping, so a fling could settle anywhere,
+   including half a row visible at the very top or bottom of the
+   viewport. Fixed with a hand-rolled `_RowSnapScrollPhysics`
+   (`ScrollPhysics` subclass, `createBallisticSimulation` snapping to the
+   nearest whole-row offset via `ScrollSpringSimulation`) -- Flutter's own
+   `FixedExtentScrollPhysics` isn't usable here, it's `ListWheelScrollView`
+   -specific and needs `FixedExtentMetrics` a plain `ListView` never
+   provides.
+7. **Mike asked for "Today" to stand out more** -- the first attempt (a
+   light tint + thin border) showed *nothing at all* in a screenshot, not
+   just "subtle." Root-caused as a real correctness bug, not a styling
+   one: `day == _dateOnly(DateTime.now())` used plain `DateTime` equality,
+   but `day` for a Month-view cell is built by chaining thousands of
+   `Duration`-day additions from a fixed 1900 epoch -- and Dart's
+   local-time `DateTime.add` is DST-aware (it adds real elapsed time, then
+   re-expresses the result in local wall-clock time), so that chain can
+   land a component-hour off midnight on the *correct calendar date*,
+   silently failing strict equality. Entries for the same day still
+   rendered correctly, because entry-matching uses an inclusive day-range
+   comparison, tolerant of exactly this drift -- only the exact-equality
+   `isToday` check broke. Fixed with a new `_isSameDate(a, b)` helper
+   (compares year/month/day fields, not `==`) used everywhere "same
+   calendar day" matters in this screen, plus a strengthened highlight
+   (full-strength `primaryContainer` background, 3px `primary` border,
+   not a faint alpha-reduced tint) once the underlying bug was actually
+   fixed.
+8. **The batch-atomicity sync bug recurred a third time** (`Calendar
+   Test`'s own creation) -- recovered via the now-established
+   `tool/adopt_migrations.dart` playbook, applied to both `hub.db` and a
+   pulled/pushed-back MIKE-12R copy before reconnecting, same as Step 3.
+
+`tool/create_calendar_test_table.dart`/`remove_calendar_test_table.dart`
+-- an 8-row, 6-field test table (single-day, multi-day range, colored/
+uncolored, next-month, and one deliberately blank-date row) exercising
+every rendering path; both scripts follow the Kanban pair's exact shape.
+
+### The recurring batch-atomicity sync bug -- confirmed systemic this
+phase, still not fixed at the `crdt_sync` level
+
+Hit three separate times this phase (`view_definitions`'s own bootstrap,
+`kanban_test`, `calendar_test`) -- always the same shape: a brand-new
+table's `migration_log`-authored DDL and its own row data can arrive at a
+peer bundled in one changeset, applied in one all-or-nothing transaction.
+If the peer's physical table doesn't exist yet at that exact instant
+(which it never does, the very first time), the merge throws
+(`ON CONFLICT ()` -- `sql_crdt` has no cached PK info for a table it
+doesn't have) and the **whole batch** rolls back, migration row included
+-- silently stranding the peer with no path to ever learn about the fix
+that would resolve it. First occurrence (Step 1) was recovered by hand,
+including a real self-inflicted mistake (a duplicate migration authored
+under the wrong device identity, itself fixed via a one-off script).
+That prompted building `tool/adopt_migrations.dart` -- a general-purpose
+recovery tool (`--source`/`--target`/`--device-id`/`--ids`) that reads
+already-authored `migration_log` rows from a source db and adopts them
+directly onto a target (applies the DDL, records `migration_status`)
+without re-authoring new migration ids, avoiding the wrong-identity
+mistake structurally rather than relying on remembering not to repeat it.
+Used successfully, proactively (before letting a device reconnect
+organically and hit the crash itself), for both Step 3 and Step 5's
+recurrences. **Still an open, documented architectural gap, not attempted
+this phase** -- flagged in the tool's own doc comment: a real fix belongs
+at the `crdt_sync` library-integration level (e.g. the server holding off
+on offering a table's row data until its own creating migration has been
+locally applied), not in this per-incident manual workaround. Worth a
+dedicated pass if it keeps recurring as more tables get created through
+real use.
+
+### Wrap-up (2026-08-25)
+
+Both throwaway test tables removed via their own paired scripts
+(`tool/remove_kanban_test_table.dart`/`remove_calendar_test_table.dart`)
+-- soft-delete only, same discipline as every other test-data cleanup in
+this project. Five stale `view_definitions` rows for `kanban_test`
+(including ones Mike had already deleted himself during his own view-
+management testing) tombstoned along with it. Confirmed converged
+correctly on all three copies (CU, `hub.db`, MIKE-12R) -- MIKE-12R took
+noticeably longer than usual to pick up the tombstone (needed a second,
+longer wait plus a direct WAL-inclusive re-pull before it showed up),
+consistent with this device's already-documented connection flakiness,
+not a new finding. Final state: only the four real tables (`Condition`,
+`Project`, `Status`, `Tasks`) remain active; `PRAGMA integrity_check: ok`
+on all three copies.
+
+**One real, pre-existing test fragility found and fixed during the
+wrap-up regression pass, the same class of thing several prior phases
+have hit:** `view_definitions_dao_test.dart`'s "createView with tableName
+null + view_type calendar is the aggregate scope" test assumed it was the
+only calendar-scoped row in the database -- true when the test was
+written (Step 1, before any real Calendar UI existed), false now that
+Step 5's actual `CalendarScreen` had, through genuine use this session,
+created a real "Calendar" row with a lower `view_id`. `loadCalendarView()`
+deliberately returns the *first* active calendar-scoped row by design
+(its own doc comment always said so, for exactly this eventuality) --
+the test's assumption, not the DAO's behavior, was what broke. Fixed by
+verifying the test's own created row directly by `view_id` rather than
+through `loadCalendarView()`, while still separately asserting
+`loadCalendarView()`'s aggregate-scope *contract* (returns some real,
+well-formed calendar row) rather than which specific row wins.
+
+`flutter analyze` clean throughout every fix, this session and the whole
+phase. Final regression pass: `view_definitions_dao_test.dart`,
+`calendar_field_test.dart`, `schema_metadata_dao_test.dart` all pass, run
+individually per the standing `SchemaEditorService.createTable`-isolation
+rule. Both `flutter build windows`/`apk --debug` clean at every
+checkpoint throughout the phase.
+
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R, for all five steps** -- List (grouping, sort, Add/Copy, live
+rename/delete refresh), Kanban (drag-and-drop, unmatched/blank columns,
+scrollbar), view management (reorder/rename/delete/restore, correct
+table-name titling), and Calendar (continuous scroll, snapping, month
+dimming/labeling, today highlight, entry color/tap-through) all confirmed
+working through real, live use on real hardware -- not just build-verified.
+
+### Operational gotcha found the same day, unrelated to Phase 3 itself:
+### `taskkill //IM server.exe //F` leaks an orphaned tray icon every time
+
+Mike noticed 7 copies of the sync server's tray icon in the system tray.
+Root cause: this whole phase's incident-recovery playbook (stop the
+server, edit `hub.db` directly, restart it) always stopped the server via
+`taskkill //IM server.exe //F` -- which only kills the `server.exe`
+child process, never the `tray_host.ps1`/PowerShell wrapper around it
+(`launch_tray_hidden.vbs` -> `tray_host.ps1` -> `server.exe`, per the
+three-process design in "Syncing at the Record Level" > "Open items"
+above). Relaunching afterward via `wscript launch_tray_hidden.vbs` then
+spawns a *whole new* tray host + `NotifyIcon`, on top of the still-alive
+old one, which now has no server child and does nothing except sit in
+the tray. Confirmed via `Get-CimInstance Win32_Process`: 7 real
+`tray_host.ps1` processes running, only the most recent one (by
+`ParentProcessId`) actually parenting the one live `server.exe` -- two of
+the seven predated this session entirely (2026-08-22, 2026-08-24), the
+rest accumulated from this phase's several same-day incident recoveries
+(view_definitions/kanban_test/calendar_test batch-atomicity fixes, each
+needing its own stop/edit/restart cycle).
+
+**Fixed by killing the 6 orphaned `tray_host.ps1` PIDs directly** (`Stop-Process
+-Id <pid> -Force`, identified individually via `CommandLine`/`ParentProcessId`,
+never a blanket `taskkill //IM powershell.exe` -- that would have also
+killed an unrelated, legitimate PowerShell session that happened to be
+running at the same time), leaving exactly the one tray host actually
+parenting the live server untouched. Confirmed the surviving server kept
+serving throughout (port 1340 still listening, live traffic in
+`server.log`, no reconnect needed on either device) -- this cleanup never
+touched the working server process itself.
+
+**Standing rule now, not just a one-time cleanup:** stopping the server
+for any future direct-`hub.db`-edit recovery must kill the *whole*
+process tree, not just `server.exe` -- `taskkill //IM server.exe //F`
+alone always leaks the wrapper. Until/unless the tray host itself grows a
+"stop cleanly on child exit" behavior, the safe stop sequence is: find
+the `tray_host.ps1` PowerShell process(es) via `Get-CimInstance
+Win32_Process -Filter "Name='powershell.exe'"` (filter `CommandLine` for
+`tray_host.ps1`), `Stop-Process` each one by PID (which takes its
+`server.exe` child down with it), *then* relaunch via `wscript
+launch_tray_hidden.vbs` for a single clean instance -- never just
+`taskkill //IM server.exe //F` on its own if a relaunch is coming.
+
+**Essentials v2 Phase 3 is done.** Per the confirmed roadmap sequencing
+(`claude/essentials-v2-architecture.md`), next up is **Phase 7 — Import /
+Export / Templates** (Memento backup import, starter template library,
+full database export/backup -- CSV import itself was already pulled out
+and shipped earlier), followed by **Phase 5 — Scripts & Events** last.
+Next session: not yet decided -- Mike's own real usage of the now-complete
+View Types, or starting Phase 7's own design pass.

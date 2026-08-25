@@ -16,8 +16,26 @@ void main() {
     // which needs genuine wall-clock time to complete -- pumpAndSettle's
     // fake clock never lets it resolve, so it just times out waiting on
     // the FutureBuilder's spinner.
+    //
+    // Two real-time windows, not one, as of Essentials v2 Phase 3:
+    // ViewSwitcherBar (embedded in GenericListScreen's own AppBar as of
+    // Step 2) only *mounts* once HomeShell's own `_groupsFuture` resolves
+    // and rebuilds -- which can itself happen right at the edge of a single
+    // delay's budget, leaving ViewSwitcherBar's own `view_definitions`
+    // query starting with almost no real time left. A pending sqflite lock
+    // -retry timer from that still-in-flight query then gets created in
+    // the *fake* zone once `runAsync` exits, tripping flutter_test's
+    // "timer still pending after dispose" invariant on teardown --
+    // reproduced directly (traced to `ViewDefinitionsDao.loadViewsForTable`
+    // in the failure's own stack), not a guess. The extra `pump()` +
+    // second delay, both still inside `runAsync`, gives a freshly-mounted
+    // widget's own async work a second real-time window instead of relying
+    // on the first one covering everything that might mount partway
+    // through it.
     await tester.runAsync(() async {
       await tester.pumpWidget(const EssentialsApp());
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await tester.pump();
       await Future<void>.delayed(const Duration(seconds: 2));
     });
     await tester.pump();

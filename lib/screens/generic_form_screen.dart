@@ -473,15 +473,38 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       // No FutureBuilder needed -- field.inlineOptions is already the
       // complete option list, unlike isLookup above (Essentials v2 Phase
       // 2 build order step 4).
+      //
+      // **A stored value that doesn't match any configured option needs
+      // its own ad-hoc item, not just an "isn't there" gap.**
+      // `DropdownButtonFormField` asserts (debug builds only, same known
+      // pitfall as the isLookup dropdown's own doc comment above) that
+      // exactly one item matches its value unless the value is `null` --
+      // found live, real-device verification: opening a record whose
+      // Status held "blocked" (not one of the field's three configured
+      // options) crashed on MIKE-12R's debug build with exactly that
+      // assertion; CU's *release* build never showed it, since Dart strips
+      // `assert()` there (same asymmetry the isLookup dropdown's own bug
+      // once had). Every v2 format is a presentation hint over raw TEXT,
+      // never a hard constraint (a deleted option, a stray CSV-imported
+      // value), so the fix mirrors KanbanViewScreen's own "never hide the
+      // record" posture for the identical scenario: an unmatched value
+      // gets its own ad-hoc item, labeled with the literal stored value,
+      // rather than silently disappearing from the dropdown (which would
+      // also have silently blanked it out on the next save).
+      final currentValue = _inlineSelectValues[field.column];
+      final hasCurrentValue =
+          currentValue == null || field.inlineOptions!.any((o) => o.key == currentValue);
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: DropdownButtonFormField<String>(
-          initialValue: _inlineSelectValues[field.column],
+          initialValue: currentValue,
           decoration: InputDecoration(labelText: field.label),
           items: [
             if (!field.required) const DropdownMenuItem<String>(child: Text('-')),
             for (final option in field.inlineOptions!)
               DropdownMenuItem<String>(value: option.key, child: Text(option.label)),
+            if (!hasCurrentValue)
+              DropdownMenuItem<String>(value: currentValue, child: Text('$currentValue (not a listed option)')),
           ],
           onChanged: (value) {
             setState(() => _inlineSelectValues[field.column] = value);

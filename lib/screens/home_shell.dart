@@ -7,11 +7,16 @@ import '../db/migration_service.dart';
 import '../db/search_index_service.dart';
 import '../db/sidebar_grouping_dao.dart';
 import '../db/sync_service.dart';
+import '../db/theme_settings_dao.dart';
+import '../db/view_definitions_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
+import 'calendar_screen.dart';
 import 'generic_list_screen.dart';
+import 'kanban_view_screen.dart';
+import 'list_view_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
@@ -88,6 +93,16 @@ class _HomeShellState extends State<HomeShell> {
   SidebarGroupingDao? _groupingDao;
   Set<String> _collapsedGroups = {};
   late Future<List<_SidebarGroup>> _groupsFuture;
+
+  /// Essentials v2 Phase 3 -- which saved view (if any) is currently active
+  /// per table, keyed by `table_name`. `null` (present but mapped to
+  /// `null`) means the implicit Grid tab; an absent key means "not loaded
+  /// yet" (see [_ensureSelectedViewLoaded]). Per-device (`device_settings`
+  /// key `selected_view:{table_name}`), same reasoning as
+  /// `last_active_table` -- Mike picking "List" for one table on this
+  /// device is a standing preference worth remembering across restarts,
+  /// same governing rule as everything else in [SidebarGroupingDao].
+  final Map<String, ViewDefinition?> _selectedViews = {};
 
   StreamSubscription<void>? _schemaChangesSubscription;
   Timer? _schemaChangesDebounce;
@@ -225,6 +240,9 @@ class _HomeShellState extends State<HomeShell> {
           ? lastActive
           : (tables.isEmpty ? null : tables.first.tableName);
     }
+    if (_selectedTableName != null) {
+      await _ensureSelectedViewLoaded(_selectedTableName!);
+    }
 
     final membership = await dao.loadMembership();
     _collapsedGroups = await dao.loadCollapsedGroups();
@@ -268,6 +286,50 @@ class _HomeShellState extends State<HomeShell> {
   void _select(String tableName) {
     setState(() => _selectedTableName = tableName);
     _groupingDao?.setLastActiveTable(tableName);
+    if (!_selectedViews.containsKey(tableName)) {
+      _ensureSelectedViewLoaded(tableName).then((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  /// Populates [_selectedViews] for [tableName] from its saved
+  /// `selected_view:{table_name}` device setting, resolving the stored
+  /// `view_id` against that table's *currently active* views -- self-heals
+  /// to Grid if the saved id no longer resolves (the view was deleted, or
+  /// the setting is stale/malformed) rather than crashing. No-op if
+  /// already cached (see [_selectedViews]'s own doc comment).
+  Future<void> _ensureSelectedViewLoaded(String tableName) async {
+    if (_selectedViews.containsKey(tableName)) return;
+    final deviceId = await DeviceId.resolve();
+    final settingsDao = ThemeSettingsDao(deviceId: deviceId);
+    final raw = await settingsDao.loadDeviceSetting('selected_view:$tableName');
+    ViewDefinition? resolved;
+    final viewId = raw == null || raw == 'grid' ? null : int.tryParse(raw);
+    if (viewId != null) {
+      final views = await ViewDefinitionsDao().loadViewsForTable(tableName);
+      for (final view in views) {
+        if (view.viewId == viewId) {
+          resolved = view;
+          break;
+        }
+      }
+    }
+    _selectedViews[tableName] = resolved;
+  }
+
+  /// Fired by a table's [ViewSwitcherBar] (embedded in whichever screen is
+  /// currently shown -- [GenericListScreen]/[ListViewScreen]) -- this is the
+  /// one place that decides which screen class to show next, per
+  /// claude/essentials-v2-phase3-design.md's "Nav / UI integration".
+  Future<void> _onViewSelected(String tableName, ViewDefinition? view) async {
+    setState(() => _selectedViews[tableName] = view);
+    final deviceId = await DeviceId.resolve();
+    final settingsDao = ThemeSettingsDao(deviceId: deviceId);
+    await settingsDao.setDeviceSetting(
+      'selected_view:$tableName',
+      view == null ? 'grid' : '${view.viewId}',
+    );
   }
 
   Future<void> _moveToGroup(TableConfig table, String groupName) async {
@@ -487,11 +549,41 @@ class _HomeShellState extends State<HomeShell> {
         return LayoutBuilder(
           builder: (context, constraints) {
             final isWide = constraints.maxWidth >= wideLayoutBreakpoint;
-            final content = GenericListScreen(
-              key: ValueKey(selected.tableName),
-              config: selected,
-              drawer: isWide ? null : _buildDrawer(groups),
-            );
+            // A stored view of a type this build doesn't know how to render
+            // (there is none right now -- List and Kanban both have real
+            // screens as of Step 3) falls back to Grid defensively rather
+            // than crashing, same defensive-nav posture as everywhere else.
+            final rawSelectedView = _selectedViews[selected.tableName];
+            final selectedViewType = rawSelectedView?.viewType;
+            final selectedView =
+                (selectedViewType == 'list' || selectedViewType == 'kanban') ? rawSelectedView : null;
+            final drawer = isWide ? null : _buildDrawer(groups);
+            void onViewSelected(ViewDefinition? view) => _onViewSelected(selected.tableName, view);
+            final Widget content;
+            if (selectedView == null) {
+              content = GenericListScreen(
+                key: ValueKey(selected.tableName),
+                config: selected,
+                drawer: drawer,
+                onViewSelected: onViewSelected,
+              );
+            } else if (selectedView.viewType == 'kanban') {
+              content = KanbanViewScreen(
+                key: ValueKey('${selected.tableName}:${selectedView.viewId}'),
+                config: selected,
+                view: selectedView,
+                drawer: drawer,
+                onViewSelected: onViewSelected,
+              );
+            } else {
+              content = ListViewScreen(
+                key: ValueKey('${selected.tableName}:${selectedView.viewId}'),
+                config: selected,
+                view: selectedView,
+                drawer: drawer,
+                onViewSelected: onViewSelected,
+              );
+            }
 
             if (!isWide) return content;
 
@@ -530,6 +622,7 @@ class _HomeShellState extends State<HomeShell> {
       ],
       const Divider(height: 1),
       _railSearchItem(),
+      _railCalendarItem(),
       _railSettingsItem(),
     ];
   }
@@ -546,6 +639,24 @@ class _HomeShellState extends State<HomeShell> {
             Icon(Icons.search),
             SizedBox(height: 4),
             Text('Search', style: TextStyle(fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _railCalendarItem() {
+    return InkWell(
+      onTap: () => Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const CalendarScreen())),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        child: Column(
+          children: [
+            Icon(Icons.calendar_month_outlined),
+            SizedBox(height: 4),
+            Text('Calendar', style: TextStyle(fontSize: 12)),
           ],
         ),
       ),
@@ -702,6 +813,16 @@ class _HomeShellState extends State<HomeShell> {
               Navigator.of(
                 context,
               ).push(MaterialPageRoute(builder: (_) => const SearchScreen()));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.calendar_month_outlined),
+            title: const Text('Calendar'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const CalendarScreen()));
             },
           ),
           ListTile(

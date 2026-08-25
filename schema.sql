@@ -98,15 +98,27 @@ CREATE TABLE "android_metadata" (
 -- `display_field` and `order_by` are chosen explicitly at creation time,
 -- not derived -- v1's _deriveDisplayColumn/_deriveOrderBy heuristics are
 -- gone entirely, since there is no longer a discovery step to feed them.
+-- `calendar_field` -- Essentials v2 Phase 3, build order step 5 -- a new
+-- per-table setting, same "chosen explicitly, not derived" spirit as
+-- `display_field`/`order_by` above, added later via `migration_log`
+-- (`ALTER TABLE ... ADD COLUMN`, same DDL kind SchemaEditorService already
+-- issues for user-added fields -- see tool/add_calendar_field_column.dart).
+-- JSON, one of two shapes (see lib/util/calendar_field.dart):
+--   {"mode": "single", "field": "due_date"}
+--   {"mode": "range", "start_field": "trip_start", "end_field": "trip_end"}
+-- NULL means "never explicitly set" -- the Calendar view falls back to the
+-- first date/dateTime-format field by position, single mode, computed at
+-- read time rather than backfilled into every existing row.
 CREATE TABLE "table_definitions" (
-    "table_name"    TEXT PRIMARY KEY,
-    "display_name"  TEXT NOT NULL,
-    "description"   TEXT,
-    "icon"          TEXT,
-    "display_field" TEXT,
-    "order_by"      TEXT,
-    "position"      INTEGER,
-    "created_at"    TEXT NOT NULL
+    "table_name"     TEXT PRIMARY KEY,
+    "display_name"   TEXT NOT NULL,
+    "description"    TEXT,
+    "icon"           TEXT,
+    "display_field"  TEXT,
+    "order_by"       TEXT,
+    "position"       INTEGER,
+    "created_at"     TEXT NOT NULL,
+    "calendar_field" TEXT
 );
 
 -- One row per field. Supersedes v1's `field_metadata` entirely: that table
@@ -207,6 +219,50 @@ CREATE TABLE "table_group" (
     "table_name"     TEXT PRIMARY KEY,
     "group_name"     TEXT NOT NULL,
     "group_position" INTEGER
+);
+
+-- ===================== VIEWS (Essentials v2 Phase 3) =====================
+-- Saved List/Kanban (per-table) and Calendar (aggregate) views -- shared/
+-- synced, same bucket as table_definitions/field_definitions, NOT per-device
+-- like table_column_settings/table_view_settings above. See
+-- claude/essentials-v2-phase3-design.md, "Data model".
+--
+-- `table_name` is nullable: NULL only for the one `view_type = 'calendar'`
+-- row (an aggregate surface overlaying multiple tables' own date fields, not
+-- scoped to a single table -- see that doc's "Confirmed decisions"). Every
+-- `list`/`kanban` row always sets it.
+--
+-- `view_id` is the timestamp+random scheme, not AUTOINCREMENT -- same
+-- collision-avoidance reasoning as `migration_log.id`: any device can create
+-- a view, so two devices creating one in the same sync window must not
+-- collide on a shared counter.
+--
+-- No FOREIGN KEY to table_definitions.table_name, same reasoning as every
+-- other table in this schema (see the header above -- sqlite_crdt's
+-- soft-delete rewrite means SQLite's own FK actions never fire regardless).
+-- A table delete is expected to cascade-soft-delete its own view_definitions
+-- rows at the app layer, mirroring the field_definitions cascade
+-- SchemaMetadataDao.softDeleteTable already does.
+--
+-- `config` is JSON, shape keyed by `view_type` -- see the design doc for the
+-- `list`/`kanban`/`calendar` shapes. Bootstrapped once, out-of-band, by
+-- tool/add_view_definitions_table.dart (same reasoning as table_definitions/
+-- field_definitions' own original bootstrap -- the migration_log mechanism
+-- that self-applies everything else can't create the table it depends on to
+-- record what to apply). MUST be kept identical to server/bin/server.dart's
+-- schemaStatements / tool/bootstrap_fresh_db.dart's infraSchemaStatements
+-- for a from-scratch rebuild.
+CREATE TABLE "view_definitions" (
+    "view_id"      INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+    ),
+    "table_name"   TEXT,
+    "view_type"    TEXT NOT NULL,
+    "display_name" TEXT NOT NULL,
+    "position"     INTEGER,
+    "config"       TEXT,
+    "created_at"   TEXT NOT NULL
 );
 
 -- ===================== SCHEMA MIGRATION SYSTEM =====================

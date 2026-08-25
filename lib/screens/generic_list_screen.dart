@@ -10,6 +10,7 @@ import 'package:trina_grid/trina_grid.dart';
 import '../db/generic_dao.dart';
 import '../db/sync_service.dart';
 import '../db/table_view_settings_dao.dart';
+import '../db/view_definitions_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/bool_value.dart';
@@ -24,6 +25,7 @@ import '../util/lookup_value.dart';
 import '../util/strings.dart';
 import 'csv_import_screen.dart';
 import 'generic_form_screen.dart';
+import 'view_switcher_bar.dart';
 
 /// Table view for a single table, driven entirely by [config], built on
 /// TrinaGrid (https://github.com/doonfrs/trina_grid -- the maintained
@@ -66,6 +68,7 @@ class GenericListScreen extends StatefulWidget {
     required this.config,
     this.drawer,
     this.formExtraValues,
+    this.onViewSelected,
   });
 
   final TableConfig config;
@@ -81,6 +84,17 @@ class GenericListScreen extends StatefulWidget {
   /// order's id here, so a new item silently gets the right `order_id`
   /// without it ever appearing as a field. `null` everywhere else.
   final Map<String, Object?>? formExtraValues;
+
+  /// Essentials v2 Phase 3 -- non-null only when `HomeShell` builds this
+  /// screen as the top-level "Grid" tab for a table (never set for a
+  /// scoped/embedded grid like `OrderSplitPaneScreen`'s items pane, since
+  /// [TableConfig.filterWhere] being set there means "not really this
+  /// table's whole-table view"). When set, this screen renders a
+  /// [ViewSwitcherBar] in its own `AppBar.bottom`, always with `currentViewId:
+  /// null` (this screen IS the implicit Grid tab) -- picking a different tab
+  /// bubbles straight up to `HomeShell`, which owns the "which screen class
+  /// to show" decision.
+  final ValueChanged<ViewDefinition?>? onViewSelected;
 
   @override
   State<GenericListScreen> createState() => _GenericListScreenState();
@@ -1328,7 +1342,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
       // (Essentials v2 Phase 2 build order step 4, see
       // claude/essentials-v2-phase2-design.md's "Inline select" entry).
       final options = {for (final o in field.inlineOptions!) o.key: o.label};
-      String displayFor(String? key) => key == null ? '' : (options[key] ?? '');
+      // A stored value that doesn't match any configured option (a deleted
+      // option, a stray CSV-imported value) shows as its own literal text
+      // rather than going blank -- same "never hide the record" posture as
+      // KanbanViewScreen's own ad-hoc column for the identical case, and
+      // the same fix `GenericFormScreen`'s inline-select dropdown needed
+      // after crashing outright on an unmatched value (found live,
+      // real-device verification -- see that fix's own doc comment).
+      String displayFor(String? key) => key == null ? '' : (options[key] ?? key);
       final items = <String?>[if (!field.required) null, ...options.keys];
       return _withColumnSetting(
         TrinaColumn(
@@ -1773,6 +1794,13 @@ class _GenericListScreenState extends State<GenericListScreen> {
             },
           ),
         ],
+        bottom: widget.onViewSelected == null || widget.config.filterWhere != null
+            ? null
+            : ViewSwitcherBar(
+                tableName: widget.config.tableName,
+                currentViewId: null,
+                onViewSelected: widget.onViewSelected!,
+              ),
       ),
       drawer: widget.drawer,
       body: FutureBuilder<_ScreenData>(

@@ -52,6 +52,10 @@ const Set<String> infraTables = {
   // never a nav/grid entry of their own.
   'table_definitions',
   'field_definitions',
+  // Essentials v2 Phase 3's saved-view metadata (see
+  // claude/essentials-v2-phase3-design.md) -- real, synced, CRDT-tracked,
+  // never a nav/grid entry of its own.
+  'view_definitions',
 };
 
 bool isInfraTable(String tableName) {

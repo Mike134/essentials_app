@@ -200,4 +200,38 @@ void main() {
     expect(match, hasLength(1));
     expect(match.single.isDeleted, isTrue);
   });
+
+  test('updateCalendarField sets and clears calendar_field, and advances hlc like updateTable', () async {
+    // Same regression this file's own updateTable test already proved for
+    // display_name -- updateCalendarField shares updateTable's spread-based
+    // upsert shape, so it needs the identical hlc-advances check to be sure
+    // it doesn't reintroduce the frozen-hlc bug for this new column.
+    final tableName = await createTestTable('SMD Calendar Field');
+    final before = await metadata.loadTable(tableName);
+    expect(before!['calendar_field'], isNull);
+
+    await metadata.updateCalendarField(tableName, '{"mode":"single","field":"due_date"}');
+    final afterSet = await metadata.loadTable(tableName);
+    expect(afterSet!['calendar_field'], '{"mode":"single","field":"due_date"}');
+    expect(
+      Hlc.parse(afterSet['hlc'] as String) > Hlc.parse(before['hlc'] as String),
+      isTrue,
+      reason: 'a fresh write must produce a strictly later hlc, or a rename/config change never wins '
+          'the CRDT last-write-wins comparison on another device',
+    );
+
+    await metadata.updateCalendarField(tableName, null);
+    final afterClear = await metadata.loadTable(tableName);
+    expect(afterClear!['calendar_field'], isNull);
+
+    final all = await metadata.loadAllTables();
+    expect(all.where((t) => t.tableName == tableName).single.calendarField, isNull);
+  });
+
+  test('updateCalendarField throws for a table with no table_definitions row', () async {
+    expect(
+      () => metadata.updateCalendarField('no_such_table_$runTag', null),
+      throwsArgumentError,
+    );
+  });
 }

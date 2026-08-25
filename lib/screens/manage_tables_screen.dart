@@ -1,8 +1,13 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
+import '../db/schema_registry.dart';
 import '../db/table_discovery_service.dart';
+import '../models/table_config.dart';
+import '../util/calendar_field.dart';
 import '../util/permanent_delete_gate.dart';
 
 /// Essentials v2 Phase 1's "Manage Tables" screen (build order step 8) --
@@ -77,7 +82,16 @@ class _ManageTablesScreenState extends State<ManageTablesScreen> {
   }
 
   void _reload() {
-    setState(() => _tablesFuture = _loadTables());
+    // Block-bodied, not `() => _tablesFuture = _loadTables()` -- an arrow
+    // closure whose body is that Future-returning assignment infers a
+    // Future return type itself, which setState's own debug-mode runtime
+    // check rejects ("setState() callback argument returned a Future") --
+    // a real, latent instance of the same bug found live in
+    // ListViewScreen (Essentials v2 Phase 3), fixed here too since it's
+    // the identical landmine.
+    setState(() {
+      _tablesFuture = _loadTables();
+    });
   }
 
   Future<void> _openEditor(TableDefinitionRow table) async {
@@ -249,11 +263,29 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
   String? _error;
   bool _saving = false;
 
+  /// Essentials v2 Phase 3 (Calendar) -- needs this table's real field list
+  /// (to offer only date/dateTime fields) and isn't available from
+  /// [TableDefinitionRow] alone, unlike `display_name`/`description`.
+  late Future<TableConfig> _configFuture;
+  bool _calendarRange = false;
+  String? _calendarField;
+  String? _calendarStartField;
+  String? _calendarEndField;
+
   @override
   void initState() {
     super.initState();
     _displayNameController = TextEditingController(text: widget.table.displayName);
     _descriptionController = TextEditingController(text: widget.table.description ?? '');
+    _configFuture = SchemaRegistry().buildConfig(widget.table.tableName);
+
+    final parsed = CalendarFieldConfig.tryParse(widget.table.calendarField);
+    if (parsed != null) {
+      _calendarRange = parsed.isRange;
+      _calendarField = parsed.field;
+      _calendarStartField = parsed.startField;
+      _calendarEndField = parsed.endField;
+    }
   }
 
   @override
@@ -276,6 +308,27 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
         displayName: _displayNameController.text,
         description: _descriptionController.text.trim().isEmpty ? null : _descriptionController.text.trim(),
       );
+
+      // Only ever written when there's a real eligible field selected --
+      // an unset/cleared choice just leaves calendar_field NULL, which
+      // already means "default to the first date/dateTime field by
+      // position" (see resolveCalendarField), so there's nothing to save
+      // in that case.
+      final config = await _configFuture;
+      final eligible = {for (final f in eligibleCalendarFields(config)) f.column};
+      final CalendarFieldConfig? toSave;
+      if (_calendarRange && _calendarStartField != null && _calendarEndField != null) {
+        toSave = CalendarFieldConfig.range(_calendarStartField!, _calendarEndField!);
+      } else if (!_calendarRange && _calendarField != null && eligible.contains(_calendarField)) {
+        toSave = CalendarFieldConfig.single(_calendarField!);
+      } else {
+        toSave = null;
+      }
+      await widget.metadata.updateCalendarField(
+        widget.table.tableName,
+        toSave == null ? null : jsonEncode(toSave.toJson()),
+      );
+
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       setState(() {
@@ -285,31 +338,101 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
     }
   }
 
+  Widget _buildCalendarFieldSection(TableConfig config) {
+    final eligible = eligibleCalendarFields(config);
+    if (eligible.isEmpty) {
+      // Eligibility, not an error state -- matches the Calendar view's own
+      // "a table with no date/dateTime field simply never appears" posture
+      // (see claude/essentials-v2-architecture.md's "Calendar view" entry).
+      return const SizedBox.shrink();
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 16),
+        const Divider(),
+        const SizedBox(height: 4),
+        Text('Calendar field', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 4),
+        Text(
+          'Which field(s) place this table\'s records on the Calendar view. '
+          'Defaults to "${eligible.first.label}" if never set.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<bool>(
+          segments: const [
+            ButtonSegment(value: false, label: Text('Single date')),
+            ButtonSegment(value: true, label: Text('Date range')),
+          ],
+          selected: {_calendarRange},
+          onSelectionChanged: (s) => setState(() => _calendarRange = s.first),
+        ),
+        const SizedBox(height: 8),
+        if (!_calendarRange)
+          DropdownButtonFormField<String>(
+            initialValue: eligible.any((f) => f.column == _calendarField) ? _calendarField : null,
+            decoration: const InputDecoration(labelText: 'Date field'),
+            items: [for (final f in eligible) DropdownMenuItem(value: f.column, child: Text(f.label))],
+            onChanged: (v) => setState(() => _calendarField = v),
+          )
+        else ...[
+          DropdownButtonFormField<String>(
+            initialValue: eligible.any((f) => f.column == _calendarStartField) ? _calendarStartField : null,
+            decoration: const InputDecoration(labelText: 'Start field'),
+            items: [for (final f in eligible) DropdownMenuItem(value: f.column, child: Text(f.label))],
+            onChanged: (v) => setState(() => _calendarStartField = v),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: eligible.any((f) => f.column == _calendarEndField) ? _calendarEndField : null,
+            decoration: const InputDecoration(labelText: 'End field'),
+            items: [for (final f in eligible) DropdownMenuItem(value: f.column, child: Text(f.label))],
+            onChanged: (v) => setState(() => _calendarEndField = v),
+          ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text('Edit "${widget.table.displayName}"'),
       content: SizedBox(
-        width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: _displayNameController,
-              decoration: const InputDecoration(labelText: 'Table name'),
-              onChanged: (_) => setState(() {}),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _descriptionController,
-              decoration: const InputDecoration(labelText: 'Description (optional)'),
-            ),
-            if (_error != null) ...[
+        // Capped to the available screen width, not a fixed value -- same
+        // overflow this project already found and fixed for the List/
+        // Kanban config dialogs' own SegmentedButton on a narrow Android
+        // screen (see ListViewScreen's `_ListViewConfigDialog`).
+        width: (MediaQuery.of(context).size.width - 96).clamp(240.0, 420.0).toDouble(),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _displayNameController,
+                decoration: const InputDecoration(labelText: 'Table name'),
+                onChanged: (_) => setState(() {}),
+              ),
               const SizedBox(height: 12),
-              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              TextField(
+                controller: _descriptionController,
+                decoration: const InputDecoration(labelText: 'Description (optional)'),
+              ),
+              FutureBuilder<TableConfig>(
+                future: _configFuture,
+                builder: (context, snapshot) {
+                  final config = snapshot.data;
+                  return config == null ? const SizedBox.shrink() : _buildCalendarFieldSection(config);
+                },
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [

@@ -67,6 +67,7 @@ class TableDefinitionRow {
     required this.displayName,
     required this.description,
     required this.icon,
+    required this.calendarField,
     required this.isDeleted,
     required this.modified,
   });
@@ -76,6 +77,13 @@ class TableDefinitionRow {
     displayName: row['display_name'] as String,
     description: row['description'] as String?,
     icon: row['icon'] as String?,
+    // Essentials v2 Phase 3 (Calendar) -- added later than every other
+    // column here via migration_log, so a row synced in from a device that
+    // hasn't applied that migration yet could theoretically be missing it;
+    // `row['calendar_field']` on a `Map` just reads `null` for an absent
+    // key either way, same lenient handling as every other nullable column
+    // read here.
+    calendarField: row['calendar_field'] as String?,
     isDeleted: (row['is_deleted'] as int) == 1,
     modified: row['modified'] as String,
   );
@@ -84,6 +92,12 @@ class TableDefinitionRow {
   final String displayName;
   final String? description;
   final String? icon;
+
+  /// Raw `table_definitions.calendar_field` JSON -- parse with
+  /// `CalendarFieldConfig.tryParse`/`resolveCalendarField`
+  /// (`lib/util/calendar_field.dart`), never read directly.
+  final String? calendarField;
+
   final bool isDeleted;
 
   /// Same reasoning as [FieldDefinitionRow.modified] -- see there.
@@ -232,6 +246,25 @@ class SchemaMetadataDao {
         if (!crdtBookkeepingColumns.contains(entry.key)) entry.key: entry.value,
       'display_name': trimmed,
       'description': description,
+    });
+  }
+
+  /// Sets/clears [tableName]'s `calendar_field` (Essentials v2 Phase 3) --
+  /// same "spread [existing], override just this one column" safe pattern
+  /// as [updateTable], for the identical reason (never carry a stale `hlc`
+  /// forward). `null` clears the override back to "defaults to the first
+  /// date/dateTime field by position" (see `lib/util/calendar_field.dart
+  /// .resolveCalendarField`).
+  Future<void> updateCalendarField(String tableName, String? calendarFieldJson) async {
+    final existing = await loadTable(tableName, includeDeleted: true);
+    if (existing == null) {
+      throw ArgumentError('No table_definitions row for "$tableName".');
+    }
+    final db = await _db;
+    await db.upsert('table_definitions', {
+      for (final entry in existing.entries)
+        if (!crdtBookkeepingColumns.contains(entry.key)) entry.key: entry.value,
+      'calendar_field': calendarFieldJson,
     });
   }
 

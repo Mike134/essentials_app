@@ -18,6 +18,7 @@ A personal data management Flutter app replacing Memento Database. Single Dart c
 |------|-------|
 | Flutter project root + CLAUDE.md + schema.sql | `C:\Flutter\essentials_app` |
 | Live database | `C:\Databases\essentials_app\essentials.db` |
+| Local search index (Phase 6) | `C:\Databases\essentials_app\search_index.db` — a separate file, deliberately never a table inside `essentials.db`; see `claude/essentials-v2-architecture.md`'s Phase 6 write-up for why `sqlite_crdt` can't tolerate a non-CRDT table living in the same file it manages |
 | Sync server hub db | `C:\Databases\essentials_app\server\hub.db` |
 | Old design files (retired, historical only) | `C:\Users\Mike\OneDrive\Documents\Essentials` |
 | GitHub repo | private, "essentials_app" |
