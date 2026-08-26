@@ -1,5 +1,8 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
+import '../db/database_backup_service.dart';
 import '../db/search_index_service.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
@@ -30,6 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _fontColorController;
   late final TextEditingController _backgroundColorController;
   bool _rebuildingSearchIndex = false;
+  bool _backingUp = false;
 
   @override
   void initState() {
@@ -104,6 +108,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Search index rebuilt.')),
     );
+  }
+
+  /// "Backup Database" -- Essentials v2 Phase 7, build order step 5.
+  /// Picks a destination *folder*, not a destination file -- `VACUUM INTO`
+  /// refuses to overwrite an already-existing file (see
+  /// [DatabaseBackupService.backupTo]'s own doc comment), which rules out
+  /// `FilePicker.saveFile`: this pinned file_picker version's `saveFile`
+  /// requires `bytes` up front and writes them itself, so the target path
+  /// it hands back already has a file sitting at it by the time this code
+  /// would run `VACUUM INTO` against it. `FilePicker.getDirectoryPath`
+  /// sidesteps that entirely -- pick a folder, then generate a
+  /// guaranteed-fresh filename inside it. No progress UI -- `VACUUM INTO`
+  /// on a personal-scale database is expected to be fast, confirmed
+  /// against Mike's actual data volume during real-device verification,
+  /// not assumed indefinitely (see the design doc's own "UI integration"
+  /// note).
+  Future<void> _backupDatabase() async {
+    setState(() => _backingUp = true);
+    try {
+      final directory = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Choose a backup location',
+      );
+      if (directory == null) return; // user cancelled
+      final service = DatabaseBackupService();
+      final destination = p.join(directory, service.suggestedFileName());
+      await service.backupTo(destination);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Backed up to $destination')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Backup failed: $e')));
+    } finally {
+      if (mounted) setState(() => _backingUp = false);
+    }
   }
 
   void _showInvalidHexMessage() {
@@ -389,6 +431,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Text('Rebuild search index'),
+              ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text('Backup', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text(
+                'Saves a complete, self-contained snapshot of essentials.db as a '
+                'plain .db file -- openable in Letos/DBeaver like any other '
+                'SQLite file. Export only -- there is no restore/import-a-backup '
+                'flow yet.',
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: _backingUp ? null : _backupDatabase,
+                child: _backingUp
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Backup Database'),
               ),
             ],
           );

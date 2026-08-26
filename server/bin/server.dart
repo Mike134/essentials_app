@@ -202,6 +202,26 @@ const schemaStatements = <String>[
     )
   ''',
 
+  // ---------- Templates (Essentials v2 Phase 7) ----------
+  // User-saved templates only -- built-in templates are a compiled Dart
+  // catalog on the client, never rows here. `template_id` is the
+  // timestamp+random scheme, same collision-avoidance reasoning as
+  // migration_log.id/view_definitions.view_id. MUST stay identical to
+  // schema.sql / tool/bootstrap_fresh_db.dart's infraSchemaStatements.
+  '''
+    CREATE TABLE "template_definitions" (
+      "template_id"  INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+      ),
+      "display_name" TEXT NOT NULL,
+      "description"  TEXT,
+      "icon"         TEXT,
+      "fields_json"  TEXT NOT NULL,
+      "created_at"   TEXT NOT NULL
+    )
+  ''',
+
   // ---------- Schema migration system ----------
   // `id` is the timestamp+random scheme, NOT AUTOINCREMENT -- changed for v2.
   // v1's AUTOINCREMENT was safe only because migrations were authored from

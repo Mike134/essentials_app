@@ -265,6 +265,43 @@ CREATE TABLE "view_definitions" (
     "created_at"   TEXT NOT NULL
 );
 
+-- User-saved templates (Essentials v2 Phase 7) -- shared/synced, same bucket
+-- as view_definitions/table_definitions. Built-in templates (Contacts,
+-- Books, Movies, Expenses, Subscriptions, Journal, Household Inventory) are
+-- deliberately NOT rows here -- they're a compiled Dart catalog
+-- (lib/models/builtin_templates.dart), identical on every install by
+-- construction; this table exists purely for "Save as Template," so a
+-- table Mike builds by hand on one device can be re-instantiated on any
+-- device. See claude/essentials-v2-phase7-design.md, "Data model".
+--
+-- `template_id` is the timestamp+random scheme, not AUTOINCREMENT -- same
+-- collision-avoidance reasoning as `migration_log.id`/`view_definitions
+-- .view_id`: any device can save a template.
+--
+-- `fields_json` is a JSON array of `{display_name, format, options_json}`
+-- objects -- the same shape SchemaEditorService.addField already consumes,
+-- so instantiating a template is just that method called once per array
+-- entry, the same loop NewTableScreen._submit already runs for its own
+-- inline field list.
+--
+-- Bootstrapped once, out-of-band, by tool/add_template_definitions_table
+-- .dart (same reasoning as view_definitions' own bootstrap -- the
+-- migration_log mechanism that self-applies everything else can't create
+-- the table it depends on to record what to apply). MUST be kept identical
+-- to server/bin/server.dart's schemaStatements / tool/bootstrap_fresh_db
+-- .dart's infraSchemaStatements for a from-scratch rebuild.
+CREATE TABLE "template_definitions" (
+    "template_id"  INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+    ),
+    "display_name" TEXT NOT NULL,
+    "description"  TEXT,
+    "icon"         TEXT,
+    "fields_json"  TEXT NOT NULL,
+    "created_at"   TEXT NOT NULL
+);
+
 -- ===================== SCHEMA MIGRATION SYSTEM =====================
 -- Every DDL operation in v2 goes through here: CREATE TABLE and ALTER TABLE
 -- ADD COLUMN routinely, DROP TABLE and ALTER TABLE DROP COLUMN for stage-2

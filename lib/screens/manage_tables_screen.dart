@@ -6,7 +6,9 @@ import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
 import '../db/schema_registry.dart';
 import '../db/table_discovery_service.dart';
+import '../db/template_definitions_dao.dart';
 import '../models/table_config.dart';
+import '../models/template_field.dart';
 import '../util/calendar_field.dart';
 import '../util/permanent_delete_gate.dart';
 
@@ -124,6 +126,70 @@ class _ManageTablesScreenState extends State<ManageTablesScreen> {
     _reload();
   }
 
+  /// "Save as Template" -- Essentials v2 Phase 7, build order step 4.
+  /// Placed here (a per-table action alongside rename/delete) rather than
+  /// on `ManageFieldsScreen`'s toolbar -- Claude Code's call, per the
+  /// design doc's own "exact menu placement... left to Claude Code's
+  /// judgment" note, since this is fundamentally a table-level action
+  /// (like the rest of this screen) rather than a field-level one. Reads
+  /// this table's *current* field list (`format`/`options` captured
+  /// verbatim, same reasoning as [instantiateTemplate]'s own doc comment
+  /// on why a saved template isn't restricted to what `NewTableScreen`'s
+  /// inline field row itself supports) and writes one
+  /// `template_definitions` row via [TemplateDefinitionsDao.createTemplate].
+  Future<void> _saveAsTemplate(TableDefinitionRow table) async {
+    final fields = await _metadata.loadFields(table.tableName, includeDeleted: false);
+    if (!mounted) return;
+
+    final nameController = TextEditingController(text: table.displayName);
+    final descriptionController = TextEditingController(text: table.description ?? '');
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save as Template'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: nameController,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Template name'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: descriptionController,
+              decoration: const InputDecoration(labelText: 'Description (optional)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    final name = nameController.text.trim();
+    final description = descriptionController.text.trim();
+    nameController.dispose();
+    descriptionController.dispose();
+    if (confirmed != true || name.isEmpty || !mounted) return;
+
+    await TemplateDefinitionsDao().createTemplate(
+      displayName: name,
+      description: description.isEmpty ? null : description,
+      fields: [
+        for (final f in fields)
+          TemplateField(displayName: f.displayName, format: f.format, optionsJson: f.optionsJson),
+      ],
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('"$name" saved as a template.')));
+  }
+
   Future<void> _restore(TableDefinitionRow table) async {
     await _metadata.restoreTable(table.tableName);
     _reload();
@@ -204,10 +270,20 @@ class _ManageTablesScreenState extends State<ManageTablesScreen> {
                     title: Text(table.displayName),
                     subtitle: Text(table.description ?? table.tableName),
                     onTap: () => _openEditor(table),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Delete table',
-                      onPressed: () => _softDelete(table),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.bookmark_add_outlined),
+                          tooltip: 'Save as template',
+                          onPressed: () => _saveAsTemplate(table),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          tooltip: 'Delete table',
+                          onPressed: () => _softDelete(table),
+                        ),
+                      ],
                     ),
                   ),
               if (deleted.isNotEmpty) ...[

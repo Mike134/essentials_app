@@ -125,6 +125,21 @@ class SyncService {
   static final _schemaChangesController = StreamController<void>.broadcast();
   static Stream<void> get schemaChanges => _schemaChangesController.stream;
 
+  /// Manually fires [schemaChanges] for a schema change made **on this
+  /// device**, not received from a remote peer -- e.g. Phase 7's
+  /// new-table-from-CSV flow, which creates a table from a screen
+  /// [HomeShell] doesn't already await/reload around (unlike
+  /// `NewTableScreen`, always reached through Settings, whose return path
+  /// `HomeShell` already awaits and reloads on unconditionally). Without
+  /// this, a table created outside that one path would silently not
+  /// appear in nav until the next relaunch or an unrelated remote sync --
+  /// the exact "sync works, display reactivity doesn't" gap this stream
+  /// already exists to close for the remote case, just never extended to
+  /// a local write made off the Settings path. Safe to call even while no
+  /// listener is attached (a broadcast stream with no subscribers simply
+  /// drops the event).
+  static void notifyLocalSchemaChange() => _schemaChangesController.add(null);
+
   /// Fires with the set of table names an incoming changeset touched,
   /// for *any* table -- not just the schema tables [schemaChanges] narrows
   /// to. [GenericListScreen] listens for this to reload its grid live when

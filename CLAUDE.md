@@ -7709,3 +7709,176 @@ full database export/backup -- CSV import itself was already pulled out
 and shipped earlier), followed by **Phase 5 — Scripts & Events** last.
 Next session: not yet decided -- Mike's own real usage of the now-complete
 View Types, or starting Phase 7's own design pass.
+
+## Essentials v2 Phase 7 — Import / Export / Templates, build-verified; real-device pass in progress (2026-08-25)
+
+Design: `claude/essentials-v2-phase7-design.md`, grounded in a real read of
+the live CSV-import code and a factual check of Memento Database's own
+documented export format (plain CSV, not a proprietary backup format --
+confirmed via Memento's own wiki/help pages, not assumed). Both of the
+doc's flagged open questions resolved favorably before implementation, by
+reading source rather than guessing: the installed `csv: ^8.0.0` genuinely
+supports a configurable `fieldDelimiter`/`quoteCharacter` (`autoDetect:
+false` required for a custom delimiter to actually take effect --
+confirmed by reading `CsvDecoder`'s own source: with `autoDetect: true`,
+`Csv()` passes `fieldDelimiter: null` internally regardless of what was
+given); and `VACUUM INTO` through `crdt.execute()` is not just plausible
+but confirmed working via the *identical* code path the already-proven
+`PRAGMA` calls in `database_helper.dart` already rely on -- neither
+`VACUUM` nor `PRAGMA` has a dedicated statement class in `sql_crdt`'s
+`sqlparser` dependency, so both parse as an `InvalidStatement` and fall
+straight through to plain, unmodified execution.
+
+**Built, in the design doc's own order:**
+1. **New-table-from-CSV** -- `CsvImportScreen` gained an `_ImportMode`
+   toggle ("Existing table" / "New table"). New-table mode adds
+   delimiter/text-qualifier fields alongside the file picker, a table-name
+   field with the same live identifier preview `NewTableScreen` already
+   has, and a header-to-field-row UI (checkbox to include/exclude, editable
+   field name, format dropdown). On Create, runs `SchemaEditorService
+   .createTable` + a sequential `addField` per included header (identical
+   pipeline to `NewTableScreen._submit`), reads the fields back in
+   position order via `SchemaMetadataDao.loadFields` to build the
+   CSV-column-to-field mapping (`addField` doesn't return the identifier it
+   generated), then falls straight into the *existing*, completely
+   unmodified `_commit()`/row-coercion path. Format choices for a
+   CSV-derived field deliberately exclude `select`/`link_record` too, on
+   top of the design doc's own `lookup`/`rollup`/`inlineSelect`/`formula`
+   exclusions -- a raw CSV cell has no natural correspondence to another
+   table's row id, and per-row async target-table pickers for every header
+   would be real complexity the design doc's own field-row sketch never
+   actually describes. A linked field can always be added afterward via
+   Add Field, same one extra step already established for every other
+   new-table flow.
+2. **`template_definitions`** -- bootstrapped onto the real, live
+   `essentials.db` on MIKE-CU via a new `tool/add_template_definitions_table
+   .dart` (byte-for-byte mirror of `tool/add_view_definitions_table.dart`'s
+   own bootstrap pattern -- authors a real `migration_log` row so the DDL
+   syncs to the server/MIKE-12R normally on next connect, applies it to
+   this device immediately). Added identically to `schema.sql`/`tool
+   /bootstrap_fresh_db.dart`'s `infraSchemaStatements`/`server/bin/server
+   .dart`'s `schemaStatements` for from-scratch-rebuild parity, per the
+   existing cross-file duplication convention. `lib/models/template_field
+   .dart` (`TemplateField` -- `{display_name, format, options_json}`, the
+   same shape `SchemaEditorService.addField` already consumes) +
+   `lib/models/builtin_templates.dart` (the seven confirmed starter
+   templates, compiled Dart data, never rows -- Contacts/Books/Movies/
+   Expenses/Subscriptions/Journal/Household Inventory, Passwords
+   deliberately excluded per the design doc's own reasoning) +
+   `lib/db/template_definitions_dao.dart` (`loadAll`/`createTemplate`/
+   `softDeleteTemplate` for user-saved templates only).
+3. **"Start from a template"** in `NewTableScreen` -- a new button opens a
+   combined-list bottom sheet (built-in catalog first, then any saved
+   templates, each with its field names as a preview subtitle), then a
+   table-name confirmation dialog, then creates the table via a new
+   `lib/util/template_instantiation.dart`'s `instantiateTemplate`.
+   **Deliberately does NOT pre-populate `NewTableScreen`'s own
+   `_pendingFields`**, despite the design doc's "UI integration" section
+   suggesting exactly that -- a real tension surfaced between two parts of
+   the same doc: `_PendingField` only round-trips `select`/`link_record`
+   options faithfully, and a saved template can in principle capture *any*
+   field shape (`formula`, inline `select`, `lookup`/`rollup`, ...).
+   Resolved in favor of the doc's own "Data model" section instead (a
+   template just "produces a List of (displayName, format, optionsJson)
+   and hands it to the same loop", exactly what `instantiateTemplate` does,
+   same as `CsvImportScreen`'s new-table mode) -- trades the "edit fields
+   before committing" nicety for full fidelity on any template shape;
+   Manage Fields is one extra step away if edits are needed after.
+   `instantiateTemplate` skips (with a warning, doesn't fail the whole
+   instantiation) a `select`/`link_record` field whose target table no
+   longer exists -- only possible for a saved template, no built-in one
+   ever uses a linked format.
+4. **"Save as Template"** -- placed on `ManageTablesScreen`'s per-table row
+   (a bookmark-icon `IconButton` next to the existing delete icon), not
+   `ManageFieldsScreen` -- Claude Code's call per the design doc's own
+   "left to Claude Code's judgment" note, since this is fundamentally a
+   table-level action like everything else already on that screen. Reads
+   the table's *current* field list via `SchemaMetadataDao.loadFields` and
+   writes one `template_definitions` row, format/options captured verbatim
+   (same reasoning as point 3 above for why this isn't restricted to
+   `_PendingField`'s narrower shape).
+5. **"Backup Database"** in `SettingsScreen`, new `lib/db
+   /database_backup_service.dart`'s `DatabaseBackupService.backupTo` --
+   `VACUUM INTO` against the live `essentials.db` connection. Picks a
+   *folder* via `FilePicker.getDirectoryPath`, not a destination file via
+   `FilePicker.saveFile` -- a real, confirmed API mismatch, not a style
+   choice: this pinned file_picker version's `saveFile` requires `bytes`
+   up front and writes them itself, meaning the path it hands back already
+   has a file sitting at it, and `VACUUM INTO` refuses to write to a path
+   that already exists (SQLite's own documented behavior). Generates a
+   fresh `essentials_backup_<date>.db` filename inside the chosen folder
+   instead.
+
+**One real gap found and fixed proactively, not part of the original
+design doc:** `CsvImportScreen` isn't reached through Settings, so a table
+created via its new-table mode had no existing hook to make it show up in
+`HomeShell`'s nav without a full relaunch (`NewTableScreen` gets this for
+free, since `HomeShell` already awaits and reloads unconditionally on
+every return from Settings). Fixed with a new `SyncService
+.notifyLocalSchemaChange()` -- manually fires the exact same
+`schemaChanges` broadcast stream `HomeShell` already subscribes to for the
+*remote* case, now also usable for a local write made off that one path.
+
+`flutter analyze` clean throughout every step; both `flutter build
+windows`/`apk --debug` clean at every checkpoint; debug APK pushed to
+MIKE-12R.
+
+**Mike's real-device verification, in progress:**
+- **New-table-from-CSV: done, passed, including a deliberate stress
+  test.** Built `Timeframe` and `Subscription Tracker` (14 rows) from real
+  CSV exports on MIKE-CU. One column (`Subscription Tracker.NextDate`,
+  format `date`) had every one of its 14 values fail to parse on purpose
+  (Mike's own test -- a 3-character weekday prefix, e.g. `"Wed
+  2026-08-26"`, which `coerceCsvCell`'s date parser doesn't recognize) --
+  confirmed the malformed-value handling worked exactly as designed:
+  stored the raw text as a fallback (never lost, never crashed, nothing
+  else in the row affected), and the import summary correctly reported it.
+  **Both `Timeframe` and `Subscription Tracker` are deliberately
+  test-only, will be deleted and later reimported for real** -- don't
+  treat their current data (including the unparsed `NextDate` strings) as
+  something needing a fix; no code change was requested or made for the
+  weekday-prefix case.
+- **"Start from a template": done, passed.** Created a `Books` table from
+  the built-in template on MIKE-CU, added a real record through the form.
+- **Cross-device sync for both new-table flows: done, passed.** All of the
+  above (template-created and CSV-created tables, schema *and* rows) are
+  confirmed present on MIKE-12R -- the specific higher-risk scenario the
+  design doc flagged (create-a-table-then-immediately-bulk-insert hits the
+  known `crdt_sync` batch-atomicity trigger condition, recurred 5+ times
+  across earlier phases) did **not** recur this time; no `tool
+  /adopt_migrations.dart` intervention was needed.
+- **Still open, not yet tried:** "Save as Template" (save one of Mike's
+  own real tables, confirm it appears correctly in the "Start from a
+  template" picker and instantiates with the right fields/formats); "Backup
+  Database" (confirm a real `.db` file lands in the chosen folder and
+  opens cleanly in Letos/DBeaver -- Android's `FilePicker.getDirectoryPath`
+  behavior with this app's `MANAGE_EXTERNAL_STORAGE` setup is genuinely
+  untested, flagged as a real unknown, not assumed to work); instantiating
+  a built-in template other than Books, just to confirm the built-in half
+  of the combined picker list also renders/works correctly, not just the
+  saved-template half.
+
+**Session paused here for the night, by Mike's request.** Resuming
+tomorrow with the three still-open items above.
+
+**Resumed 2026-08-26 -- all three closed out, Phase 7 fully verified.**
+- **"Save as Template": done, passed, on both MIKE-CU and MIKE-12R.**
+- **Built-in templates: confirmed usable**, not just the "Start from a
+  template" mechanism proven against Books the day before.
+- **"Backup Database": done, passed.** Backed up to `C:\Data
+  \essentials_backup_2026-08-26.db` -- checked directly, not just trusted:
+  opens cleanly with a plain `sqlite3` connection, `PRAGMA
+  integrity_check: ok`, all 20 real tables present (including `books`/
+  `timeframe`/`subscription_tracker` and the one real `template_definitions`
+  row from the "Save as Template" test above), 7.36 MB. `VACUUM INTO`
+  through `crdt.execute()` confirmed working end-to-end on real data, not
+  just via the source-reading argument that predicted it would.
+
+**Essentials v2 Phase 7 is done, build-verified and real-device verified
+on both platforms.** `Timeframe`/`Subscription Tracker` remain deliberate
+test tables (per the note above) -- Mike's plan is to delete and re-import
+them for real later, not something Code needs to act on. Next session: not
+yet decided -- per the confirmed roadmap sequencing, **Phase 5 — Scripts &
+Events** is the last item on `claude/essentials-v2-architecture.md`'s
+list, or Mike's own real usage of the now-complete import/export/template
+tooling.

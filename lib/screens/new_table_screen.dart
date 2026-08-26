@@ -4,7 +4,12 @@ import 'package:flutter/material.dart';
 
 import '../db/schema_editor_service.dart';
 import '../db/schema_metadata_dao.dart';
+import '../db/schema_registry.dart';
+import '../db/template_definitions_dao.dart';
+import '../models/builtin_templates.dart';
+import '../models/template_field.dart';
 import '../util/field_format_choice.dart';
+import '../util/template_instantiation.dart';
 import 'add_field_screen.dart' show autoDisplayField;
 
 /// Formats [NewTableScreen]'s own inline field row can fully support --
@@ -74,6 +79,72 @@ class _PendingField {
   /// see `autoDisplayField`'s doc comment for why this is never left to
   /// silently default to a literal `'name'` column that might not exist.
   final String? displayField;
+}
+
+/// One combined-picker entry -- either a built-in template or a saved
+/// [SavedTemplate], reduced to just what [NewTableScreen] needs
+/// ([instantiateTemplate] takes the same [TemplateField] list either way).
+class _TemplateChoice {
+  const _TemplateChoice({required this.displayName, required this.fields});
+  final String displayName;
+  final List<TemplateField> fields;
+}
+
+/// The "Start from a template" bottom sheet -- one combined list, built-in
+/// catalog first then any [SavedTemplate] rows, each showing its field
+/// names as a subtitle ("a preview of each template's field list before
+/// committing," per claude/essentials-v2-phase7-design.md's "UI
+/// integration").
+class _TemplatePickerSheet extends StatelessWidget {
+  const _TemplatePickerSheet({required this.saved});
+  final List<SavedTemplate> saved;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.7,
+        child: ListView(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('Start from a template', style: Theme.of(context).textTheme.titleMedium),
+            ),
+            for (final t in builtinTemplates)
+              ListTile(
+                title: Text(t.displayName),
+                subtitle: Text(t.fields.map((f) => f.displayName).join(', ')),
+                onTap: () => Navigator.pop(
+                  context,
+                  _TemplateChoice(displayName: t.displayName, fields: t.fields),
+                ),
+              ),
+            if (saved.isNotEmpty) ...[
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text('Saved templates', style: Theme.of(context).textTheme.labelLarge),
+              ),
+              for (final t in saved)
+                ListTile(
+                  title: Text(t.displayName),
+                  subtitle: Text(t.fields.map((f) => f.displayName).join(', ')),
+                  onTap: () => Navigator.pop(
+                    context,
+                    _TemplateChoice(displayName: t.displayName, fields: t.fields),
+                  ),
+                ),
+            ],
+            if (builtinTemplates.isEmpty && saved.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No templates available.'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// Essentials v2 Phase 1's "New Table" screen (build order step 7) --
@@ -233,6 +304,77 @@ class _NewTableScreenState extends State<NewTableScreen> {
 
   bool get _canSubmit => _displayNameController.text.trim().isNotEmpty;
 
+  /// "Start from a template" -- Essentials v2 Phase 7, build order step 3.
+  /// Deliberately its own self-contained flow rather than pre-populating
+  /// [_pendingFields] the way an earlier draft of this feature considered:
+  /// [_PendingField] only round-trips `select`/`link_record` options
+  /// faithfully, and a saved template can capture any field shape (a
+  /// `formula`, an inline `select`, ...) -- see [instantiateTemplate]'s own
+  /// doc comment for the full reasoning. Picks a template (with a preview
+  /// of its fields), confirms/edits the table name, then creates the table
+  /// and every field in one pass and pops this whole screen with the new
+  /// table name -- same return contract [_submit] already uses.
+  Future<void> _startFromTemplate() async {
+    final saved = await TemplateDefinitionsDao().loadAll();
+    if (!mounted) return;
+    final choice = await showModalBottomSheet<_TemplateChoice>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _TemplatePickerSheet(saved: saved),
+    );
+    if (choice == null || !mounted) return;
+
+    final nameController = TextEditingController(text: choice.displayName);
+    final confirmedName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Table name'),
+        content: TextField(controller: nameController, autofocus: true),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, nameController.text.trim()),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    nameController.dispose();
+    if (confirmedName == null || confirmedName.isEmpty || !mounted) return;
+
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+
+    try {
+      final result = await instantiateTemplate(
+        editor: _editor,
+        registry: SchemaRegistry(),
+        displayName: confirmedName,
+        fields: choice.fields,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.skippedFields.isEmpty
+                ? '"${result.tableName}" created from template -- syncing to every other device.'
+                : '"${result.tableName}" created -- skipped (target table missing): '
+                      '${result.skippedFields.join(', ')}.',
+          ),
+        ),
+      );
+      Navigator.pop(context, result.tableName);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = 'Failed: $e';
+      });
+    }
+  }
+
   Future<void> _submit() async {
     // Real bug, found live: a field that looked fully filled in (name,
     // format, even a linked-table target already picked) but was never
@@ -364,6 +506,12 @@ class _NewTableScreenState extends State<NewTableScreen> {
           const Text(
             'Creates a table through the schema engine -- syncs to every '
             'other device automatically, no manual copy-paste step.',
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _saving ? null : _startFromTemplate,
+            icon: const Icon(Icons.dashboard_customize_outlined),
+            label: const Text('Start from a template'),
           ),
           const SizedBox(height: 20),
           TextField(

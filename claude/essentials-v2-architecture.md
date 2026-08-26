@@ -428,11 +428,11 @@ Phase 3's three view types (List, Calendar, Kanban) are now all conceptually set
 - **The recurring `crdt_sync` batch-atomicity gap (a new table's own creating migration and its row data can arrive bundled in one changeset and crash/roll back together) is now a confirmed systemic risk, not a one-off** — hit three times across this phase alone. `tool/adopt_migrations.dart` is the general-purpose manual recovery tool this produced; a real fix at the `crdt_sync` integration level is still not attempted, flagged for a future pass if it keeps recurring.
 - One real correctness bug worth remembering for any future long-range date arithmetic in this app: chaining many `Duration`-day additions from a fixed epoch in local time can drift a component-hour off midnight (Dart's `DateTime.add` is DST-aware) even when the resulting calendar date is correct — broke a strict `DateTime ==` "is this today" check silently. Compare by year/month/day fields, not object equality, for anything built this way.
 
-### Phase 7 — Import / Export / Templates — **the rest of it, last; CSV import itself was pulled out and moved up, see above**
+### Phase 7 — Import / Export / Templates — **the rest of it, last; CSV import itself was pulled out and moved up, see above** — **done, 2026-08-26 — built, build-verified, and real-device verified on both MIKE-CU and MIKE-12R. See `claude/essentials-v2-phase7-design.md` and CLAUDE.md's own write-up.**
 - ~~CSV import per table (already partially exists)~~ — pulled out as its own side task before Phase 4, see "Roadmap sequencing" above; the "already partially exists" claim was stale (no in-app CSV import code existed as of 2026-08-23 — confirmed by reading `lib/`, not assumed) and is corrected here rather than silently rewritten.
-- Memento backup file import (CSV-based)
-- Starter template library (Contacts, Books, Movies, Passwords, Expenses, etc.)
-- Full database export/backup — note CSV export of a single table already works today (`GenericListScreen._exportCsv`); this bullet is about a full-database backup/export, a different and larger scope.
+- Memento backup file import — **confirmed CSV, not a proprietary format** (verified against Memento's own documentation, 2026-08-25) — ships as an extension of the existing `CsvImportScreen`: delimiter/text-qualifier config plus create-a-new-table-from-headers. See design doc.
+- Starter template library — **confirmed catalog, 2026-08-25: Contacts, Books, Movies, Expenses, Subscriptions, Journal, Household Inventory.** Passwords deliberately excluded — Mike's call, this app has no field-level encryption and a built-in Passwords template would misleadingly imply protection that doesn't exist. Built-in templates are compiled Dart data, not synced rows; user-saved templates ("Save as Template") get a new shared `template_definitions` table. See design doc.
+- Full database export/backup — note CSV export of a single table already works today (`GenericListScreen._exportCsv`); this bullet is about a full-database backup/export, a different and larger scope. **Confirmed scope, 2026-08-25: export only, via `VACUUM INTO`, no guided restore in this phase** — see design doc for why restore is a separate, bigger risk surface.
 
 ### Deferred (explicitly, not forgotten)
 - Reporting / printing — significant effort, moderate value
@@ -455,6 +455,24 @@ These do not change:
 - `device_id` via hostname (Windows) / `Settings.Global.DEVICE_NAME` (Android)
 - Grid features: column persistence, row coloring, grouping, aggregates, CSV export, filter by value
 - TrinaGrid upsert rule: never DELETE + INSERT; always `INSERT OR REPLACE`
+
+---
+
+## Known Systemic Risks
+
+### `crdt_sync` batch-atomicity gap around new-table creation — confirmed structural, not a one-off (consolidated 2026-08-25)
+
+Hit **five times** across four different sessions, always the same shape:
+
+1. `schema_admin` session ("Ordering guarantee" section) — a new column's data arriving before the migration that creates it, poisoning the batch and stranding `migration_log` itself.
+2. Phase 1 Step 3 — the deliberate infinite-loop repro: `domain` row data referencing a column that didn't exist yet on the receiving device, same all-or-nothing rollback.
+3–5. Phase 3 — three separate times in one session: `view_definitions`' own bootstrap, `kanban_test`, and `calendar_test`.
+
+**The mechanism, not just the symptom:** when a brand-new table's `migration_log`-authored DDL and its own row data land in the *same* changeset, and the receiving peer doesn't yet have the physical table (no cached PK info for it), the merge throws (`ON CONFLICT ()`) and the merge transaction — which spans every table in that batch, not just the new one — rolls back entirely. That takes the `migration_log` row down with it too, so the peer has no path to ever learn about the fix that would resolve it, without manual intervention.
+
+**Scope going forward:** this is a `sql_crdt`/`crdt_sync` integration gap, not anything about views specifically — it's a create-table-window problem. Once a table physically exists on every device, ordinary row-level LWW sync is solid (proven since the Part A prototype). It reproduces on **any** phase that creates a new table live and syncs it shortly after — which is most phases now, since that's how tables get made post-`schema_admin`. **Worth checking for explicitly during real-device verification of Phase 5 and Phase 7**, both of which are expected to create tables live (Phase 7's template library instantiating starter tables; Phase 5 if any script ends up creating tables — TBD).
+
+**Not fixed at the library-integration level.** A real fix would need something like the server withholding a new table's row data until its own creating migration is confirmed applied locally — not attempted. `tool/adopt_migrations.dart` (built during Phase 3) is the general-purpose manual recovery tool for when this recurs — faster than a bespoke fix each time, not a substitute for one. Its own doc comment flags this as a real open gap.
 
 ---
 
