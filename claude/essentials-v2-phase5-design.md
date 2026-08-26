@@ -238,3 +238,127 @@ aside).
 step.** `JsEngine` is a standalone class with no consumer yet; the real
 `record`/`table`/`notify`/`navigate` script API (step 3) is what actually
 calls it from application code. Next: build order step 3.
+
+## Step 3, concluded: the real `record`/`table`/`notify`/`navigate` script API, build-verified
+
+**A real architectural tension surfaced immediately, resolved
+deliberately rather than papered over:** QuickJS's `evaluate()` is
+synchronous, but `sqlite_crdt`'s real write API is async, and this
+project's own hardest-won rule (CLAUDE.md: "no record-level edits in
+Letos/DBeaver, full stop") is that any write bypassing `sqlite_crdt`'s
+own API silently never syncs. There is no way in Dart to synchronously
+block one isolate's event loop on a `Future` without deadlocking it, so
+a script's write calls can't get a real synchronous round-trip through
+the correct async API on the same isolate that's running QuickJS.
+
+**Resolved with a two-phase model, not a correctness-cutting
+workaround.** `lib/util/scripting/script_api_runtime.dart`'s
+`ScriptApiRuntime`:
+- **Reads are genuinely synchronous** — `table('X').find()/.all()` are
+  backed by a second, read-only connection opened with `package:sqlite3`
+  directly (the real, non-async native call `sqflite_common_ffi` itself
+  sits on top of) inside the same script-execution isolate. Safe because
+  a `SELECT` needs no CRDT bookkeeping — no correctness risk, real
+  synchronous mid-script data exactly as the design doc's API sketch
+  implies.
+- **Writes are deferred, not synchronous.** `record.save()`/`.delete()`
+  and `table('X').create()` queue an in-memory action during the script
+  (pure Dart, no I/O, so no synchronicity problem); once `evaluate()`
+  returns — back in ordinary awaitable Dart code, not inside a
+  synchronous native call frame — every queued write runs for real
+  through a freshly-opened `SqliteCrdt` connection's own `execute()`,
+  getting correct `hlc`/`node_id`/`modified` stamping automatically, the
+  same way `GenericDao` already does it (including the identical
+  rowid-alias-bypasses-DEFAULT fix for a new row's `id`). **Known,
+  accepted v1 limitation, documented not hidden:** a script can't see
+  its own `table('X').create()`/`record.save()` effects in a *later*
+  read within the *same* run, since the read connection doesn't see a
+  write that hasn't happened yet.
+- **`notify`/`navigate` need no database access at all** — captured into
+  an in-memory list during the script, reported back as `ScriptEffects`
+  once the run finishes, never dispatched by this layer. Real dispatch
+  (an actual SnackBar/Navigator push when a UI exists) is build order
+  step 4's job — matches the design doc's own "navigate.* ... a no-op
+  ... when the app is backgrounded" framing exactly: this layer doesn't
+  know or care whether a UI exists, it just reports what the script
+  asked for.
+
+**A second real risk investigated and designed around before writing any
+code: `sqlite_crdt`'s own identity derivation.** Reading `sql_crdt`'s
+source confirmed a load-bearing, previously-undocumented mechanism: a
+fresh `SqliteCrdt.open()` against an already-populated db has no stored
+`node_id` at all — it derives its `nodeId` from `canonicalTime`, which
+comes from `_getLastModified()`, a **global** `MAX(modified)` scan across
+every table with no per-node filter. Any explicit `nodeId` argument to
+`open()`/`init()` is silently discarded whenever the db already has data
+(confirmed in `sql_crdt`'s own doc comment: "only works for empty
+CRDTs"). This is not new risk introduced by this step — it's how the
+real app's own `DatabaseHelper._open()` has always worked, every single
+launch, already-proven-safe by weeks of real multi-device usage — but it
+meant a naive design (stamping script writes with some invented,
+different node id) would have risked a genuinely serious identity-hijack
+bug: if that invented id ever became the single globally-most-recent
+`modified` row before the next full app relaunch, the relaunching app's
+*own* connection could adopt it as its permanent identity going forward.
+Resolved by not inventing an identity at all — the deferred-write
+connection is a completely ordinary fresh `SqliteCrdt.open()` against the
+same file, deriving its `node_id` exactly the same way any other fresh
+connection to this database already does (including the real app's own
+next relaunch) — no new mechanism, no new risk, just the existing,
+already-trusted one applied once more.
+
+**Bridge mechanism, confirmed by reading `flutter_js`'s actual source,
+not guessed:** the package's well-known `sendMessage`/`onMessage`
+channel is one-way (JS sends, Dart receives, no return value at all) —
+not usable for `record.get()` etc., which need a real value back.
+`QuickJsRuntime2` separately supports wrapping a plain Dart `Function` as
+a genuine, synchronously-callable JS global via its internal
+`_DartFunction`/`JSInvokable` mechanism (the same primitive
+`initChannelFunctions()` itself uses for `sendMessage`) — confirmed
+working via `runtime.localContext['setToGlobalObject']`, a `JSInvokable`
+already set up by `.init()`, invoked directly to install
+`__bridge_record_get`/`__bridge_table_find`/etc. as real global
+functions. A short JS prelude (evaluated once per run, before the
+script) wraps these primitives into the `record`/`table()`/`notify`/
+`navigate` shapes the design doc's own API sketch shows.
+
+**`ScriptApiRuntime` deliberately duplicates `JsEngine`'s small
+isolate-spawn/timeout-race pattern rather than reusing `JsEngine`
+itself** — `JsEngine.run()` takes a bare code string with no hook to
+install bridge functions or open a database connection first, and this
+project already has an established precedent (`MigrationService`/
+`schemaStatements`) for small duplication over forcing a shared
+abstraction onto two genuinely different jobs.
+
+**Deliberately out of scope, flagged rather than silently skipped:**
+deferred writes don't reindex `search_index` (unlike `GenericDao
+.insert()`/`.update()`) — `SearchIndexService` assumes the normal app's
+own `DatabaseHelper`/`SchemaRegistry` bootstrap, which this isolate
+deliberately doesn't replicate. A record a script creates or edits won't
+be findable via Search until something else touches it. Worth closing
+once this API has a real caller (step 4) and the gap's actual impact is
+clearer.
+
+**Tests:** `test/script_api_runtime_test.dart` (7 tests), every table
+created through the real `SchemaEditorService` pipeline, run against the
+real `essentials.db` — `record.get/set/save` round-trips to a real,
+re-readable value; `record.delete()` really soft-deletes; `table(x)
+.all()/.find()` see real committed rows; `table(x).create()` produces a
+real row after the script finishes; `notify`/`navigate` calls are
+captured as effects, never dispatched; a scheduled-style run with no
+bound record sees `record === null`; `record.save()` with no bound
+record fails clearly rather than crashing silently. All passed on the
+first real run against the live db. Confirmed after: zero leaked
+physical test tables, `PRAGMA integrity_check: ok`.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean (needs `quickjs_c_bridge.dll` copied from a prior
+Windows build into the repo root to run `test/script_api_runtime_test
+.dart`/`test/js_engine_test.dart` locally — see `JsEngine`'s own test
+file for why).
+
+**Build-verified only — no UI/event wiring yet.** `ScriptApiRuntime` has
+no consumer yet; build order step 4 (data + UI event wiring off
+`SyncService.dataChanges` and existing form lifecycle, the foreground
+in-app path) is what actually calls it from real app code and gives
+`notify`/`navigate`'s captured effects somewhere real to go.

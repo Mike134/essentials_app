@@ -103,6 +103,19 @@ dependencies:
   # still-running isolate -- re-verified empirically, not just from docs,
   # via a real infinite-loop spike (see JsEngine's own doc comment).
   flutter_js: ^0.8.7
+  # Direct dependency (not just transitively via sqlite3_flutter_libs/
+  # sqflite_common_ffi) -- Essentials v2 Phase 5 build order step 3's
+  # script API needs a genuinely SYNCHRONOUS SQLite read for `table('X')
+  # .find()/.all()` inside a script's own synchronous JS execution (see
+  # ScriptApiRuntime's own doc comment for why sqlite_crdt's async API
+  # can't be used for this specific need). `package:sqlite3`'s Database
+  # .select() is the real, non-async native call sqflite_common_ffi
+  # itself sits on top of -- reads only, never writes (writes still go
+  # through the real, correctly CRDT-stamped async SqliteCrdt API, same
+  # as every other write in this app). Pinned to match what's already
+  # resolved transitively so this doesn't independently drag in a second
+  # version.
+  sqlite3: ^3.5.0
 
 dev_dependencies:
   flutter_test:
