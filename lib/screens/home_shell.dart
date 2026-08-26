@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -14,6 +15,7 @@ import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
+import '../util/scripting/background_schedule_service.dart';
 import 'calendar_screen.dart';
 import 'generic_list_screen.dart';
 import 'kanban_view_screen.dart';
@@ -194,6 +196,19 @@ class _HomeShellState extends State<HomeShell> {
     // need real background execution (steps 7-8), still pending.
     if (mounted) {
       EventDispatchService().dispatchAndApplyEffects(context, tableName: null, eventType: 'app_launch');
+    }
+
+    // Essentials v2 Phase 5 build order step 7 -- registers the one
+    // periodic WorkManager task hourly/daily/weekly scheduled bindings
+    // fire through, if it isn't already registered (idempotent --
+    // `ExistingPeriodicWorkPolicy.keep` inside `registerBackgroundScheduleTask`
+    // means a call on every launch is cheap and safe, not just tolerated).
+    // Android only -- Windows background firing is a separate mechanism,
+    // still pending its own build order step 8. Fire-and-forget, same
+    // reasoning as every other bootstrap call here: nothing blocks the
+    // nav from rendering on this.
+    if (Platform.isAndroid) {
+      unawaited(registerBackgroundScheduleTask());
     }
 
     return _loadGroups();

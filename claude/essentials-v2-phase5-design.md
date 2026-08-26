@@ -812,3 +812,173 @@ no errors). `flutter analyze` clean on the fixed tool.
 confirm the list now loads without the `no such table` error, then
 re-attempt the original `table()` display-name / editor-theming
 checklist there too.
+
+**Confirmed by Mike: the scripts ran correctly on MIKE-12R.** Both
+Scripts (the editor/list) and the earlier `table()`/theming fixes hold on
+that device. Proceeded into build order step 7.
+
+## Step 7, concluded: Android background firing via `workmanager`, build-verified
+
+**Package check, per this project's own "verify actively-maintained
+before committing" discipline (same as `mobile_scanner` in Phase 2,
+`flutter_code_editor` in this phase's own step 5):** `workmanager`
+(`fluttercommunity`, verified publisher) confirmed 0.10.9 at spike time,
+6 days old. Read its own source (`workmanager_impl.dart`) directly rather
+than trusting docs alone — confirmed `executeTask`'s callback genuinely
+runs inside a headless `FlutterEngine` (the package imports
+`package:flutter/widgets.dart`, and its own doc comment says outright
+"You can perfectly call other Flutter plugins inside this callback").
+This is exactly why `BackgroundScheduleService` (below) is free to use
+`EventDefinitionsDao`/`EventDispatchService`/`DatabaseHelper` directly —
+unlike `ScriptApiRuntime`'s worker isolate (a bare `Isolate.spawn`, no
+plugin channel at all, see that class's own doc comment), a WorkManager
+task has real plugin access, no need to route around `sqlite_crdt`.
+Also confirmed directly from the source (not just the design doc's own
+prior note): `registerPeriodicTask`'s `frequency` has "a minimum of 15
+min. Android will automatically change your frequency to 15 min if you
+have configured a lower frequency" — `registerBackgroundScheduleTask`
+requests exactly 15 minutes rather than something finer that would just
+be silently clamped.
+
+**`app_launch` deliberately stays out of this mechanism** — it already
+fires for real from `HomeShell` on every actual app open (step 6), which
+is a strictly better signal than a periodic background poll could give
+it; `BackgroundScheduleService.runDueScheduledEvents` explicitly skips
+any `app_launch` binding it encounters.
+
+**New files:**
+- `lib/util/scripting/background_schedule_service.dart` —
+  `backgroundDispatcherCallback` (the required top-level, `@pragma
+  ('vm:entry-point')`-annotated `callbackDispatcher`, wired to
+  `Workmanager().initialize()`), `registerBackgroundScheduleTask()`
+  (idempotent registration, `ExistingPeriodicWorkPolicy.keep` so calling
+  it on every launch — which `HomeShell` now does — is cheap and safe,
+  not just tolerated), and `BackgroundScheduleService` itself — the real,
+  independently-testable "what's due, run it" logic.
+- `lib/util/scripting/script_notifications.dart` — `ScriptNotifications`,
+  a thin `flutter_local_notifications` wrapper posting a real OS
+  notification for a background script's `notify()` effect (and for a
+  timeout/error) — there's no foreground `SnackBar` to show when the app
+  isn't even running, the gap this class exists to close. Deliberately
+  injectable in `BackgroundScheduleService` (a `notify` callback
+  parameter, defaulting to `ScriptNotifications.instance.show`) rather
+  than a hard dependency — needed for testing (see below), not just
+  theoretical flexibility.
+
+**Due-checking honors the schedule config that was already being
+collected and silently unused.** `ScheduledEventsScreen`'s own dialog
+(step 5) already collects a time-of-day for `schedule_daily` and a
+day+time for `schedule_weekly`, stored in `event_definitions
+.schedule_config` — but until this step nothing ever read it back.
+`BackgroundScheduleService._isDue` now genuinely honors it: `hourly` is
+due once 60 real minutes have elapsed since last run (or never run);
+`daily` is due once per calendar day, and only once the configured
+time-of-day has actually passed (an unconfigured/malformed time falls
+back to "any time is fine," never blocking); `weekly` adds a
+day-of-week match on top of the same time check, using `DateTime
+.weekday` (1=Monday..7=Sunday) mapped directly against the same
+`mon`/`tue`/.../`sun` keys the dialog's own day picker already uses. Last-run
+time is tracked per `event_definitions.id`, one `device_settings` row
+each (`ThemeSettingsDao`'s existing generic key/value accessor — see
+CLAUDE.md "Real-usage findings," the same table this app already uses
+for font size/row heights/sidebar collapse state — key
+`schedule_last_run:<event_id>`), not a new schema table: per-device by
+construction (which is correct here — whether *this device* has already
+fired a given scheduled script recently is exactly a per-device fact,
+same governing rule as everything else in `device_settings`).
+
+**Real, live build errors found and fixed, not anticipated by the
+initial pubspec.yaml comments:**
+1. `flutter build apk --debug` failed outright — `AAR metadata checking`
+   reported `:flutter_local_notifications requires core library
+   desugaring to be enabled for :app`. Fixed in `android/app/build.gradle
+   .kts`: `compileOptions { isCoreLibraryDesugaringEnabled = true }` plus
+   a `dependencies { coreLibraryDesugaring("com.android.tools
+   :desugar_jdk_libs:2.1.4") }` block (this project's `build.gradle.kts`
+   had no `dependencies` block at all before this).
+2. `flutter_local_notifications`'s `initialize`/`show` are fully
+   named-parameter APIs on the pinned 22.3.0 (`initialize({required
+   InitializationSettings settings, ...})`, `show({required int id,
+   String? title, String? body, NotificationDetails? notificationDetails,
+   ...})`) — confirmed by reading the installed source directly rather
+   than assuming the commonly-shown older positional-argument shape.
+   `ScriptNotifications` was written against the real signature from the
+   start once this was checked, not fixed after a failed guess.
+3. **`FlutterLocalNotificationsPlatform._instance` is never initialized
+   under a bare `flutter test` host** — a `LateInitializationError` the
+   moment `ScriptNotifications.show` ran in a test, the same category of
+   test-harness/native-plugin limitation this project already hit for
+   `flutter_js`'s `quickjs_c_bridge.dll` (see step 2's write-up: "Flutter
+   test can't find quickjs_c_bridge.dll"). Fixed by making the
+   notification call itself injectable (the `notify` constructor
+   parameter above) rather than trying to fake a working platform channel
+   in the test harness — `test/background_schedule_service_test.dart`
+   injects a no-op `notify` and asserts against `device_settings`'
+   `schedule_last_run` state directly, which is the real, meaningful
+   thing to verify anyway.
+
+**Battery-optimization exemption, per this build step's own flagged
+risk** ("worth a one-time in-app prompt, not silently hoping the OS
+cooperates") — this project already has a real precedent for exactly
+this class of problem going *undiscovered* for a while (CLAUDE.md's
+"MIKE-12R's connection is unstable when the app backgrounds or the
+screen sleeps," fixed only after Mike found the Settings toggle himself
+during live testing). `ScheduledEventsScreen` gained an Android-only
+"Allow reliable background running" button
+(`Permission.ignoreBatteryOptimizations.request()`, showing Android's
+own native system dialog) — also requests `Permission.notification`
+(Android 13+'s POST_NOTIFICATIONS) in the same tap, while the user's
+attention is already on this screen, since a background script's
+`notify()` would otherwise silently show nothing at all without it.
+Both permissions' manifest entries (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`,
+`POST_NOTIFICATIONS`) auto-merge from `permission_handler_android`/
+`flutter_local_notifications`'s own library manifests — confirmed by
+reading both, no manual `AndroidManifest.xml` edit needed.
+
+**`ScheduledEventsScreen`'s own copy updated** to stop saying hourly/
+daily/weekly are inert — `_describe` now reads correctly on Android
+(no "(not yet active)" suffix) while still flagging Windows specifically
+as still pending (build order step 8), rather than the previous
+blanket "nothing runs them yet" that would now be wrong on one platform.
+
+**Registration wiring:** `HomeShell._bootstrapAndLoadGroups` calls
+`registerBackgroundScheduleTask()` fire-and-forget, Android-only
+(`Platform.isAndroid`), right after the `app_launch` dispatch — cheap and
+idempotent on every real launch, same reasoning as every other bootstrap
+call in that method.
+
+**9 new tests, `test/background_schedule_service_test.dart`** — a due
+hourly binding runs and records a timestamp; a just-run hourly binding is
+correctly skipped a second time; a disabled binding is never due; an
+`app_launch` binding is never fired by this service at all; a daily
+binding configured for a still-future time today is correctly not yet
+due; one configured for an already-past time today is due; one already
+run today doesn't re-fire the same day; a weekly binding configured for a
+different weekday is correctly skipped; one configured for today past its
+time is due. Every test injects a no-op `notify` (see finding #3 above)
+and asserts against real `device_settings` state via the same
+`ThemeSettingsDao` the production code uses — not a mock. Confirmed
+passing both alone and alongside a full regression pass of
+`schema_registry_test.dart`, `generic_dao_insert_id_test.dart`,
+`script_event_daos_test.dart`, `event_dispatch_service_test.dart`, and
+`script_api_runtime_test.dart` (the last two need the
+`quickjs_c_bridge.dll` copied into the repo root first, per step 2's own
+documented test-harness workaround — confirmed still just that friction,
+not a regression, by running them with the DLL present). `flutter
+analyze` clean project-wide; `flutter build windows` and `flutter build
+apk --debug` both clean (the pre-existing, documented KGP warning now
+also naming `workmanager_android` alongside `flutter_js`/`mobile_scanner`
+— same warning, not a new one). Debug APK pushed to MIKE-12R via `adb
+install -r`.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-12R, tap "Allow reliable background running" in
+Scheduled Events, create an hourly (or a daily/weekly configured for a
+time a few minutes out) binding pointed at a script with a `notify()`
+call, then close the app entirely and wait for a real WorkManager fire
+(up to ~15 minutes) to confirm a genuine OS notification appears while
+the app isn't running — the one thing that can't be verified from Code's
+own build+test pass. Then build order step 8 (Windows background
+firing) — the design doc's own flagged spike question ("can `flutter_js`
+run at all outside a Flutter widget tree, in a headless Dart entrypoint,
+on Windows?") is still open and untouched.

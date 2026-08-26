@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../db/event_definitions_dao.dart';
 import '../db/script_definitions_dao.dart';
@@ -12,14 +14,15 @@ import '../db/script_definitions_dao.dart';
 /// all four). See claude/essentials-v2-phase5-design.md's "Event binding
 /// UI".
 ///
-/// **`app_launch` actually fires now (build order step 6) -- the other
-/// three are still inert.** Real background firing for hourly/daily/
-/// weekly needs steps 7-8 (Android `workmanager`/Windows, the latter
-/// still pending that build's own spike); creating one of those bindings
-/// today is stored correctly but nothing runs it yet, same "visibly
-/// staged, not yet functional" precedent `button` fields carried between
-/// steps 1 and 4. [_describe] marks this distinction directly in the UI
-/// rather than leaving all four looking equally live.
+/// **`app_launch` fires from `HomeShell` itself (build order step 6); the
+/// other three now fire for real too, on Android, via a periodic
+/// `workmanager` task registered from `HomeShell` (build order step 7)
+/// -- checked at most every ~15 minutes (Android's own WorkManager floor,
+/// confirmed via that package's own doc comment), so "daily at 8:00am"
+/// genuinely means "the first check after 8:00am," not the exact minute.
+/// Windows background firing is a separate mechanism, still pending its
+/// own build order step 8 -- [_describe] flags that distinction directly
+/// in the UI on that platform.**
 class ScheduledEventsScreen extends StatefulWidget {
   const ScheduledEventsScreen({super.key});
 
@@ -52,6 +55,37 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
     });
   }
 
+  /// Android aggressively kills background work for apps it hasn't been
+  /// told to leave alone -- this project already hit exactly this once
+  /// for foreground sync itself (see CLAUDE.md "Real, non-code finding:
+  /// MIKE-12R's connection is unstable when the app backgrounds or the
+  /// screen sleeps"), fixed there by a manual Settings toggle Mike found
+  /// himself. A background `workmanager` task is at least as exposed to
+  /// the same battery-optimization killing -- worth a direct in-app
+  /// prompt this time rather than hoping it gets found the same way
+  /// twice. `Permission.ignoreBatteryOptimizations.request()` shows
+  /// Android's own native "Allow this app to ignore battery
+  /// optimizations?" system dialog; nothing to do on Windows.
+  Future<void> _requestBatteryExemption() async {
+    // Also requests POST_NOTIFICATIONS (Android 13+) while we have the
+    // user's attention on this screen -- without it, a scheduled
+    // script's `notify()` effect would silently never show anything at
+    // all in the background (see ScriptNotifications, the caller of
+    // this permission on the notification-plugin side).
+    await Permission.notification.request();
+    final status = await Permission.ignoreBatteryOptimizations.request();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          status.isGranted
+              ? 'Battery optimization exemption granted -- scheduled scripts can run reliably in the background.'
+              : 'Not granted -- scheduled scripts may run late or not at all while the app is closed.',
+        ),
+      ),
+    );
+  }
+
   Future<void> _add() async {
     if (_availableScripts.isEmpty) return;
     final result = await showDialog<_NewScheduleResult>(
@@ -76,13 +110,15 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
       case 'app_launch':
         return 'Every app launch';
       case 'schedule_hourly':
-        return 'Approximately every hour (not yet active)';
+        return Platform.isAndroid ? 'Approximately every hour' : 'Approximately every hour (Windows: not yet active)';
       case 'schedule_daily':
         final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        return 'Approximately daily at ${config?['time'] ?? '?'} (not yet active)';
+        final suffix = Platform.isAndroid ? '' : ' (Windows: not yet active)';
+        return 'Approximately daily at ${config?['time'] ?? '?'}$suffix';
       case 'schedule_weekly':
         final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'} (not yet active)';
+        final suffix = Platform.isAndroid ? '' : ' (Windows: not yet active)';
+        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'}$suffix';
       default:
         return binding.eventType;
     }
@@ -100,12 +136,19 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
               children: [
                 const Text(
                   'Runs a script on a schedule, or once per app launch. Not tied '
-                  'to any one table. "Every app launch" is live now; the hourly/'
-                  'daily/weekly schedules are stored correctly but nothing runs '
-                  'them yet -- real background firing needs later build steps, '
-                  'and even then "approximately" -- neither Android nor Windows '
-                  'background scheduling is exact-time.',
+                  'to any one table. "Every app launch" fires from the app itself; '
+                  'hourly/daily/weekly fire in the background on Android, checked '
+                  'approximately every 15 minutes -- Windows background firing is '
+                  'still pending.',
                 ),
+                if (Platform.isAndroid) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _requestBatteryExemption,
+                    icon: const Icon(Icons.battery_saver),
+                    label: const Text('Allow reliable background running'),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 if (_availableScripts.isEmpty)
                   const Text('No scripts exist yet -- create one first, from Scripts in the nav.'),

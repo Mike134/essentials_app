@@ -129,6 +129,25 @@ dependencies:
   # the fallback if this ever causes real friction -- syntax highlighting
   # is cosmetic, not a functional gap.
   flutter_code_editor: ^0.3.5
+  # Essentials v2 Phase 5 build order step 7 -- Android background
+  # scheduled-event firing (hourly/daily/weekly). `fluttercommunity`'s
+  # package (verified publisher), confirmed actively maintained (0.10.9,
+  # 6 days old at spike time). Registers a real Android WorkManager
+  # periodic task, whose callback runs in a genuine headless FlutterEngine
+  # (not a bare Isolate) -- confirmed via the package's own documented
+  # architecture -- meaning plugins like sqflite/permission_handler that
+  # DatabaseHelper depends on work normally there, unlike a plain
+  # Isolate.spawn (see ScriptApiRuntime's own doc comment for why that
+  # class deliberately avoids depending on any plugin at all). Android
+  # only -- no Windows implementation, deliberately unused there (step 8
+  # is a separate mechanism, still pending its own spike).
+  workmanager: ^0.10.9
+  # Real Android notifications for a background script's notify() calls
+  # -- there's no foreground SnackBar to show when the app isn't even
+  # running. Also supports Windows (Toast notifications), kept in reserve
+  # for step 8's own use once that's built. Actively maintained (22.3.0,
+  # 18 days old at spike time).
+  flutter_local_notifications: ^22.3.0
   # Direct dependency (not just transitively via flutter_code_editor) --
   # ScriptEditScreen imports langJavascript directly from
   # package:highlight/languages/javascript.dart for CodeController's
