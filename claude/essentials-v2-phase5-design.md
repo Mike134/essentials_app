@@ -697,3 +697,32 @@ own real data), zero leaked test rows confirmed after,
 Tracker').all()` script (or similar) and confirm it now works; check the
 script editor's text coloring/selection contrast visually on both
 platforms.
+
+## Third bug, found on re-verification: a real setState/Future crash on MIKE-12R
+
+**CU confirmed both fixes above worked.** MIKE-12R crashed opening the
+script list at all -- Flutter's own "setState() callback argument
+returned a Future" assertion, debug-build-only (confirmed: silent on
+CU's release-ish exe, crashed on 12R's debug APK, exactly matching this
+project's own already-documented pattern for this exact class of bug --
+see Auto Memory `setstate_arrow_closure_bug.md`).
+
+**Root cause:** `ScriptEditorScreen._reload()`'s
+`setState(() => _scriptsFuture = _dao.loadAll())` -- an assignment
+expression evaluates to its own right-hand value, so that arrow-bodied
+callback's return type was itself `Future<List<ScriptDefinition>>`, not
+`void`. A quick grep of every other `setState(() => ...)` written this
+step (`ManageEventsScreen`, `ScheduledEventsScreen`) confirmed this was
+the only instance actually assigning a `Future`-returning call -- every
+other one assigns an already-resolved value (a dropdown's picked value,
+a bool literal, an awaited result) and was never at risk.
+
+**Fixed** by switching to a block-bodied `setState(() { ... })`, which
+always returns `void` regardless of what runs inside it -- the same fix
+this project's own memory already prescribes for this exact pitfall.
+`flutter analyze` clean, both builds clean, pushed to MIKE-12R directly.
+
+**Not yet re-verified by Mike on MIKE-12R** — next: confirm the script
+list now opens without crashing there, then continue the original
+checklist (the `table()` display-name fix, editor theming) on that
+platform too.

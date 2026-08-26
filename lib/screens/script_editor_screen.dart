@@ -26,7 +26,18 @@ class _ScriptEditorScreenState extends State<ScriptEditorScreen> {
   }
 
   void _reload() {
-    setState(() => _scriptsFuture = _dao.loadAll());
+    // Deliberately block-bodied, not `setState(() => _scriptsFuture =
+    // _dao.loadAll())` -- an assignment expression evaluates to its own
+    // right-hand value, so that arrow form's callback would itself
+    // return the Future `_dao.loadAll()` produces, tripping Flutter's
+    // "setState() callback argument returned a Future" assertion (debug
+    // builds only -- confirmed live: silent on CU's release-ish exe,
+    // crashed on 12R's debug APK). Same pitfall this project has already
+    // hit more than once elsewhere (see Auto Memory
+    // setstate_arrow_closure_bug.md).
+    setState(() {
+      _scriptsFuture = _dao.loadAll();
+    });
   }
 
   Future<void> _openEditor({ScriptDefinition? existing}) async {
