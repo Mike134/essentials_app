@@ -425,6 +425,7 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
   late final TextEditingController _decimalsController;
   late final TextEditingController _ratingMaxController;
   late final TextEditingController _expressionController;
+  late final TextEditingController _buttonLabelController;
   late Future<List<TableDefinitionRow>> _tableNamesFuture;
 
   late FieldFormatChoice _format;
@@ -510,6 +511,7 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     _expressionController = TextEditingController(text: (options['expression'] as String?) ?? '');
     _resultType = (options['resultType'] as String?) ?? FormulaService.resultTypeNumber;
     _autocomplete = options['autocomplete'] != false;
+    _buttonLabelController = TextEditingController(text: (options['label'] as String?) ?? '');
     _loadAvailableFields();
   }
 
@@ -566,6 +568,7 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     _decimalsController.dispose();
     _ratingMaxController.dispose();
     _expressionController.dispose();
+    _buttonLabelController.dispose();
     super.dispose();
   }
 
@@ -597,7 +600,8 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
   bool get _showsRequired =>
       _format != FieldFormatChoice.formula &&
       _format != FieldFormatChoice.lookup &&
-      _format != FieldFormatChoice.rollup;
+      _format != FieldFormatChoice.rollup &&
+      _format != FieldFormatChoice.button;
 
   /// Same shared "one field, several formats" shape as [AddFieldScreen]'s
   /// own `_showsDecimals` -- see that getter's doc comment.
@@ -678,6 +682,10 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
     if (_format == FieldFormatChoice.rating) {
       final max = int.tryParse(_ratingMaxController.text.trim());
       if (max != null) options['max'] = max;
+    }
+    if (_format == FieldFormatChoice.button) {
+      final label = _buttonLabelController.text.trim();
+      if (label.isNotEmpty) options['label'] = label;
     }
     // See AddFieldScreen._buildOptionsJson's identical branch.
     if (_showsAutocomplete && !_autocomplete) {
@@ -815,6 +823,13 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                   controller: _ratingMaxController,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(labelText: 'Max stars', hintText: 'Default: 5'),
+                ),
+              ],
+              if (_format == FieldFormatChoice.button) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _buttonLabelController,
+                  decoration: const InputDecoration(labelText: 'Button label', hintText: 'Default: Run script'),
                 ),
               ],
               if (_showsAutocomplete) ...[

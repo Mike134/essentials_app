@@ -222,6 +222,39 @@ const schemaStatements = <String>[
     )
   ''',
 
+  // ---------- Scripts & Events (Essentials v2 Phase 5) ----------
+  // User-authored JavaScript automation -- shared/synced. See
+  // claude/essentials-v2-phase5-design.md, "Data model". `id` is the
+  // timestamp+random scheme on both tables, same collision-avoidance
+  // reasoning as migration_log.id/view_definitions.view_id/
+  // template_definitions.template_id. MUST stay identical to schema.sql /
+  // tool/bootstrap_fresh_db.dart's infraSchemaStatements.
+  '''
+    CREATE TABLE "script_definitions" (
+      "id" INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+      ),
+      "name"        TEXT NOT NULL,
+      "code"        TEXT NOT NULL,
+      "description" TEXT
+    )
+  ''',
+  '''
+    CREATE TABLE "event_definitions" (
+      "id" INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+      ),
+      "script_id"       INTEGER NOT NULL,
+      "event_type"      TEXT NOT NULL,
+      "table_name"      TEXT,
+      "field_name"      TEXT,
+      "schedule_config" TEXT,
+      "enabled"         INTEGER NOT NULL DEFAULT 1
+    )
+  ''',
+
   // ---------- Schema migration system ----------
   // `id` is the timestamp+random scheme, NOT AUTOINCREMENT -- changed for v2.
   // v1's AUTOINCREMENT was safe only because migrations were authored from

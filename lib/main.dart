@@ -7,6 +7,7 @@ import 'screens/home_shell.dart';
 import 'screens/permission_gate.dart';
 import 'theme/theme_controller.dart';
 import 'util/field_formats/barcode_format_handler.dart';
+import 'util/field_formats/button_format_handler.dart';
 import 'util/field_formats/currency_format_handler.dart';
 import 'util/field_formats/field_format_handler.dart';
 import 'util/field_formats/link_file_format_handler.dart';
@@ -23,13 +24,16 @@ void main() {
   // and 4 (inline `select`) needed no handler at all, and step 6
   // (`formula`) needed no handler either -- see FieldFormatChoice's own
   // doc comment for why. `rating` is step 5, `barcode` is step 7 --
-  // the last of the design doc's format catalog.
+  // the last of Phase 2's format catalog. `button` is Essentials v2
+  // Phase 5 build order step 1 -- see claude/essentials-v2-phase5-design
+  // .md and ButtonFormatHandler's own doc comment.
   FieldFormatRegistry.instance = FieldFormatRegistry(const [
     LinkFileFormatHandler(),
     CurrencyFormatHandler(),
     PercentageFormatHandler(),
     RatingFormatHandler(),
     BarcodeFormatHandler(),
+    ButtonFormatHandler(),
   ]);
   runApp(const EssentialsApp());
 }

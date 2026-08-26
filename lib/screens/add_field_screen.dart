@@ -96,6 +96,7 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
   final _decimalsController = TextEditingController();
   final _ratingMaxController = TextEditingController();
   final _expressionController = TextEditingController();
+  final _buttonLabelController = TextEditingController();
 
   String? _selectedTable;
   FieldFormatChoice _format = FieldFormatChoice.text;
@@ -222,6 +223,7 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     _decimalsController.dispose();
     _ratingMaxController.dispose();
     _expressionController.dispose();
+    _buttonLabelController.dispose();
     super.dispose();
   }
 
@@ -271,7 +273,8 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
   bool get _showsRequired =>
       _format != FieldFormatChoice.formula &&
       _format != FieldFormatChoice.lookup &&
-      _format != FieldFormatChoice.rollup;
+      _format != FieldFormatChoice.rollup &&
+      _format != FieldFormatChoice.button;
 
   /// `real`/`currency`/`percentage`, plus a `formula` whose result is a
   /// number, all read an optional `decimals` display hint (see
@@ -350,6 +353,10 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
             if (o.key.isNotEmpty && o.label.isNotEmpty) o.toJson(),
         ],
       });
+    }
+    if (_format == FieldFormatChoice.button) {
+      final label = _buttonLabelController.text.trim();
+      return label.isEmpty ? null : jsonEncode({'label': label});
     }
     // Blank means "let the format's own default apply" (2 for real/
     // currency, 0 for percentage -- see each handler's own default) --
@@ -562,6 +569,21 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
               controller: _ratingMaxController,
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(labelText: 'Max stars', hintText: 'Default: 5'),
+            ),
+          ],
+          if (_format == FieldFormatChoice.button) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _buttonLabelController,
+              decoration: const InputDecoration(labelText: 'Button label', hintText: 'Default: Run script'),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text(
+                'Scripts aren\'t wired up yet -- this button will show disabled until '
+                'later Phase 5 steps land.',
+                style: TextStyle(fontSize: 12),
+              ),
             ),
           ],
           if (_showsAutocomplete) ...[

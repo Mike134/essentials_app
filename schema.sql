@@ -302,6 +302,62 @@ CREATE TABLE "template_definitions" (
     "created_at"   TEXT NOT NULL
 );
 
+-- ===================== SCRIPTS & EVENTS (Essentials v2 Phase 5) =====================
+-- User-authored JavaScript automation -- shared/synced, same bucket as
+-- view_definitions/template_definitions above (NOT per-device like
+-- table_column_settings/table_view_settings -- a script written on MIKE-CU
+-- must run when its bound event fires on MIKE-12R too). See
+-- claude/essentials-v2-phase5-design.md, "Data model".
+--
+-- `id` is the timestamp+random scheme on both tables, not AUTOINCREMENT --
+-- same collision-avoidance reasoning as `migration_log.id`/`view_definitions
+-- .view_id`/`template_definitions.template_id`: any device can create a
+-- script or event binding.
+--
+-- No FOREIGN KEY from event_definitions.script_id to script_definitions.id,
+-- same reasoning as every other table in this schema (see the header above
+-- -- sqlite_crdt's soft-delete rewrite means SQLite's own FK actions never
+-- fire regardless). A script delete is expected to cascade-soft-delete its
+-- own event_definitions rows at the app layer, mirroring the
+-- field_definitions/view_definitions cascades SchemaMetadataDao already does.
+--
+-- Bootstrapped once, out-of-band, by tool/add_script_event_tables.dart (same
+-- reasoning as view_definitions/template_definitions' own bootstraps -- the
+-- migration_log mechanism that self-applies everything else can't create the
+-- tables it depends on to record what to apply). MUST be kept identical to
+-- server/bin/server.dart's schemaStatements / tool/bootstrap_fresh_db.dart's
+-- infraSchemaStatements for a from-scratch rebuild.
+CREATE TABLE "script_definitions" (
+    "id" INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+    ),
+    "name"        TEXT NOT NULL,
+    "code"        TEXT NOT NULL,
+    "description" TEXT
+);
+
+-- `event_type` -- one of: button_clicked, form_opened, form_closed,
+-- record_created, record_saved, record_updated, record_deleted,
+-- field_changed, schedule_daily, schedule_weekly, schedule_hourly,
+-- app_launch. `table_name` is NULL for scheduled/app_launch events; set for
+-- every data/UI event. `field_name` is only set for field_changed.
+-- `schedule_config` is JSON: {"time": "08:00"} for daily,
+-- {"day": "mon", "time": "08:00"} for weekly, NULL for hourly/app_launch.
+-- `enabled` lets a binding be disabled without deleting it.
+CREATE TABLE "event_definitions" (
+    "id" INTEGER PRIMARY KEY DEFAULT (
+        CAST(unixepoch('now','subsec') * 1000 AS INTEGER) * 1000
+        + (abs(random()) % 1000)
+    ),
+    "script_id"       INTEGER NOT NULL,
+    "event_type"      TEXT NOT NULL,
+    "table_name"      TEXT,
+    "field_name"      TEXT,
+    "schedule_config" TEXT,
+    "enabled"         INTEGER NOT NULL DEFAULT 1
+);
+
 -- ===================== SCHEMA MIGRATION SYSTEM =====================
 -- Every DDL operation in v2 goes through here: CREATE TABLE and ALTER TABLE
 -- ADD COLUMN routinely, DROP TABLE and ALTER TABLE DROP COLUMN for stage-2

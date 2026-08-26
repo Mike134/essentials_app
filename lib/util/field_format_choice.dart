@@ -84,6 +84,13 @@
 /// side was never missing anything. Picking it writes `format: 'text'`,
 /// `options: {isColor: true}`. [resolve] handles this the same way it
 /// handles `url`.
+/// **`button` is Essentials v2 Phase 5's new entry** (see
+/// claude/essentials-v2-phase5-design.md's "Data model") -- a genuinely
+/// new stored format (`TEXT`, never written, `options: {label: String}`),
+/// same first-kind category as `link_file`/`currency`/`rating`: a real
+/// [FieldFormatHandler] (`ButtonFormatHandler`), not a variant of
+/// existing rendering and not computed. Renders disabled until Phase 5's
+/// script-wiring steps land -- see that handler's own doc comment.
 enum FieldFormatChoice {
   text('text', 'Text'),
   integer('integer', 'Whole number'),
@@ -103,7 +110,8 @@ enum FieldFormatChoice {
   barcode('barcode', 'Barcode / QR code'),
   linkRecord('link_record', 'Link to record(s) in another table'),
   lookup('lookup', 'Show a value from a linked record'),
-  rollup('rollup', 'Calculate from linked records');
+  rollup('rollup', 'Calculate from linked records'),
+  button('button', 'Button (runs a script)');
 
   const FieldFormatChoice(this.value, this.label);
 
