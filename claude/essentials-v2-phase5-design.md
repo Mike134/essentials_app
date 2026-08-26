@@ -978,7 +978,142 @@ time a few minutes out) binding pointed at a script with a `notify()`
 call, then close the app entirely and wait for a real WorkManager fire
 (up to ~15 minutes) to confirm a genuine OS notification appears while
 the app isn't running — the one thing that can't be verified from Code's
-own build+test pass. Then build order step 8 (Windows background
-firing) — the design doc's own flagged spike question ("can `flutter_js`
-run at all outside a Flutter widget tree, in a headless Dart entrypoint,
-on Windows?") is still open and untouched.
+own build+test pass.
+
+## Step 8, concluded: Windows background firing, build-verified
+
+**The spike the design doc asked for, run for real, not guessed:** wrote
+a throwaway script (`tool/_spike_flutter_js_headless.dart`, deleted after
+use) that imports `package:flutter_js/flutter_js.dart` and constructs a
+`QuickJsRuntime2`, then ran it via a bare `dart run` (the exact
+environment `server.dart` itself runs in — no Flutter engine at all).
+**It failed to compile**, with the identical failure mode CLAUDE.md
+already documented once before for `table_config.dart`'s `import
+'package:flutter/widgets.dart'` (Essentials v2 Phase 1 Step 5): `flutter_js
+.dart` imports `package:flutter/services.dart` (for `rootBundle`), which
+transitively needs `dart:ui`, unavailable outside a real Flutter engine
+— the vanilla Dart SDK's own compiler throws real type errors deep in
+`package:flutter`'s gesture code trying to resolve it. **This
+conclusively rules out embedding `flutter_js` directly into `server.dart`**
+(the design doc's "Option 1") — confirmed empirically, not assumed from
+the doc's own reasoning alone. The only way to keep reusing
+`ScriptApiRuntime`/`JsEngine` as-is (rather than hand-rolling a second,
+Flutter-independent QuickJS FFI binding — real duplicated complexity the
+doc already flagged as the cost of avoiding this) is something that gets
+a genuine Flutter engine.
+
+**Presented this finding to Mike before writing any implementation, per
+the design doc's own explicit instruction** ("bring the finding back for
+a quick confirm rather than guessing") — this was real architectural
+forking territory (native Windows runner changes vs. a second exe vs.
+deferring the platform entirely), not a call to make unilaterally. Mike
+picked the recommended option: a hidden-window relaunch of
+`essentials_app.exe` itself, rather than a second executable or
+deferring Windows.
+
+**Native runner change, `windows/runner/main.cpp`:** `wWinMain` checks
+`command_line_arguments` (already extracted and already passed to the
+Dart entrypoint via `project.set_dart_entrypoint_arguments` — no new
+plumbing needed there) for a literal `--background-schedule-check`
+flag. The window is still created completely normally (there is no way
+to get a working Flutter engine/plugin registration on Windows without
+one — desktop Flutter's embedding ties plugin registration to a real
+`FlutterViewController`/window, unlike Android's genuinely headless
+`FlutterEngine`) — the one addition is a single `::ShowWindow(window
+.GetHandle(), SW_HIDE)` call immediately after `Create()` returns, when
+the flag is present. Deliberately minimal surgery on Flutter-generated
+boilerplate: no changes to `win32_window.cpp`/`.h` at all.
+
+**Dart side, `lib/util/scripting/windows_background_entrypoint.dart`:**
+`main(List<String> args)` (widened from bare `main()`) checks the same
+flag first, before any of the app's normal `FieldFormatRegistry`/
+`EssentialsApp` setup, and calls `runWindowsBackgroundScheduleCheck()`
+instead of ever building a widget tree. That function runs the exact
+same `BackgroundScheduleService.runDueScheduledEvents()` Android's
+`workmanager` callback already uses — **Windows and Android share the
+real "what's due, run it" logic**, only the trigger mechanism differs
+per platform, exactly the design doc's own framing.
+
+**A real, reproducible hang found and fixed before this could ship —
+this is the actual substance of this step, not the native-runner change
+itself.** The first version ended the process with `dart:io`'s `exit(0)`.
+Confirmed live, repeatedly: this **intermittently** left the process
+hung indefinitely — near-zero CPU (frozen, not spinning), unresponsive
+to `Stop-Process -Force`/`taskkill` (both reported success while the
+process kept right on existing), only actually killable via
+`Get-CimInstance Win32_Process | Invoke-CimMethod -MethodName Terminate`.
+Consistent with a forced `ExitProcess` racing the native window's own
+COM/message-loop teardown (`main.cpp`'s `::CoInitializeEx`/`GetMessage`
+loop) instead of going through it — a classic Windows failure mode where
+`ExitProcess` blocks waiting on a DLL's `DllMain(DLL_PROCESS_DETACH)`
+that itself needs the very message pump `exit()` bypassed. **Fixed by
+using the officially-supported quit path instead**: `WidgetsBinding
+.instance.exitApplication(AppExitType.required)` (confirmed by reading
+the Windows embedder's own engine source, `platform_handler.cc`) invokes
+the same `System.exitApplication` platform-channel handler a real UI
+"quit" action would, which posts a proper quit through the native window
+(`engine_->OnQuit(...)`) — `main.cpp`'s `GetMessage` loop ends on its own
+and falls through to its existing `::CoUninitialize()`/`return
+EXIT_SUCCESS`, the same clean shutdown path already proven correct for
+every ordinary user-initiated app close. **Re-verified stable, not just
+theorized:** 5 sequential runs and a batch of 6 concurrent launches, all
+exiting cleanly within ~3 seconds with zero lingering processes — where
+`exit(0)` had reproducibly hung on a meaningful fraction of runs.
+
+**A real end-to-end pass, not just "it exits cleanly":** seeded a real
+`schedule_hourly` binding (a throwaway script/event pair, via a one-off
+`flutter test`-run script, deleted after use — same discipline as every
+other throwaway spike this project uses) directly against the live
+`essentials.db`, launched the real built exe with
+`--background-schedule-check`, confirmed it exited cleanly, then queried
+`device_settings` directly and confirmed `schedule_last_run:<event_id>`
+had been written with a fresh timestamp — the binding was genuinely
+found and run, not just "the process didn't crash." Cleaned up
+(soft-deleted the script/event, cleared the settings key) immediately
+after; `PRAGMA integrity_check` confirmed `ok` on the real db afterward.
+
+**Registration is a one-time, manual PowerShell step, matching this
+project's own established pattern for machine-level setup** (the sync
+server's own tray-host launcher, `essentials_app/server/README.md`) —
+not something the app can register for itself the way
+`registerBackgroundScheduleTask()` does on Android (there's no in-app
+Windows Task Scheduler API the way `workmanager` wraps Android's
+`WorkManager`). Two new scripts, `windows/register_background_schedule_task
+.ps1`/`windows/unregister_background_schedule_task.ps1`: the former
+registers (idempotently — `Register-ScheduledTask ... -Force` replaces
+any existing task of the same name) a task firing every 15 minutes
+(matching Android's own floor, for consistency rather than a Windows
+requirement) targeting the exe currently at `build\windows\x64\runner
+\Release\essentials_app.exe`, with the one CLI argument. Mike needs to
+re-run the register script after a future `flutter build windows` if he
+ever wants the scheduled task itself re-pointed somewhere else, though
+in the common case it's launching whatever's physically at that fixed
+path, not a snapshot frozen at registration time.
+
+**`ScheduledEventsScreen`'s copy updated** to drop the
+"Windows: not yet active" qualifier now that both platforms genuinely
+fire — an italic note (Windows only, mirroring the Android-only battery-
+exemption button already there) points at the one-time registration
+script instead.
+
+**Re-verified after all fixes:** `flutter analyze` clean project-wide;
+`flutter build windows` and `flutter build apk --debug` both clean (same
+pre-existing, documented KGP warning); `test/background_schedule_service_test
+.dart` (9/9, unchanged — this step touched no shared logic),
+`schema_registry_test.dart`, `generic_dao_insert_id_test.dart`,
+`script_event_daos_test.dart` all re-confirmed passing individually.
+Debug APK re-pushed to MIKE-12R via `adb install -r` (unrelated to this
+step's own Windows-only changes, but kept in sync per this session's own
+practice of never leaving 12R stale).
+
+**Build-verified and self-tested end-to-end on Windows — not yet
+Mike-tested interactively via the real Scheduled Task.** Next, when
+resumed: on MIKE-CU, run `windows\register_background_schedule_task.ps1`
+from an elevated PowerShell prompt once, create a real hourly (or
+daily/weekly a few minutes out) binding with a `notify()` call, then
+close the app and wait for a real scheduled run (~15 minutes) to confirm
+a genuine Windows toast notification appears with the app not open and
+no window ever flashing visibly. Once both platforms are confirmed by
+Mike, build order step 9 (the phase's final step) is a combined
+real-device verification pass across everything Phase 5 has built,
+start to finish.

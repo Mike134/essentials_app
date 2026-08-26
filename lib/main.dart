@@ -13,8 +13,20 @@ import 'util/field_formats/field_format_handler.dart';
 import 'util/field_formats/link_file_format_handler.dart';
 import 'util/field_formats/percentage_format_handler.dart';
 import 'util/field_formats/rating_format_handler.dart';
+import 'util/scripting/windows_background_entrypoint.dart';
 
-void main() {
+void main(List<String> args) {
+  // Essentials v2 Phase 5 build order step 8 -- a Windows Scheduled Task
+  // launches this exact exe with this one flag (see
+  // windows_background_entrypoint.dart's own doc comment) to run due
+  // hourly/daily/weekly scripts without Mike ever seeing a window. Checked
+  // first, before any of the normal app setup below -- a background check
+  // never needs FieldFormatRegistry/EssentialsApp/runApp at all.
+  if (args.contains(backgroundScheduleCheckArg)) {
+    runWindowsBackgroundScheduleCheck();
+    return;
+  }
+
   // Essentials v2 Phase 2 -- see claude/essentials-v2-phase2-design.md's
   // "Key decision". One entry per Phase 2 format as each gets built;
   // `link_file` was the first (build order step 1, proving the pattern

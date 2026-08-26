@@ -15,14 +15,17 @@ import '../db/script_definitions_dao.dart';
 /// UI".
 ///
 /// **`app_launch` fires from `HomeShell` itself (build order step 6); the
-/// other three now fire for real too, on Android, via a periodic
-/// `workmanager` task registered from `HomeShell` (build order step 7)
-/// -- checked at most every ~15 minutes (Android's own WorkManager floor,
-/// confirmed via that package's own doc comment), so "daily at 8:00am"
+/// other three now fire for real on both platforms too.** Android:
+/// a periodic `workmanager` task registered from `HomeShell` (build order
+/// step 7). Windows: a Scheduled Task (registered once, manually --
+/// `windows/register_background_schedule_task.ps1`) launches
+/// `essentials_app.exe --background-schedule-check`, which hides its own
+/// window immediately and exits once done (build order step 8 -- no
+/// headless Flutter engine exists on Windows the way Android's
+/// `workmanager` gives one, confirmed via a real spike; see
+/// claude/essentials-v2-phase5-design.md's step 8 write-up). Both
+/// platforms check at most every ~15 minutes, so "daily at 8:00am"
 /// genuinely means "the first check after 8:00am," not the exact minute.
-/// Windows background firing is a separate mechanism, still pending its
-/// own build order step 8 -- [_describe] flags that distinction directly
-/// in the UI on that platform.**
 class ScheduledEventsScreen extends StatefulWidget {
   const ScheduledEventsScreen({super.key});
 
@@ -110,15 +113,13 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
       case 'app_launch':
         return 'Every app launch';
       case 'schedule_hourly':
-        return Platform.isAndroid ? 'Approximately every hour' : 'Approximately every hour (Windows: not yet active)';
+        return 'Approximately every hour';
       case 'schedule_daily':
         final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        final suffix = Platform.isAndroid ? '' : ' (Windows: not yet active)';
-        return 'Approximately daily at ${config?['time'] ?? '?'}$suffix';
+        return 'Approximately daily at ${config?['time'] ?? '?'}';
       case 'schedule_weekly':
         final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        final suffix = Platform.isAndroid ? '' : ' (Windows: not yet active)';
-        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'}$suffix';
+        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'}';
       default:
         return binding.eventType;
     }
@@ -137,9 +138,8 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                 const Text(
                   'Runs a script on a schedule, or once per app launch. Not tied '
                   'to any one table. "Every app launch" fires from the app itself; '
-                  'hourly/daily/weekly fire in the background on Android, checked '
-                  'approximately every 15 minutes -- Windows background firing is '
-                  'still pending.',
+                  'hourly/daily/weekly fire in the background on both platforms, '
+                  'checked approximately every 15 minutes.',
                 ),
                 if (Platform.isAndroid) ...[
                   const SizedBox(height: 12),
@@ -147,6 +147,14 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                     onPressed: _requestBatteryExemption,
                     icon: const Icon(Icons.battery_saver),
                     label: const Text('Allow reliable background running'),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Windows: run windows\\register_background_schedule_task.ps1 '
+                    'once (elevated PowerShell) to register the background check. '
+                    'See claude/essentials-v2-phase5-design.md for details.',
+                    style: TextStyle(fontStyle: FontStyle.italic),
                   ),
                 ],
                 const SizedBox(height: 12),
