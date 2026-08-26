@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_code_editor/flutter_code_editor.dart';
+import 'package:flutter_highlight/themes/monokai-sublime.dart';
 import 'package:highlight/languages/javascript.dart';
 
 import '../db/script_definitions_dao.dart';
@@ -219,10 +220,36 @@ class _ScriptEditScreenState extends State<ScriptEditScreen> {
           Expanded(
             child: SingleChildScrollView(
               padding: EdgeInsets.fromLTRB(0, 0, 0, MediaQuery.paddingOf(context).bottom),
-              child: CodeField(
-                controller: _codeController,
-                textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                minLines: 20,
+              // A real CodeTheme is required, not optional -- the first
+              // version of this screen never supplied one at all, which
+              // left every token the same plain text color (no syntax
+              // highlighting, the whole point of choosing this package)
+              // and, worse, is also why selected text was hard to make
+              // out live: with no theme, this package's fallback text/
+              // selection colors don't contrast reliably against each
+              // other. `textSelectionTheme` is set explicitly here too,
+              // rather than trusting whatever ambient Theme.of(context)
+              // supplies -- this editor's own background is always dark
+              // (monokaiSublimeTheme), independent of the app's own
+              // light/dark setting, so the selection color needs to be
+              // chosen against *that* background specifically, not the
+              // app theme's.
+              child: CodeTheme(
+                data: CodeThemeData(styles: monokaiSublimeTheme),
+                child: Theme(
+                  data: Theme.of(context).copyWith(
+                    textSelectionTheme: const TextSelectionThemeData(
+                      selectionColor: Color(0xB3FFC107),
+                      cursorColor: Color(0xFFFFC107),
+                    ),
+                  ),
+                  child: CodeField(
+                    controller: _codeController,
+                    background: const Color(0xFF23241F),
+                    textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                    minLines: 20,
+                  ),
+                ),
               ),
             ),
           ),

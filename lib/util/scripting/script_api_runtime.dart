@@ -315,7 +315,7 @@ void _installBridge(
   });
 
   install('__bridge_table_find', (String table, String criteriaJson) {
-    assertSafeSqlIdentifier(table);
+    final resolved = _resolveTableName(readDb, table);
     final criteria = (jsonDecode(criteriaJson) as Map).cast<String, Object?>();
     final whereParts = ['is_deleted = 0'];
     final args = <Object?>[];
@@ -324,18 +324,18 @@ void _installBridge(
       whereParts.add('"${entry.key}" = ?');
       args.add(entry.value?.toString());
     }
-    final rows = readDb.select('SELECT * FROM "$table" WHERE ${whereParts.join(' AND ')}', args);
-    return jsonEncode(_rowsToJson(table, rows));
+    final rows = readDb.select('SELECT * FROM "$resolved" WHERE ${whereParts.join(' AND ')}', args);
+    return jsonEncode(_rowsToJson(resolved, rows));
   });
   install('__bridge_table_all', (String table) {
-    assertSafeSqlIdentifier(table);
-    final rows = readDb.select('SELECT * FROM "$table" WHERE is_deleted = 0');
-    return jsonEncode(_rowsToJson(table, rows));
+    final resolved = _resolveTableName(readDb, table);
+    final rows = readDb.select('SELECT * FROM "$resolved" WHERE is_deleted = 0');
+    return jsonEncode(_rowsToJson(resolved, rows));
   });
   install('__bridge_table_create', (String table, String fieldsJson) {
-    assertSafeSqlIdentifier(table);
+    final resolved = _resolveTableName(readDb, table);
     final fields = (jsonDecode(fieldsJson) as Map).cast<String, Object?>();
-    pendingWrites.add(_CreateRow(table, fields));
+    pendingWrites.add(_CreateRow(resolved, fields));
     return null;
   });
 
@@ -344,7 +344,8 @@ void _installBridge(
     return null;
   });
   install('__bridge_navigate_to', (String table) {
-    navigations.add(NavigateRequest.toTable(table));
+    final resolved = _resolveTableName(readDb, table);
+    navigations.add(NavigateRequest.toTable(resolved));
     return null;
   });
   install('__bridge_navigate_to_record', (String table, Object? id) {
@@ -385,6 +386,44 @@ List<Map<String, Object?>> _rowsToJson(String table, List<Map<String, Object?>> 
   return [
     for (final row in rows) {...row, '__table': table},
   ];
+}
+
+/// Resolves `table('...')`'s argument to a real physical table name --
+/// **a real, found-live bug fix, not a defensive nicety.** A script
+/// author only ever sees a table's *display* name (`table_definitions
+/// .display_name`) everywhere else in this app -- every nav entry, every
+/// picker, every screen title. `SchemaRegistry.discoverTableNames()`'s
+/// own doc comment already states the general rule this app follows
+/// elsewhere: a physical identifier is never something a human should
+/// have to type. The first version of this bridge skipped that rule
+/// entirely and required the raw physical name (`subscription_tracker`,
+/// not "Subscription Tracker") -- confirmed broken live, not
+/// theorized: Mike's first real test script used the display name shown
+/// in the nav and got `ArgumentError: Not a valid table/field name`
+/// (the physical-identifier assertion rejecting the space).
+///
+/// Accepts either form: if [nameOrDisplay] is already a real, live
+/// physical table name, it's used as-is (a script author who already
+/// knows the physical name -- e.g. copied from another script -- isn't
+/// penalized); otherwise it's matched case-insensitively against
+/// `table_definitions.display_name`. Throws a clear
+/// [ArgumentError] naming exactly what was looked up when neither
+/// matches, rather than falling through to a confusing "no such table"
+/// SQL error.
+String _resolveTableName(sqlite3.Database readDb, String nameOrDisplay) {
+  if (isSafeSqlIdentifier(nameOrDisplay)) {
+    final direct = readDb.select(
+      'SELECT table_name FROM table_definitions WHERE table_name = ? AND is_deleted = 0',
+      [nameOrDisplay],
+    );
+    if (direct.isNotEmpty) return direct.first['table_name'] as String;
+  }
+  final byDisplayName = readDb.select(
+    'SELECT table_name FROM table_definitions WHERE LOWER(display_name) = LOWER(?) AND is_deleted = 0',
+    [nameOrDisplay],
+  );
+  if (byDisplayName.isNotEmpty) return byDisplayName.first['table_name'] as String;
+  throw ArgumentError('No table named "$nameOrDisplay" found.');
 }
 
 /// Runs every queued write for real, through a fresh `SqliteCrdt`

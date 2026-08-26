@@ -173,17 +173,33 @@ void main() {
   });
 
   test('dispatch with a null tableName matches an app_launch (scheduled) binding', () async {
-    await bindScript(db, code: "notify('launched');", tableName: null, eventType: 'app_launch');
+    // Asserts against this test's own uniquely-tagged notification, not
+    // the total result count -- a real app_launch binding of Mike's own
+    // now legitimately exists on the live db (from his interactive
+    // testing of build order step 6), same "don't assume you're the
+    // only row of this shape" lesson already learned once for
+    // view_definitions_dao_test.dart once real Calendar UI existed. Note
+    // this also means dispatch() genuinely re-runs Mike's own real
+    // app_launch script(s) as a side effect of running this test --
+    // harmless today (his only one is `x=1;`), but worth remembering if
+    // a future real app_launch script ever has a visible side effect.
+    await bindScript(db, code: "notify('launched $runTag');", tableName: null, eventType: 'app_launch');
 
     final results = await EventDispatchService().dispatch(tableName: null, eventType: 'app_launch');
-    expect(results, hasLength(1));
-    expect(results.single.effects.notifications, ['launched']);
+    final matchingMessages = [
+      for (final r in results)
+        for (final m in r.effects.notifications)
+          if (m == 'launched $runTag') m,
+    ];
+    expect(matchingMessages, ['launched $runTag']);
 
     // A table-scoped event never matches a null-table binding, or vice
     // versa -- confirms the `IS` comparison isn't accidentally treating
-    // null as a wildcard.
+    // null as a wildcard. A nonexistent table name is used deliberately
+    // so this can never coincidentally match one of Mike's own real
+    // per-table bindings.
     final scoped = await EventDispatchService().dispatch(
-      tableName: 'some_real_table',
+      tableName: 'no_such_table_$runTag',
       eventType: 'app_launch',
     );
     expect(scoped, isEmpty);

@@ -628,3 +628,72 @@ resumed: bind a script to `app_launch` via Scheduled Events (e.g.
 MIKE-CU, confirm the SnackBar appears once at launch; confirm it does
 *not* fire again on a hot-reload/rebuild, only a genuine process
 relaunch; F5/relaunch MIKE-12R to confirm it works there too.
+
+## Two real bugs found by Mike's first live test, both fixed same session
+
+**`app_launch` itself worked perfectly** — bound `notify('App launched at
+' + new Date().toLocaleTimeString());` to `app_launch`, relaunched, saw
+the SnackBar with a live timestamp. Confirms step 6's actual mechanism
+end to end, on real hardware, not just build-verified.
+
+**Bug 1 (real, functional): `table()` required the physical table
+identifier, never shown anywhere else in this app's UI.** Mike's second
+test script, `table('Subscription Tracker').all()`, errored outright —
+`Subscription Tracker` is the *display* name shown in the nav (the only
+name a script author ever actually sees), but the bridge's
+`assertSafeSqlIdentifier` check rejected it (the space fails the
+identifier regex) before ever reaching a query. This app has a
+long-standing, explicit rule for exactly this situation
+(`SchemaRegistry.discoverTableNames()`'s own doc comment: a physical
+identifier is never something a human should have to type) that the
+script API's first version simply never applied. **Fixed:**
+`_resolveTableName` (in `lib/util/scripting/script_api_runtime.dart`) —
+`table('X')` now tries `X` as a real physical name first (so a script
+author who already knows it isn't penalized), then falls back to a
+case-insensitive match against `table_definitions.display_name`, and
+throws a clear `"No table named ... found."` error naming exactly what
+was looked up when neither matches, rather than a confusing raw SQL
+failure. Applied to every table-name-taking bridge call
+(`find`/`all`/`create`/`navigate.to`) — `_rowsToJson`'s injected
+`__table` field (what `navigate.toRecord` later reads back) now carries
+the *resolved* physical name too, so a follow-up `navigate.toRecord(row)`
+on a row fetched by display name still works correctly.
+
+**Bug 2 (real, cosmetic but confirmed live): the code editor never had a
+real syntax-highlighting theme applied at all, which is also why selected
+text was hard to read.** `CodeField` was never wrapped in a `CodeTheme` —
+every token rendered the same plain color (defeating the whole reason
+this package was chosen over a bare `TextField`), and this package's
+fallback text/selection colors don't reliably contrast against each other
+with no theme supplied, confirmed exactly matching what Mike saw.
+**Fixed:** wrapped in `CodeTheme(data: CodeThemeData(styles:
+monokaiSublimeTheme))` (from the `flutter_highlight` package, added as a
+direct dependency alongside `highlight`) for real JS syntax coloring, plus
+an explicit `TextSelectionThemeData` (amber selection/cursor, chosen
+against `monokaiSublimeTheme`'s specific dark background rather than
+trusting the ambient app `Theme.of(context)`, since this editor's
+background is always dark independent of the app's own light/dark
+setting).
+
+**Tests:** `test/script_api_runtime_test.dart` extended (+2 tests, 7 → 9)
+— `table()` resolves a real display name (including case-insensitively,
+deliberately tested via `.toUpperCase()`), and an unknown name fails with
+a clear, named error rather than a raw SQL one. One pre-existing test in
+`test/event_dispatch_service_test.dart` needed fixing too, found while
+re-running the suite -- its `app_launch` dispatch test assumed it was the
+only such binding in the database, which stopped being true the moment
+Mike's own real "Script 1" binding existed (same "don't assume you're the
+only row of this shape" lesson this project already learned once for
+`view_definitions_dao_test.dart`) -- fixed to assert against its own
+uniquely-tagged notification instead of the total result count. All 9 +
+6 tests pass against the real, now-live `essentials.db` (including Mike's
+own real data), zero leaked test rows confirmed after,
+`PRAGMA integrity_check: ok`.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean. Debug APK pushed to MIKE-12R directly.
+
+**Not yet re-verified by Mike** — next: retry the exact `table('Subscription
+Tracker').all()` script (or similar) and confirm it now works; check the
+script editor's text coloring/selection contrast visually on both
+platforms.

@@ -105,6 +105,36 @@ void main() {
     expect(result.effects.notifications, ['all=3', 'open=2']);
   });
 
+  test('table() also accepts the display name shown everywhere else in the app', () async {
+    // Real bug, found live: a table's *display* name is the only name a
+    // script author ever sees (nav, pickers, screen titles) -- the first
+    // version of this bridge required the raw physical identifier
+    // instead and threw when Mike typed the display name shown in the
+    // nav. `displayName` here deliberately includes a space and mixed
+    // case, exactly like a real display name and exactly what would
+    // fail `assertSafeSqlIdentifier` if resolution didn't happen first.
+    final displayName = 'Script Display Name Test $runTag';
+    final tableName = await editor.createTable(displayName: displayName);
+    addTearDown(() => dropTestTable(editor, metadata, tableName));
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "notify('count=' + table('${displayName.toUpperCase()}').all().length);",
+      databasePath: databasePath,
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    expect(result.effects.notifications, ['count=0']);
+  });
+
+  test('table() with an unknown name fails clearly, not with a raw SQL error', () async {
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run("table('Not A Real Table').all();", databasePath: databasePath);
+
+    expect(result.outcome.succeeded, isFalse);
+    expect(result.outcome.error, contains('No table named'));
+  });
+
   test('table(x).create() queues a real row, applied after the script finishes', () async {
     final tableName = await createTestTable('Script Table Create');
     await editor.addField(tableName: tableName, displayName: 'Label', format: 'text');

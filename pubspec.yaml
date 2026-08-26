@@ -134,6 +134,13 @@ dependencies:
   # package:highlight/languages/javascript.dart for CodeController's
   # `language` parameter.
   highlight: ^0.7.0
+  # Direct dependency (not just transitively via flutter_code_editor) --
+  # ScriptEditScreen wraps CodeField in a CodeTheme built from
+  # monokaiSublimeTheme, so JS actually renders in color instead of a
+  # single plain text color -- the first version never supplied a
+  # CodeTheme at all, which is also why selected text was hard to read
+  # (a real bug Mike hit live, not cosmetic guesswork).
+  flutter_highlight: ^0.7.0
 
 dev_dependencies:
   flutter_test:
