@@ -11,15 +11,22 @@
 # same "idempotent to call again" property registerBackgroundScheduleTask
 # has on the Android side.
 #
-# Every 15 minutes, indefinitely, matching Android's own WorkManager
-# floor -- picked for consistency between platforms, not because Windows
-# itself imposes the same limit. Launches the real, already-built exe
-# with the one flag main.dart checks for (see
-# windows_background_entrypoint.dart) -- the exe hides its own window
-# immediately (windows/runner/main.cpp) and exits itself when done
-# (windows_background_entrypoint.dart's exit(0)), so nothing here needs
-# to manage the process's lifetime beyond letting Task Scheduler launch
-# and wait for it.
+# Every 15 minutes, matching Android's own WorkManager floor -- picked
+# for consistency between platforms, not because Windows itself imposes
+# the same limit. Launches the real, already-built exe with the one flag
+# main.dart checks for (see windows_background_entrypoint.dart) -- the
+# exe hides its own window immediately (windows/runner/main.cpp) and
+# exits itself when done (via WidgetsBinding.exitApplication, not a bare
+# exit() -- see that file's own doc comment for why), so nothing here
+# needs to manage the process's lifetime beyond letting Task Scheduler
+# launch and wait for it.
+#
+# RepetitionDuration is 20 years, not [TimeSpan]::MaxValue -- the latter
+# serializes to an XML duration string
+# (P99999999DT23H59M59S) Task Scheduler's own schema rejects
+# ("incorrectly formatted or out of range"), confirmed live. 20 years is
+# comfortably "forever" for a personal machine without hitting that
+# ceiling.
 
 $ErrorActionPreference = 'Stop'
 
@@ -34,7 +41,7 @@ if (-not (Test-Path $exePath)) {
 $taskName = 'EssentialsAppBackgroundScheduleCheck'
 
 $action = New-ScheduledTaskAction -Execute $exePath -Argument '--background-schedule-check'
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration ([TimeSpan]::MaxValue)
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days (365 * 20))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Essentials app: runs due hourly/daily/weekly scheduled scripts in the background.' -Force | Out-Null
