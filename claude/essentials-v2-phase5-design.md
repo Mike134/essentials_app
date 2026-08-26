@@ -154,6 +154,87 @@ New `ScriptEditorScreen` — list of `script_definitions` (name, description, ed
 ## Open questions / risks flagged, not resolved
 
 - **Windows background execution path** — see "Scheduled event runner" above; needs a build-time spike before step 8.
-- **`flutter_js` execution interrupt/timeout support** — see "Script safety" above; needs confirming against the installed version before step 2 is called done.
 - **Android WorkManager's ~15-minute batching** means "daily at 8:00am" is approximate, not exact — worth surfacing in the scheduling UI copy itself (e.g. "approximately 8:00am") rather than letting Mike discover the drift later.
 - **Button field placement** — form only, or also a grid/toolbar affordance? Left for build-time UI judgment, consistent with how Phase 3's Kanban/List config details were pinned down.
+
+## Step 2, concluded: `flutter_js` integration + `JsEngine` wrapper, build-verified
+
+**The interrupt-hook question is resolved — empirically, and the real
+answer contradicts what source/changelog reading suggested going in.**
+`flutter_js: ^0.8.7` added. `QuickJsRuntime2`'s `timeout` (ms) constructor
+parameter is genuinely passed straight into the native `jsNewRuntime` FFI
+call (confirmed by reading the installed package's source), and the
+package's own changelog (0.7.2: "upgraded quickjs code to allow set
+timeout") strongly implied a real `JS_SetInterruptHandler`-style
+interrupt. **A live test proved this wrong**:
+`QuickJsRuntime2(timeout: 500).evaluate('while (true) {}')` did not
+return — it hung the whole `flutter test` process until an external,
+process-level timeout killed it. Whatever this installed version's
+`timeout` actually gates, it is not the synchronous interpreter loop.
+
+**The real, verified safety mechanism is isolate abandonment, not
+interruption.** `lib/util/scripting/js_engine.dart`'s `JsEngine.run()`
+spawns every script onto its own throwaway `Isolate` and races that
+isolate's reply against a Dart-side `Future.timeout` on the *caller's*
+side. A second live test confirmed the property that actually matters:
+the caller reliably unblocks at the configured timeout **even when the
+spawned isolate is permanently, unrecoverably stuck** in a genuine
+infinite loop — a blocking native FFI call can't be preempted by Dart at
+all, isolate boundary or not, but running it on a thread that isn't the
+caller's means the caller (in production: the main app isolate) never
+freezes because of it. The honest limitation, documented in
+`JsEngine`'s own doc comment rather than hidden: a script that hangs
+forever leaks its isolate/OS thread — `Isolate.kill` is called on
+timeout as best-effort cleanup, but can't guarantee the underlying
+thread is ever actually freed for a truly-hung script. This matches the
+design doc's own original framing exactly ("the user-facing behavior —
+kill, log, notify — stays the same, this only affects how 'kill' is
+actually implemented") — it just turned out "kill" means "the app never
+freezes," not "the runaway thread is always reclaimed."
+
+**Real toolchain blocker found and fixed, unrelated to the interrupt
+question:** `flutter_js`'s own `android/build.gradle` hardcodes
+`kotlinOptions.jvmTarget = "1.8"` but never sets
+`compileOptions.sourceCompatibility`/`targetCompatibility`, so it
+silently inherited AGP 9.0.1's own default (11) for a bare
+android-library module — AGP's Kotlin/Java consistency check then failed
+`flutter build apk` outright ("Inconsistent JVM-target compatibility...
+compileDebugJavaWithJavac (11) and compileDebugKotlin (1.8)"). Fixed with
+a targeted `project(":flutter_js") { ... compileOptions { ... 1.8 } }`
+override in the root `android/build.gradle.kts`, scoped to that one
+subproject only (doesn't touch `:app`'s own Java 17 target) — same
+category of fix as `windows/CMakeLists.txt`'s existing
+`permission_handler_windows` coroutine-warning override: a project-level
+compensation for an upstream plugin's own build config gap.
+
+**`flutter build apk` now also names `flutter_js` alongside the
+pre-existing `mobile_scanner` in the documented, non-fatal "applies
+Kotlin Gradle Plugin (KGP) directly" warning** — same already-tracked
+risk class (CLAUDE.md's Phase 2 Step 7 write-up), not a new one; revisit
+alongside `mobile_scanner`'s if a future `flutter upgrade` ever turns
+this into a hard failure.
+
+**Tests:** `test/js_engine_test.dart` (4 tests) — a normal script
+returns its value quickly, a thrown JS error reports as a failure (not a
+timeout), a genuine `while (true) {}` reports `timedOut` and the caller
+unblocks within ~1s (not never), a syntax error reports as a failure.
+Run against the real QuickJS runtime, not mocked — needs
+`quickjs_c_bridge.dll` copied from a prior `flutter build windows`
+output into the repo root first, since `flutter test`'s plain console
+host has no plugin-bundling step of its own (see the test file's own doc
+comment) — not something to "fix," just a one-time local-run detail.
+One real bug this test suite caught before it shipped: the first
+`JsExecutionOutcome.timeout()` was a redirecting `const factory`
+forwarding zero arguments to its target constructor, which silently
+defaulted `timedOut` back to `false` — caught immediately by the
+infinite-loop test failing with exactly that value, fixed by making it a
+plain (non-redirecting) factory instead.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean (the `flutter_js`/`mobile_scanner` KGP warning
+aside).
+
+**Build-verified only — no UI/app wiring yet, none expected at this
+step.** `JsEngine` is a standalone class with no consumer yet; the real
+`record`/`table`/`notify`/`navigate` script API (step 3) is what actually
+calls it from application code. Next: build order step 3.

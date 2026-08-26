@@ -89,6 +89,20 @@ dependencies:
   # .flutter-plugins-dependencies, not a build error).
   mobile_scanner: ^7.4.0
   csv: ^8.0.0
+  # Essentials v2 Phase 5 build order step 2 -- see
+  # claude/essentials-v2-phase5-design.md's "Script safety" section for the
+  # interrupt-hook question this dependency exists to resolve. QuickJS on
+  # Android (FFI) and Windows (bundled quickjs-c-bridge shared library), no
+  # sandboxing guarantee at the package level (the app's own script API
+  # surface is the sandbox -- see JsEngine's doc comment). Confirmed via the
+  # package's own changelog (0.7.2: "upgraded quickjs code to allow set
+  # timeout") and source (QuickJsRuntime2's `timeout` ctor param is passed
+  # straight into the native jsNewRuntime call, not wrapped in a Dart-side
+  # Future/Timer) that `timeout` is a real QuickJS-level execution-interrupt
+  # mechanism (JS_SetInterruptHandler), not just a future that abandons a
+  # still-running isolate -- re-verified empirically, not just from docs,
+  # via a real infinite-loop spike (see JsEngine's own doc comment).
+  flutter_js: ^0.8.7
 
 dev_dependencies:
   flutter_test:
