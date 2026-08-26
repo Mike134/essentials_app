@@ -565,3 +565,66 @@ confirm scripts/bindings sync and work identically there. This is the
 first real end-to-end interactive checkpoint for the whole phase so
 far — everything through step 4 was build-verified only, with no UI to
 create a binding through.
+
+**Mike's first real check found the script editor worked correctly on
+MIKE-CU (a "Test Script 1" script with `x=1;` created successfully,
+confirmed via screenshot) — but "Scripts" was missing from MIKE-12R's
+nav entirely.** Root-caused immediately, not a code bug: MIKE-12R was
+simply running a build from before this whole session's work landed --
+the exact same "Code never pushes installs to a device mid-session on
+its own" pattern already documented for Phase 2's real-device pass.
+Fixed by pushing the already-built debug APK directly (`adb install
+-r`) -- confirmed a device was reachable first, no code change needed.
+
+## Step 6, concluded: `app_launch` firing, build-verified
+
+Per the design doc's own framing ("Both platforms — `app_launch`
+events: Straightforward regardless of the above: run once per app
+process start, in the normal foreground app, no background mechanism
+needed") -- genuinely small once steps 3-5 existed to build on.
+
+**`EventDispatchService.dispatch`/`.dispatchAndApplyEffects` widened to
+accept `String? tableName`**, not just `String` -- a scheduled/
+`app_launch` binding has `table_name IS NULL` per the design doc's own
+schema, and the underlying SQL already used `IS` (not `=`) for exactly
+this reason (confirmed correct, not just convenient, by the new test
+below). This is what makes the *existing* dispatch machinery from step 4
+reusable here with zero new querying logic -- `app_launch` firing needed
+no new mechanism, just a wider type on an already-correct query.
+
+**Wired into `HomeShell._bootstrapAndLoadGroups`**, fire-and-forget
+(same reasoning as the neighboring `ThemeController.load()` call: nothing
+here needs to block nav rendering), positioned *after* migrations are
+applied so a launch script can safely reference current-session schema,
+alongside the existing per-launch bootstrap work (search index,
+sync connect). Runs once per real app process start, matching
+`HomeShell`'s own lifetime -- it's the app's top-level widget, so its
+`initState` only fires once per launch, not on every rebuild.
+
+**`ScheduledEventsScreen` updated to stop implying all four schedule
+types are equally live** -- `app_launch` now genuinely fires;
+hourly/daily/weekly remain correctly stored but inert (steps 7-8), and
+the screen's own copy and per-binding label now say so explicitly
+("not yet active") rather than leaving Mike to discover the difference
+by testing.
+
+**Tests:** `test/event_dispatch_service_test.dart` extended (+1 test,
+6 → 7) -- a null-`tableName` dispatch correctly matches an `app_launch`
+binding (`table_name IS NULL`), and a table-scoped dispatch for the same
+event type correctly matches nothing, confirming the `IS` comparison
+isn't accidentally treating `null` as a wildcard in either direction.
+All 7 pass against the real `essentials.db`. Confirmed after: the only
+active `script_definitions` row is Mike's own real "Test Script 1" from
+his interactive pass above, zero leaked test rows, `PRAGMA
+integrity_check: ok`.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean (same pre-existing KGP warning). Debug APK pushed to
+MIKE-12R directly, matching this step's own opening finding.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: bind a script to `app_launch` via Scheduled Events (e.g.
+`notify('Welcome back!');`), fully close and relaunch the app on
+MIKE-CU, confirm the SnackBar appears once at launch; confirm it does
+*not* fire again on a hot-reload/rebuild, only a genuine process
+relaunch; F5/relaunch MIKE-12R to confirm it works there too.

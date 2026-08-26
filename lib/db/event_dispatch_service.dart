@@ -56,8 +56,13 @@ class EventDispatchService {
   /// today, since no UI to create an `event_definitions` row exists yet
   /// (that's build order step 5) -- so this is cheap to call
   /// unconditionally from every write/lifecycle site.
+  ///
+  /// [tableName] is `null` for a scheduled/`app_launch` event (per the
+  /// design doc's schema, `event_definitions.table_name IS NULL` for
+  /// those) -- the `IS` comparisons below (not `=`) are what let a bare
+  /// `null` correctly match those rows instead of matching nothing.
   Future<List<ScriptRunResult>> dispatch({
-    required String tableName,
+    required String? tableName,
     required String eventType,
     String? fieldName,
     int? recordId,
@@ -100,7 +105,7 @@ class EventDispatchService {
   /// calling screen can easily have been popped.
   Future<void> dispatchAndApplyEffects(
     BuildContext context, {
-    required String tableName,
+    required String? tableName,
     required String eventType,
     String? fieldName,
     int? recordId,

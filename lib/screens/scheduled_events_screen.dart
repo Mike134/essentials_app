@@ -12,12 +12,14 @@ import '../db/script_definitions_dao.dart';
 /// all four). See claude/essentials-v2-phase5-design.md's "Event binding
 /// UI".
 ///
-/// **This screen only builds the binding, not the firing mechanism.**
-/// `app_launch` actually running is build order step 6; real background
-/// firing for the other three is steps 7-8 (Android `workmanager`/Windows,
-/// still pending that build's own spike). Creating a schedule here today
-/// is inert until those steps land -- same "visibly staged, not yet
-/// functional" precedent as `button` fields were between steps 1 and 4.
+/// **`app_launch` actually fires now (build order step 6) -- the other
+/// three are still inert.** Real background firing for hourly/daily/
+/// weekly needs steps 7-8 (Android `workmanager`/Windows, the latter
+/// still pending that build's own spike); creating one of those bindings
+/// today is stored correctly but nothing runs it yet, same "visibly
+/// staged, not yet functional" precedent `button` fields carried between
+/// steps 1 and 4. [_describe] marks this distinction directly in the UI
+/// rather than leaving all four looking equally live.
 class ScheduledEventsScreen extends StatefulWidget {
   const ScheduledEventsScreen({super.key});
 
@@ -74,13 +76,13 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
       case 'app_launch':
         return 'Every app launch';
       case 'schedule_hourly':
-        return 'Approximately every hour';
+        return 'Approximately every hour (not yet active)';
       case 'schedule_daily':
         final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        return 'Approximately daily at ${config?['time'] ?? '?'}';
+        return 'Approximately daily at ${config?['time'] ?? '?'} (not yet active)';
       case 'schedule_weekly':
         final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'}';
+        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'} (not yet active)';
       default:
         return binding.eventType;
     }
@@ -98,9 +100,11 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
               children: [
                 const Text(
                   'Runs a script on a schedule, or once per app launch. Not tied '
-                  'to any one table. "Approximately" -- neither Android nor '
-                  'Windows background scheduling is exact-time (see the build '
-                  'notes once background firing lands).',
+                  'to any one table. "Every app launch" is live now; the hourly/'
+                  'daily/weekly schedules are stored correctly but nothing runs '
+                  'them yet -- real background firing needs later build steps, '
+                  'and even then "approximately" -- neither Android nor Windows '
+                  'background scheduling is exact-time.',
                 ),
                 const SizedBox(height: 12),
                 if (_availableScripts.isEmpty)

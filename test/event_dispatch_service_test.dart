@@ -50,7 +50,7 @@ void main() {
   Future<void> bindScript(
     SqliteCrdt db, {
     required String code,
-    required String tableName,
+    required String? tableName,
     required String eventType,
     String? fieldName,
     bool enabled = true,
@@ -170,5 +170,22 @@ void main() {
     final rows = await db.query('SELECT "$labelField" AS v FROM "$tableName" WHERE is_deleted = 0');
     expect(rows, hasLength(1));
     expect(rows.single['v'], 'from dispatched script');
+  });
+
+  test('dispatch with a null tableName matches an app_launch (scheduled) binding', () async {
+    await bindScript(db, code: "notify('launched');", tableName: null, eventType: 'app_launch');
+
+    final results = await EventDispatchService().dispatch(tableName: null, eventType: 'app_launch');
+    expect(results, hasLength(1));
+    expect(results.single.effects.notifications, ['launched']);
+
+    // A table-scoped event never matches a null-table binding, or vice
+    // versa -- confirms the `IS` comparison isn't accidentally treating
+    // null as a wildcard.
+    final scoped = await EventDispatchService().dispatch(
+      tableName: 'some_real_table',
+      eventType: 'app_launch',
+    );
+    expect(scoped, isEmpty);
   });
 }

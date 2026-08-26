@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../config/table_registry.dart';
+import '../db/event_dispatch_service.dart';
 import '../db/migration_service.dart';
 import '../db/search_index_service.dart';
 import '../db/sidebar_grouping_dao.dart';
@@ -180,6 +181,20 @@ class _HomeShellState extends State<HomeShell> {
     SyncService.connect().then((_) {
       if (mounted) _subscribeToSchemaChanges();
     });
+
+    // Essentials v2 Phase 5 build order step 6 -- runs once per real app
+    // process start, after migrations are applied (so a script can safely
+    // reference current-session schema) but fire-and-forget, same
+    // reasoning as ThemeController.load() just above: nothing here needs
+    // to block the nav from rendering. `tableName: null` matches every
+    // `event_definitions` row with `table_name IS NULL` and
+    // `event_type = 'app_launch'` -- the design doc's own schema
+    // convention for a scheduled/app-launch binding. This is the only
+    // scheduled event type that actually fires yet -- hourly/daily/weekly
+    // need real background execution (steps 7-8), still pending.
+    if (mounted) {
+      EventDispatchService().dispatchAndApplyEffects(context, tableName: null, eventType: 'app_launch');
+    }
 
     return _loadGroups();
   }
