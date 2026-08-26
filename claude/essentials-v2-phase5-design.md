@@ -726,3 +726,89 @@ this project's own memory already prescribes for this exact pitfall.
 list now opens without crashing there, then continue the original
 checklist (the `table()` display-name fix, editor theming) on that
 platform too.
+
+## Fourth issue, found on re-verification: script_definitions/event_definitions never actually synced to the server or MIKE-12R at all
+
+**Real, `no such table: script_definitions` crash on MIKE-12R, root-caused
+directly rather than assumed.** Confirmed via a direct `adb pull` +
+query: the whole `script_definitions`/`event_definitions`-creating
+migration (`id 1787768795866262`, authored on MIKE-CU at the very start
+of build order step 1) had **never reached either the server's `hub.db`
+or MIKE-12R** — not present in either db's `migration_log` at all, not
+even as a failed row.
+
+**Confirmed exactly why, from the server's own log:** the server had
+received real `script_definitions: 32, event_definitions: 29` row data
+from a client in a batch (Mike's own testing this session), but its own
+merge failed with `SqliteException(1): near ")": syntax error ...
+ON CONFLICT ()` — the exact, already-documented `crdt_sync`
+batch-atomicity failure this project has hit multiple times before (see
+"The recurring batch-atomicity sync bug" under Phase 3): the physical
+table didn't exist yet on the server at that instant, so `sql_crdt`'s
+`PRAGMA table_info`-based conflict-target lookup returned nothing,
+producing malformed SQL, and the **whole batch — migration_log row
+included — rolled back**, permanently stranding the server (and MIKE-12R,
+which syncs from it) with no way to ever learn about the fix. This is
+the first time this specific failure has hit an infra table via real,
+organic multi-device usage rather than a same-session test-table churn.
+
+**Recovered using the established playbook** (`tool/adopt_migrations.dart`,
+built for exactly this scenario in the Phase 3 session): server stopped
+properly (the whole process tree — `tray_host.ps1` wrapper plus its
+`server.exe` child — per this project's own documented gotcha about
+`taskkill` alone leaking the tray icon), `hub.db` backed up, the
+migration adopted directly from MIKE-CU's own already-correct copy onto
+both `hub.db` and a pulled copy of MIKE-12R's `essentials.db`.
+
+**A second real bug found doing the recovery, in the recovery tool
+itself:** `adopt_migrations.dart` passed a migration's whole `sql_text`
+to one `txn.execute()` call without splitting it into individual
+statements first — for this migration (two `CREATE TABLE` statements
+joined by `;`, exactly the shape `migration_log`'s own doc comment
+describes as normal), only the *first* statement actually ran, with **no
+error surfaced at all** — `migration_status` was recorded 'succeeded',
+but `event_definitions` silently never got created on either target.
+`MigrationService._attempt` already gets this right
+(`for (final statement in splitSqlStatements(sqlText))`); this tool
+just never matched it. **Fixed** by importing the same
+`splitSqlStatements` helper and applying it identically. The already
+half-applied targets were completed directly (a small one-off script,
+deleted after use, running just the missing `CREATE TABLE` through a
+real `crdt.transaction()`/`execute()` call — not a raw bypass, the same
+underlying mechanism the tool itself uses) rather than trying to
+re-run the now-fixed tool, since its own "already recorded succeeded,
+not re-applying" guard would have skipped it.
+
+**A separate, non-blocking finding surfaced while diagnosing this,
+worth flagging on its own:** MIKE-12R's `migration_status` history shows
+**two different device identities across its own timeline** — `MIKE-12R`
+(older) and `CPH2611`, the phone's bare model number (more recent,
+confirmed by comparing `attempted_at` timestamps directly, not guessed).
+`DeviceId.resolve()` reads `Settings.Global.DEVICE_NAME` live, and
+CLAUDE.md records Mike deliberately setting this to `MIKE-12R` early in
+the project specifically to match the Windows naming convention — this
+device-name setting appears to have reverted to the model number at some
+point since (a phone reset, OS update, or similar), silently splitting
+that device's own per-device settings/migration history across two
+identities. Not something this session's fix needed to correct (the
+migration adoption correctly used whichever identity is *currently*
+live, `CPH2611`), but worth Mike knowing about and re-setting the device
+name back to `MIKE-12R` in Android's Settings if he wants a single,
+continuous identity going forward.
+
+**Recovery verified properly, not assumed:** both `hub.db` and the
+pushed-back MIKE-12R copy confirmed to physically have both tables,
+`PRAGMA integrity_check`/`foreign_key_check` clean on both; the MIKE-12R
+push confirmed byte-identical via pull-back-and-diff before trusting it
+(same discipline as every prior device-copy recovery in this project).
+Server restarted cleanly via the real launcher
+(`launch_tray_hidden.vbs`, not a direct `server.exe` invocation, so the
+tray-host wrapper stays correct), confirmed listening
+(`Listening on 0.0.0.0:1340`) with zero errors in its log. App relaunched
+on MIKE-12R, reconnected to the server cleanly (`[recv] ... {migration_status: 1}`,
+no errors). `flutter analyze` clean on the fixed tool.
+
+**Not yet confirmed by Mike** — next: reopen Scripts on MIKE-12R and
+confirm the list now loads without the `no such table` error, then
+re-attempt the original `table()` display-name / editor-theming
+checklist there too.

@@ -30,6 +30,8 @@ import 'dart:io';
 
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
+import 'package:essentials_app/util/sql_statements.dart';
+
 Future<void> main(List<String> args) async {
   final sourcePath = _argValue(args, '--source');
   final targetPath = _argValue(args, '--target');
@@ -108,7 +110,25 @@ Future<void> main(List<String> args) async {
       await target.execute('PRAGMA foreign_keys = OFF');
       try {
         await target.transaction((txn) async {
-          await txn.execute(sqlText);
+          // Split first -- a real, found-live bug otherwise: a
+          // multi-statement migration's `sql_text` (e.g. two CREATE
+          // TABLEs joined by `;`, exactly the shape
+          // migration_log's own doc comment describes as normal --
+          // "a whole related-tables script is a single row") passed
+          // whole to one `txn.execute()` call only ran its FIRST
+          // statement, with no error raised for the rest -- confirmed
+          // live against a real Phase 5 migration creating
+          // script_definitions/event_definitions together: only
+          // script_definitions came into existence, migration_status
+          // was still recorded 'succeeded', and nothing surfaced the
+          // gap until a real query against the missing table failed
+          // downstream. `MigrationService._attempt` already gets this
+          // right (`for (final statement in
+          // splitSqlStatements(sqlText))`); this tool just never
+          // matched it.
+          for (final statement in splitSqlStatements(sqlText)) {
+            await txn.execute(statement);
+          }
         });
         await target.execute(
           'INSERT OR REPLACE INTO migration_status '
