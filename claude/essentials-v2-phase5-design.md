@@ -1167,10 +1167,88 @@ diagnostic this project uses). **Step 8 is done, genuinely verified end
 to end, not just build-verified.**
 
 **Build order steps 1-8 are now all complete and confirmed working on
-Windows.** Android's own step 7 background firing (`workmanager`) is
-still only build-verified/self-tested via direct db queries — the actual
-"close the app, wait for a real OS notification with nothing open" check
-on MIKE-12R (per step 7's own write-up) hasn't been done yet. Next, when
-resumed: that Android check, then build order step 9 (the phase's final
-step) — a combined real-device verification pass across everything Phase
-5 has built, both platforms, start to finish.
+Windows.** Android's own step 7 real-device check (close the app, wait
+for a real OS notification with nothing open) was attempted next and hit
+a genuine, Android-specific bug of its own — full write-up below. Fixed,
+and confirmed working end to end.
+
+## Step 7 follow-up: a real Android-specific bug found by the actual "close the app and wait" test, fixed
+
+Mike granted the battery-optimization exemption (via ColorOS's own
+"Allow background activity: No restrictions" screen, not the stock
+Android dialog our button triggers — confirmed via `adb shell dumpsys
+jobscheduler` that this genuinely worked: `Standby bucket: EXEMPTED`,
+`Doze whitelisted: true`), closed the app, and waited. **Nothing
+happened**, repeatedly, across multiple real wait cycles.
+
+**Root-caused via direct `adb` inspection, not guessed:** `dumpsys
+jobscheduler` showed the periodic WorkManager job genuinely running and
+completing cleanly (`app called jobFinished`, ~3 second execution) —
+this was never a registration or battery-restriction problem. `adb
+logcat` around that exact execution window showed the app process
+actually starting (`Waiting for a blocking GC ProfileSaver`) with zero
+Dart/Flutter error output at all — no crash, no visible failure, just
+silence. Directly querying the pulled `essentials.db`'s `device_settings`
+table confirmed `schedule_last_run` was never written under any Android
+device identity — meaning `BackgroundScheduleService.runDueScheduledEvents`
+was failing before it ever got to checking a single binding, at the one
+line that runs unconditionally first: `final settings = await _settings`
+(which resolves `DeviceId.resolve()`).
+
+**The actual bug, a real Android-specific gap distinct from anything
+Windows hit:** `DeviceId.resolve()`'s Android path reads the device name
+via a custom `MethodChannel` (`essentials_app/device_id`) whose handler
+is registered **only** inside `MainActivity.configureFlutterEngine`.
+Confirmed by reading `workmanager_android`'s own source
+(`BackgroundWorker.kt`): its background execution constructs a bare
+`FlutterEngine(applicationContext)` with `MainActivity` never attached to
+it at all. Real Flutter *plugins* (`sqflite`, `flutter_local_notifications`,
+`permission_handler`) auto-register on that engine too, via
+`FlutterEngine`'s own default-constructor behavior
+(`GeneratedPluginRegistrant.registerWith`) — but this app's hand-rolled,
+`Activity`-scoped channel was never part of that generated registrant, so
+it simply doesn't exist on WorkManager's engine. Invoking it there throws
+`MissingPluginException` immediately, aborting the entire background
+check before a single binding is even looked at — silently caught by
+`backgroundDispatcherCallback`'s own catch-all (no UI to report to, same
+posture as the Windows entrypoint), so the job "succeeded" from
+WorkManager's own point of view (it ran, it returned) while doing
+nothing.
+
+**Fixed without any native/plugin-registration surgery**, in
+`lib/util/device_id.dart`: every successful foreground resolution (which
+always works, since `MainActivity` is genuinely attached whenever the app
+is actually open) now also writes the resolved name to a small cache
+file next to `essentials.db` (`.device_id_cache`, resolved via the
+already-available `DatabaseHelper.instance.resolveDatabasePath()` —
+`device_id.dart` had no prior dependency on `database_helper.dart`, and
+none was risked in the other direction: `database_helper.dart` doesn't
+import `device_id.dart`, so no cycle). A background-isolate resolution
+that catches `MissingPluginException` falls back to that cached value
+instead of failing outright — correct in practice, since a personal
+device's own name essentially never changes between one foreground app
+open and the next background check.
+
+**Verified end to end, for real:** confirmed via `adb shell cat` that the
+cache file was written correctly (`MIKE-12R`) the moment Mike briefly
+reopened the app after this fix was installed. Waited for the next real
+WorkManager fire; confirmed via `adb shell dumpsys jobscheduler` it was
+purely a matter of the job's own timer, not stuck; **Mike received a real
+Android notification** with the app closed the whole time. Cross-checked
+directly against the pulled `essentials.db`: `device_settings` now shows
+`MIKE-12R|schedule_last_run:<event_id>|2026-08-26T18:50:32...` — the
+binding genuinely ran under the correct, real device identity (not
+`unknown-android`), confirming the cache fallback resolved the *right*
+name, not just *a* name. `PRAGMA integrity_check` `ok` on the real db
+afterward. `flutter analyze` clean, `test/background_schedule_service_test
+.dart` (9/9, unaffected — that file always injects its own
+`ThemeSettingsDao` and never exercises `DeviceId.resolve()`) and
+`test/last_active_table_test.dart` (Windows-path `DeviceId` usage) both
+re-confirmed passing, both `flutter build windows`/`apk --debug` clean,
+debug APK re-pushed to MIKE-12R.
+
+**Build order steps 1-8 are now all complete and confirmed working on
+both platforms, for real — not just build-verified.** Next, when
+resumed: build order step 9, the phase's final step — one more combined
+real-device pass across everything Phase 5 has built, start to finish,
+on both MIKE-CU and MIKE-12R, before calling Phase 5 itself done.
