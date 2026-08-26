@@ -374,12 +374,14 @@ Full design in `claude/essentials-v2-phase6-design.md`; the real completion writ
 
 `flutter analyze` clean throughout every fix; new/touched test files (`search_index_content_test.dart`, `search_index_service_test.dart`, two new `schema_editor_service_drop_test.dart` regression tests) each pass individually per the standing rule for anything using `SchemaEditorService.createTable`. Both `flutter build windows`/`apk --debug` clean at every checkpoint. **Mike's interactive verification: done, passed, on both devices** — "project" correctly groups all 4 `Project` records, "new" correctly finds a `Condition` row with the match bolded in the snippet, on both platforms. One thing not yet separately re-confirmed after all the incident-recovery fixes landed: the remote-reindex path (edit on one device, becomes searchable on the other) — it was exercised as a side effect of the recovery work above, worth an explicit quick check next time either device is touched, not urgent.
 
-### Phase 5 — Scripts & Events — **sequenced last, re-sequenced 2026-08-24, see "Roadmap sequencing" above**
+### Phase 5 — Scripts & Events — **sequenced last, re-sequenced 2026-08-24, see "Roadmap sequencing" above. Design pass begun 2026-08-26.**
 - `flutter_js` integration
 - Script editor UI (in-app, with syntax highlighting)
 - Event binding UI
 - Script API implementation
 - Scheduled event runner
+
+**Confirmed decisions, 2026-08-26 — full design in `claude/essentials-v2-phase5-design.md`:** scheduled events fire in true background (not app-open-only) on both platforms — Android via `workmanager`, Windows via an extension to the existing sync-hub process or a separate headless scheduled task, not yet decided between (flagged as a build-time spike). Script safety posture is timeout + catch + notify, with a real open technical gap flagged: whether `flutter_js`'s QuickJS binding exposes a genuine execution-interrupt hook for killing a runaway synchronous script is unconfirmed and needs checking against the installed version before that step is called done. Script editor package choice deferred to implementation (same pattern as `mobile_scanner` in Phase 2). New `script_definitions`/`event_definitions` tables (synced, normal CRDT columns — not the `search_index`-style local-only case) and a new `button` field format are part of the data model.
 
 ### Phase 3 — View Types — **DONE, 2026-08-25, real-device verified on MIKE-CU and MIKE-12R**
 - List view
