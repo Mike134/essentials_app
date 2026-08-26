@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:trina_grid/trina_grid.dart';
 
+import '../db/event_dispatch_service.dart';
 import '../db/generic_dao.dart';
 import '../db/sync_service.dart';
 import '../db/table_view_settings_dao.dart';
@@ -457,6 +458,18 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
     try {
       await _dao.delete(id);
+      // Essentials v2 Phase 5 build order step 4 -- dispatched after the
+      // real delete succeeds (script bodies that do `table('X').find()`
+      // against this table should see it already gone, matching what
+      // "record deleted" implies), before this screen reloads its grid.
+      if (mounted) {
+        await EventDispatchService().dispatchAndApplyEffects(
+          context,
+          tableName: widget.config.tableName,
+          eventType: 'record_deleted',
+          recordId: id,
+        );
+      }
       _reload();
     } on StillInUseException catch (e) {
       if (!mounted) return;

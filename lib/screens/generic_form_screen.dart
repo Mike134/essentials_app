@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../db/event_dispatch_service.dart';
 import '../db/generic_dao.dart';
 import '../db/schema_registry.dart';
 import '../models/table_config.dart';
@@ -175,10 +176,37 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     if (widget.isEditing) {
       _reverseLinksFuture = _dao.getReverseLinks(widget.existing!['id'] as int);
     }
+
+    // Essentials v2 Phase 5 build order step 4 -- fire-and-forget, same
+    // reasoning as ThemeController.load()'s own initState call: nothing
+    // here needs to block the form from rendering, and this screen has
+    // no meaningful "loading" state to show while it runs. Cheap to call
+    // unconditionally -- EventDispatchService.dispatch is a no-op query
+    // when nothing's bound (true for every table today, since the UI to
+    // create an event_definitions row doesn't exist yet -- step 5).
+    EventDispatchService().dispatchAndApplyEffects(
+      context,
+      tableName: widget.config.tableName,
+      eventType: 'form_opened',
+      recordId: widget.isEditing ? widget.existing!['id'] as int : null,
+    );
   }
 
   @override
   void dispose() {
+    // Fire-and-forget, and deliberately not `dispatchAndApplyEffects` --
+    // this screen is being torn down right now, so there's no context
+    // left to show a SnackBar/push a Navigator route into by the time a
+    // script would finish; a `notify`/`navigate` effect from a
+    // form_closed script is silently dropped rather than attempted
+    // against a dead widget. The script's own database writes still
+    // happen normally regardless (see EventDispatchService.dispatch,
+    // which never touches BuildContext).
+    EventDispatchService().dispatch(
+      tableName: widget.config.tableName,
+      eventType: 'form_closed',
+      recordId: widget.isEditing ? widget.existing!['id'] as int : null,
+    );
     for (final controller in _controllers.values) {
       controller.dispose();
     }
@@ -300,11 +328,57 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     final values = {..._currentValues(), ...?widget.extraValues};
 
     try {
+      final int id;
       if (widget.isEditing) {
-        await _dao.update(widget.existing!['id'] as int, values);
+        id = widget.existing!['id'] as int;
+        await _dao.update(id, values);
       } else {
-        await _dao.insert(values);
+        id = await _dao.insert(values);
       }
+
+      // Essentials v2 Phase 5 build order step 4 -- dispatched (and any
+      // notify/navigate effects applied) *before* popping, while `context`
+      // is still guaranteed to be this screen's own mounted context, not
+      // whatever screen a pop already returned to.
+      final dispatcher = EventDispatchService();
+      if (!mounted) return;
+      if (widget.isEditing) {
+        await dispatcher.dispatchAndApplyEffects(
+          context,
+          tableName: widget.config.tableName,
+          eventType: 'record_updated',
+          recordId: id,
+        );
+        for (final field in widget.config.fields) {
+          if (!mounted) return;
+          final before = widget.existing![field.column]?.toString();
+          final after = values[field.column]?.toString();
+          if (before == after) continue;
+          await dispatcher.dispatchAndApplyEffects(
+            context,
+            tableName: widget.config.tableName,
+            eventType: 'field_changed',
+            fieldName: field.column,
+            recordId: id,
+          );
+        }
+      } else {
+        if (!mounted) return;
+        await dispatcher.dispatchAndApplyEffects(
+          context,
+          tableName: widget.config.tableName,
+          eventType: 'record_created',
+          recordId: id,
+        );
+      }
+      if (!mounted) return;
+      await dispatcher.dispatchAndApplyEffects(
+        context,
+        tableName: widget.config.tableName,
+        eventType: 'record_saved',
+        recordId: id,
+      );
+
       if (!mounted) return;
       if (widget.popOnSave) {
         Navigator.of(context).pop(true);
@@ -381,7 +455,42 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   FieldFormatHandler? _formatHandlerFor(FieldConfig field) =>
       FieldFormatRegistry.instance.handlerFor(field.format);
 
+  /// `button` is deliberately handled here, before the generic
+  /// [FieldFormatHandler] dispatch below, rather than through
+  /// `ButtonFormatHandler.buildFormField` -- that shared interface has no
+  /// way to pass a table name or record id, which running a real
+  /// `button_clicked` script genuinely needs (unlike every other Phase 2
+  /// format, none of which need anything beyond their own field's value).
+  /// `ButtonFormatHandler` stays registered for [GenericListScreen]'s
+  /// grid column only, where no click-dispatch happens at all (see that
+  /// handler's own doc comment).
+  Widget _buildButtonField(FieldConfig field) {
+    final label = field.options['label'] as String? ?? 'Run script';
+    final id = widget.isEditing ? widget.existing!['id'] as int : null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: ElevatedButton(
+        // Disabled until the record actually exists -- a button_clicked
+        // script's ambient `record` needs a real row id to bind to, same
+        // reasoning TableConfig.openRowDetail's own doc comment gives for
+        // why the reverse-relation panel is Add-flow-only unavailable too.
+        onPressed: id == null
+            ? null
+            : () => EventDispatchService().dispatchAndApplyEffects(
+                context,
+                tableName: widget.config.tableName,
+                eventType: 'button_clicked',
+                fieldName: field.column,
+                recordId: id,
+              ),
+        child: Text(label),
+      ),
+    );
+  }
+
   Widget _buildField(FieldConfig field) {
+    if (field.format == 'button') return _buildButtonField(field);
+
     final handler = _formatHandlerFor(field);
     if (handler != null) {
       return Padding(

@@ -13,13 +13,16 @@ import 'field_format_handler.dart';
 /// `FormulaService`'s own doc comment for the fuller argument). `options`:
 /// `{label: String}`, default `'Run script'`.
 ///
-/// **This step only builds the field format itself -- no script actually
-/// runs yet.** `flutter_js`/the script API/event binding are build order
-/// steps 2-5; wiring a real script to this button's tap is step 4's job.
-/// Until then the button renders disabled with an explanatory tooltip,
-/// same "don't ship a dead-looking live control" instinct as
-/// `ManageFieldsScreen`'s "Permanently delete" placeholder before stage-2
-/// delete existed.
+/// **The real, clickable form button now lives in `GenericFormScreen
+/// ._buildButtonField`, not [buildFormField] below** -- see that
+/// method's own doc comment for why: running a real `button_clicked`
+/// script needs a table name and record id, which the shared
+/// [FieldFormatHandler.buildFormField] interface has no way to pass (no
+/// other Phase 2 format needs anything beyond its own field's value).
+/// [buildFormField] here is dead code, kept only because the interface
+/// requires an implementation -- `GenericFormScreen._buildField`
+/// special-cases `field.format == 'button'` before the generic handler
+/// dispatch ever reaches it.
 ///
 /// **Grid affordance deliberately deferred, per the design doc's own
 /// "TBD during build" note.** [buildGridColumn] renders a plain,
@@ -27,7 +30,8 @@ import 'field_format_handler.dart';
 /// precedent (its scan affordance is form-only too, confirmed as the
 /// right call by Mike during Phase 2's real-device pass) rather than
 /// guessing at a grid button's interaction model before any script can
-/// actually run from it.
+/// actually run from it. This handler stays registered for that grid
+/// column alone.
 class ButtonFormatHandler implements FieldFormatHandler {
   const ButtonFormatHandler();
 
@@ -59,12 +63,10 @@ class ButtonFormatHandler implements FieldFormatHandler {
 
   @override
   Widget buildFormField(BuildContext context, FieldConfig field, TextEditingController controller) {
-    return InputDecorator(
-      decoration: InputDecoration(labelText: field.label, border: InputBorder.none, contentPadding: EdgeInsets.zero),
-      child: Tooltip(
-        message: 'Scripts aren\'t wired up yet (Essentials v2 Phase 5 build in progress).',
-        child: ElevatedButton(onPressed: null, child: Text(_labelFor(field))),
-      ),
-    );
+    // Unreachable in practice -- see this class's own doc comment.
+    // Kept functional (not a throw) purely as a safe fallback in case
+    // some future caller other than GenericFormScreen ever queries the
+    // registry directly for a `button` field.
+    return ElevatedButton(onPressed: null, child: Text(_labelFor(field)));
   }
 }

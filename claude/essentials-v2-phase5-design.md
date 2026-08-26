@@ -362,3 +362,119 @@ no consumer yet; build order step 4 (data + UI event wiring off
 `SyncService.dataChanges` and existing form lifecycle, the foreground
 in-app path) is what actually calls it from real app code and gives
 `notify`/`navigate`'s captured effects somewhere real to go.
+
+## Step 4, concluded: foreground event wiring, build-verified
+
+**A real correction to this design doc's own original assumption, found
+by reading the actual code before wiring anything up.** The "What the
+code already does today" section above claimed `SyncService.dataChanges`
+"already broadcasts local data-change events." It doesn't — reading
+`SyncService`'s source confirmed that stream is fed exclusively from
+`onChangesetReceived`, which only fires for a changeset *received from a
+remote peer*, never for a write made on this device. Wiring data events
+to it as originally planned would have meant a "record created" script
+never fires for the overwhelmingly common case (the user creating a
+record through this device's own form) and instead fires in a burst for
+every row a reconnect happens to pull in — backwards from the obvious
+intent, and a real risk of a notification flood the first time a device
+reconnects after being offline. **Data events are dispatched from the
+real local write call sites instead** — `GenericFormScreen`'s save flow,
+`GenericListScreen`'s delete flow — which is also where the design doc's
+own UI events (`form_opened`/`form_closed`/`button_clicked`) already had
+to hook in regardless. Flagged as an explicit, open follow-up, not
+silently dropped: whether a data event should *also* fire for a change
+that arrives purely via sync from another device is a real, unresolved
+question, worth revisiting once real usage shows whether it's wanted.
+
+**New: `lib/db/event_dispatch_service.dart`'s `EventDispatchService`** —
+`dispatch()` finds every enabled `event_definitions` row matching an
+event (table + event type, plus field name for `field_changed`), runs
+each bound script through `ScriptApiRuntime`, and returns the results;
+`dispatchAndApplyEffects(context, ...)` layers real UI dispatch on top —
+a `notify()` becomes a `SnackBar`, a `navigate.*` becomes a real
+`Navigator.push` (to `GenericListScreen` for `navigate.to`, or a real
+`GenericFormScreen` pre-loaded with the target row for
+`navigate.toRecord`), and a failed/timed-out script surfaces its own
+`SnackBar` instead of silently vanishing. Deliberately split this way,
+mirroring `ScriptApiRuntime`'s own "don't assume a UI exists" posture —
+`dispatch()` alone is what a future background/scheduled caller (steps
+6-8) will use, with no `BuildContext` anywhere near it.
+
+**Wired into real screens:**
+- `GenericFormScreen.initState`/`.dispose` — `form_opened`/`form_closed`,
+  fire-and-forget (same reasoning as `ThemeController.load()`'s own
+  initState call: nothing here needs to block rendering).
+  `form_closed` deliberately uses bare `dispatch()`, not
+  `dispatchAndApplyEffects` — the widget is already being torn down by
+  the time a script would finish, so there's no context left to show
+  anything in; the script's own database writes still happen normally.
+- `GenericFormScreen._save` — `record_created` (insert only) or
+  `record_updated` + one `field_changed` per actually-changed field
+  (edit only, a plain value diff against `widget.existing`), then
+  `record_saved` either way — all dispatched (and effects applied)
+  *before* popping, while `context` is still guaranteed to be this
+  screen's own mounted one, not whatever screen a pop already returned
+  to.
+- `GenericListScreen._delete` — `record_deleted`, after the real delete
+  succeeds, before the grid reloads.
+- **`button` fields are now real and clickable**, replacing step 1's
+  disabled placeholder. Deliberately handled directly in
+  `GenericFormScreen._buildField` (a new `_buildButtonField`), *not*
+  through `ButtonFormatHandler.buildFormField` — the shared
+  `FieldFormatHandler` interface has no way to pass a table name or
+  record id, which a real `button_clicked` dispatch genuinely needs
+  (unlike every other Phase 2 format). `ButtonFormatHandler` stays
+  registered for `GenericListScreen`'s grid column alone, which needs no
+  click-dispatch. Disabled until the record actually exists (no id yet
+  on an unsaved Add) — same reasoning `TableConfig.openRowDetail`'s own
+  doc comment already gives for the reverse-relation panel being
+  edit-only.
+
+**Deliberately out of scope for this step, flagged rather than silently
+skipped:** `GenericListScreen`'s own inline grid cell-edit path
+(`_saveCellEdit`) is a second, separate write call site that could fire
+`record_updated`/`field_changed` too but doesn't yet — a known, bounded
+scope limit rather than touching every code path in an already-large
+screen in one pass.
+
+**A real leak caught and fixed in this step's own test file, worth
+remembering.** `test/event_dispatch_service_test.dart`'s first version
+inserted real `script_definitions`/`event_definitions` rows with no
+`addTearDown` cleanup at all — these two new infra tables are just as
+`sqlite_crdt`-tracked as any other, so a bare `INSERT` with nothing
+undoing it doesn't leave inert test residue, it leaves a **permanently
+live row in the real production `essentials.db`**. Caught immediately by
+checking the live db directly after the first test run (`is_deleted = 0`
+on all 4 rows, not the tombstoned residue every other v2 test file's
+discipline produces) — recovered via a real, synced soft-delete
+(`crdt.execute('UPDATE ... SET is_deleted = 1 ...')`, never a raw
+hard-delete) through a one-off throwaway script, then fixed at the
+source: `bindScript`'s helper now registers real `addTearDown` cleanup
+for both rows it creates. Re-run and reconfirmed clean afterward.
+
+**Tests:** `test/event_dispatch_service_test.dart` (5 tests) cover
+`dispatch()`'s own logic against the real `essentials.db` — a bound,
+enabled script runs and its outcome/effects come back correctly; no
+binding means nothing runs; a disabled binding doesn't run; `field_changed`
+matches only its own field name; a dispatched script's real database
+write actually persists. The UI half (`dispatchAndApplyEffects`'s
+`SnackBar`/`Navigator` dispatch, and the real `GenericFormScreen`/
+`GenericListScreen` wiring — button clicks, form lifecycle, save/delete)
+needs a real widget tree and isn't covered by an automated test here;
+build-verified only, Mike's own interactive pass is next.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean. Direct SQL check after: zero leaked physical test
+tables, all `script_definitions`/`event_definitions` test rows correctly
+tombstoned, `PRAGMA integrity_check: ok`.
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: since no UI exists yet to create a real `event_definitions`
+binding (that's build order step 5), Mike's own verification of this
+step specifically needs either a hand-inserted test row (same shape this
+step's own test file already uses) or waiting until step 5's Script
+Editor/Event Binding UI exists to create one through the app itself.
+Reasonable to build step 5 next before asking for a real interactive
+pass, so there's an actual UI to test the whole chain (write a script →
+bind it to an event → trigger the event → see the effect) end to end in
+one go, rather than two disjointed checkpoints.
