@@ -133,14 +133,29 @@ class BackgroundScheduleService {
 
       for (final result in results) {
         for (final message in result.effects.notifications) {
-          await _notify(message);
+          await _tryNotify(message);
         }
         if (result.outcome.timedOut) {
-          await _notify('A scheduled script timed out.');
+          await _tryNotify('A scheduled script timed out.');
         } else if (result.outcome.error != null) {
-          await _notify('Scheduled script error: ${result.outcome.error}');
+          await _tryNotify('Scheduled script error: ${result.outcome.error}');
         }
       }
+    }
+  }
+
+  /// Wraps [_notify] so a real notification-delivery failure (e.g. the
+  /// exact `WindowsInitializationSettings` gap found live -- see
+  /// `ScriptNotifications`' own doc comment) can never abort processing
+  /// of the *rest* of this run's due bindings -- their last-run
+  /// timestamps and any real database writes their own scripts made
+  /// already succeeded above; only the notification itself is best-effort.
+  Future<void> _tryNotify(String message) async {
+    try {
+      await _notify(message);
+    } catch (_) {
+      // Nothing to report to -- same posture as runWindowsBackgroundScheduleCheck's
+      // own catch-all.
     }
   }
 

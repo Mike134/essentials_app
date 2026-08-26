@@ -1106,14 +1106,64 @@ Debug APK re-pushed to MIKE-12R via `adb install -r` (unrelated to this
 step's own Windows-only changes, but kept in sync per this session's own
 practice of never leaving 12R stale).
 
-**Build-verified and self-tested end-to-end on Windows — not yet
-Mike-tested interactively via the real Scheduled Task.** Next, when
-resumed: on MIKE-CU, run `windows\register_background_schedule_task.ps1`
-from an elevated PowerShell prompt once, create a real hourly (or
-daily/weekly a few minutes out) binding with a `notify()` call, then
-close the app and wait for a real scheduled run (~15 minutes) to confirm
-a genuine Windows toast notification appears with the app not open and
-no window ever flashing visibly. Once both platforms are confirmed by
-Mike, build order step 9 (the phase's final step) is a combined
-real-device verification pass across everything Phase 5 has built,
-start to finish.
+**Registration script bug, found immediately by Mike running it:**
+`Register-ScheduledTask` failed outright (`Register-ScheduledTask : The
+task XML contains a value which is incorrectly formatted or out of
+range. (10,42):Duration:P99999999DT23H59M59S`) — `[TimeSpan]::MaxValue`
+serializes to an XML duration string Task Scheduler's own schema
+rejects. Fixed by using a 20-year duration instead (comfortably
+"forever" for a personal machine without hitting whatever ceiling
+produced that malformed string). Re-ran cleanly after the fix, confirmed
+by Mike: task registered, targeting the real exe path.
+
+**Real bug, found by Mike's first actual test (right-click → Run in Task
+Scheduler): nothing happened — no toast, no visible sign of anything.**
+Root-caused by reading `FlutterLocalNotificationsPlugin.initialize`'s own
+source: on `TargetPlatform.windows`, it throws `ArgumentError('Windows
+settings must be set when targeting Windows platform.')` if
+`settings.windows` is null — and `ScriptNotifications._ensureInitialized`
+(step 7) only ever configured `android:`, never `windows:`, since it was
+written and tested against Android first and the gap was never exercised
+until this Windows-specific test. That exception was thrown from inside
+`runWindowsBackgroundScheduleCheck`'s own catch-all (deliberately silent
+— there's no UI to report to), so **the scheduled script genuinely ran**
+(confirmed separately, both before and after this fix, by querying
+`device_settings`' `schedule_last_run` timestamp directly) but its
+`notify()` call threw before ever reaching the OS, with zero visible
+indication anything had gone wrong. Fixed by adding a real
+`WindowsInitializationSettings(appName: ..., appUserModelId: ...,
+guid: ...)` alongside the existing Android settings — the `guid` is a
+fixed, made-up-once UUID (the plugin's own example app does the same;
+it only needs to be a stable, valid-looking identifier, not tied to any
+real Windows app registration). Also hardened
+`BackgroundScheduleService.runDueScheduledEvents` while fixing this: the
+notify calls are now wrapped in a `_tryNotify` that swallows a delivery
+failure per-notification, so one broken notification can never abort
+processing of the *rest* of a run's due bindings (their own dispatch/
+database writes already succeeded by that point regardless) — a direct,
+narrow hardening motivated by the exact failure class just found, not
+speculative scope creep.
+
+Re-verified after this fix the same way as before: seeded a fresh
+`schedule_hourly` binding via a throwaway script, ran the real exe with
+`--background-schedule-check`, confirmed it still exits cleanly with
+zero lingering processes, and confirmed `schedule_last_run` was written
+— the dispatch half was never actually broken, only the notification
+delivery. Cleaned up immediately after (soft-deleted, cleared the
+settings key); `PRAGMA integrity_check` `ok` afterward. **The actual
+visible toast still needs Mike's own confirmation** — that's the one
+thing this fix can't be verified from Code's own remote testing (no way
+to see a Windows toast render from this environment). `flutter analyze`
+clean, `test/background_schedule_service_test.dart` (9/9) still passing,
+both `flutter build windows`/`apk --debug` clean, debug APK re-pushed to
+MIKE-12R (unrelated to this Windows-only fix, kept in sync regardless).
+
+**Build-verified and self-tested end-to-end on Windows through the
+dispatch layer — the actual toast notification still needs Mike's own
+visual confirmation.** Next, when resumed: right-click → Run the
+`EssentialsAppBackgroundScheduleCheck` task again (or wait for its next
+~15-minute tick) against a fresh hourly test binding, confirm a real
+Windows toast now appears with the app not open and no window ever
+flashing visibly. Once both platforms are confirmed by Mike, build order
+step 9 (the phase's final step) is a combined real-device verification
+pass across everything Phase 5 has built, start to finish.

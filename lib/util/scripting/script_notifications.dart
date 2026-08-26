@@ -29,7 +29,27 @@ class ScriptNotifications {
     // requires *some* valid drawable resource name here; `@mipmap/ic_launcher`
     // always exists in a Flutter-generated Android project.
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const settings = InitializationSettings(android: androidSettings);
+    // **Required, not optional, on Windows -- a real bug found live, not
+    // anticipated when this class was first written.** Confirmed by
+    // reading `FlutterLocalNotificationsPlugin.initialize`'s own source:
+    // on `TargetPlatform.windows`, it throws `ArgumentError('Windows
+    // settings must be set when targeting Windows platform.')` if
+    // `settings.windows` is null. That exception was thrown from inside
+    // `runWindowsBackgroundScheduleCheck`'s catch-all (there's no UI to
+    // report to), so it was silently swallowed -- the scheduled script
+    // genuinely ran (confirmed separately via `device_settings`'
+    // `schedule_last_run` timestamp), but its `notify()` never displayed
+    // anything, with zero visible sign anything had gone wrong. `guid`
+    // is a fixed, made-up-once UUID (not tied to any real Windows
+    // registration) -- the plugin's own example app does the same; it
+    // only needs to be a stable, valid-looking GUID, never reused by
+    // another app on this machine.
+    const windowsSettings = WindowsInitializationSettings(
+      appName: 'Essentials',
+      appUserModelId: 'Essentials.EssentialsApp.ScheduledScripts',
+      guid: '7f3e9c2a-4b1d-4e6f-9a3c-8d2b5e7f1a90',
+    );
+    const settings = InitializationSettings(android: androidSettings, windows: windowsSettings);
     await _plugin.initialize(settings: settings);
     _initialized = true;
   }
