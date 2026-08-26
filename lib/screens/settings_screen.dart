@@ -8,9 +8,11 @@ import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
 import '../util/color_picker.dart';
 import 'add_field_screen.dart';
+import 'manage_events_screen.dart';
 import 'manage_fields_screen.dart';
 import 'manage_tables_screen.dart';
 import 'new_table_screen.dart';
+import 'scheduled_events_screen.dart';
 
 /// Reads/writes `app_settings` (theme, font family, font color, background
 /// color -- shared) and `device_settings` (font size -- per-device) via
@@ -408,6 +410,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       context,
                     ).push(MaterialPageRoute(builder: (_) => const ManageTablesScreen())),
                     child: const Text('Manage tables'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text('Automation (Essentials v2 Phase 5)', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text(
+                'Write scripts under Scripts in the nav, then bind them to '
+                'events here -- a record being created/saved/updated/deleted, '
+                'a form opening/closing, a field changing, a button being '
+                'tapped, or a schedule.',
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const ManageEventsScreen())),
+                    child: const Text('Manage events'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const ScheduledEventsScreen())),
+                    child: const Text('Scheduled events'),
                   ),
                 ],
               ),

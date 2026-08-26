@@ -116,6 +116,24 @@ dependencies:
   # resolved transitively so this doesn't independently drag in a second
   # version.
   sqlite3: ^3.5.0
+  # Essentials v2 Phase 5 build order step 5's Script Editor UI -- per the
+  # design doc's own confirmed decision, the package choice was
+  # deliberately left for implementation time (same "check what's
+  # actively maintained" call as mobile_scanner in Phase 2). Chosen:
+  # `flutter_code_editor` (akvelon) -- pure Dart/Flutter (CodeController
+  # extends TextEditingController directly, no native platform code at
+  # all, unlike flutter_js/mobile_scanner -- confirmed via pub.dev, real
+  # risk is low), Windows+Android both supported, JS highlighting via the
+  # `highlight` package's language definitions. A plain monospace
+  # TextField (the design doc's own explicitly-sanctioned fallback) stays
+  # the fallback if this ever causes real friction -- syntax highlighting
+  # is cosmetic, not a functional gap.
+  flutter_code_editor: ^0.3.5
+  # Direct dependency (not just transitively via flutter_code_editor) --
+  # ScriptEditScreen imports langJavascript directly from
+  # package:highlight/languages/javascript.dart for CodeController's
+  # `language` parameter.
+  highlight: ^0.7.0
 
 dev_dependencies:
   flutter_test:

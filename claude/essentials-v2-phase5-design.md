@@ -478,3 +478,90 @@ Reasonable to build step 5 next before asking for a real interactive
 pass, so there's an actual UI to test the whole chain (write a script →
 bind it to an event → trigger the event → see the effect) end to end in
 one go, rather than two disjointed checkpoints.
+
+## Step 5, concluded: Script Editor + event binding UI, build-verified
+
+**Script editor package, per the design doc's own confirmed "decide at
+implementation time" call:** `flutter_code_editor` (akvelon) — pure
+Dart/Flutter (`CodeController` extends `TextEditingController` directly,
+no native platform code at all, unlike `flutter_js`/`mobile_scanner`, so
+real integration risk was low), Windows+Android both supported, JS
+syntax highlighting via the `highlight` package's language table.
+`highlight` added as a direct dependency too (`langJavascript` is
+imported directly for `CodeController`'s `language` parameter). The
+design doc's own plain-`TextField` fallback was never needed — no
+friction hit integrating it.
+
+**New DAOs, `lib/db/script_definitions_dao.dart`/`event_definitions_dao
+.dart`** — same shape/conventions as `TemplateDefinitionsDao`/
+`ViewDefinitionsDao` (plain row-level CRDT writes against an
+already-bootstrapped table, no `migration_log` involvement, since
+writing a script's *code* or a binding is never DDL). Both correctly
+inject `id`'s own SQL `DEFAULT` expression on create, same
+rowid-alias-bypasses-DEFAULT fix every other timestamp+random-id table
+in this app already needs — confirmed by checking, not assumed, since
+`SqliteCrdtHelpers.insertGetId`'s "id is a rowid alias" shortcut
+specifically doesn't hold here (these two tables use the same
+timestamp+random scheme as `migration_log`/`view_definitions`, not a
+plain `AUTOINCREMENT`).
+
+**`lib/screens/script_editor_screen.dart`** — `ScriptEditorScreen` (list:
+name, description, edit, delete, new) + `ScriptEditScreen` (full-screen
+`CodeField` editor), reached via a new "Scripts" nav rail/drawer entry,
+same pattern as Search (Phase 6) per the design doc's own instruction.
+
+**Event binding UI, one real deviation from the design doc's own
+sketch, deliberate and documented, not silent:** the doc's "Event binding
+UI" section floated configuring `button_clicked` "at field-creation time
+via `AddFieldScreen`/`ManageFieldsScreen`." Built differently:
+`field_changed` and `button_clicked` are both just `event_definitions`
+rows with a `field_name` set — exactly the same shape every other
+binding already has — so `lib/screens/manage_events_screen.dart`'s
+`ManageEventsScreen` handles **all** per-table event types uniformly
+(data events, form lifecycle, `field_changed`, `button_clicked`) in one
+screen, reached from Settings alongside Manage Tables/Manage Fields,
+rather than splitting `button_clicked` out to a second UI surface for no
+structural reason. Picking `button_clicked` narrows the field picker to
+this table's own `button`-format fields only; every other field-scoped
+type offers every field.
+
+**`lib/screens/scheduled_events_screen.dart`'s `ScheduledEventsScreen`**
+is the one genuinely *global* (not per-table) binding screen, per the
+design doc's own explicit call — `app_launch`/hourly/daily/weekly,
+`schedule_config` built as the exact JSON shape the design doc's schema
+comment specifies (`{time: "08:00"}` / `{day: "mon", time: "08:00"}`).
+**Deliberately inert right now, and says so in its own UI copy** — this
+screen only builds the *binding*; `app_launch` actually firing is step 6,
+real background firing for the other three is steps 7-8 (pending that
+build's own Windows-path spike). Creating a schedule today is the same
+"visibly staged, not yet functional" precedent `button` fields already
+set between steps 1 and 4.
+
+**Tests:** `test/script_event_daos_test.dart` (6 tests) — script
+create/update/softDelete round-trip against `loadAll`; event bindings
+round-trip for a table via `loadForTable`; a scheduled (no-table)
+binding is found by `loadScheduled` and correctly absent from
+`loadForTable`; `setEnabled` toggles a binding in place. All pass
+against the real `essentials.db`, zero leaked active rows confirmed
+directly after (`PRAGMA integrity_check: ok`). The UI screens themselves
+(`ScriptEditorScreen`/`ManageEventsScreen`/`ScheduledEventsScreen`) have
+no automated widget coverage — build-verified only, same as every prior
+UI-heavy step in this project; Mike's own interactive pass is next.
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean (the `flutter_js`/`mobile_scanner` KGP warning
+aside, unchanged by this step).
+
+**Build-verified only — not yet Mike-tested interactively.** Next, when
+resumed: on MIKE-CU, write a real script (e.g. `notify('Hello from a
+script!');`), bind it via Manage Events to `record_created` on a real
+table, create a record through that table's form, confirm the SnackBar
+appears; try a `button_clicked` binding on a `button` field and confirm
+tapping it runs the script; try `form_opened`/`form_closed`; try
+`field_changed` on one specific field and confirm it does *not* fire for
+other fields; create a scheduled event and confirm the UI correctly
+shows it as inert (no firing expected yet); then F5/relaunch MIKE-12R to
+confirm scripts/bindings sync and work identically there. This is the
+first real end-to-end interactive checkpoint for the whole phase so
+far — everything through step 4 was build-verified only, with no UI to
+create a binding through.

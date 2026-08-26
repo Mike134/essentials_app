@@ -17,6 +17,7 @@ import 'calendar_screen.dart';
 import 'generic_list_screen.dart';
 import 'kanban_view_screen.dart';
 import 'list_view_screen.dart';
+import 'script_editor_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
@@ -623,8 +624,27 @@ class _HomeShellState extends State<HomeShell> {
       const Divider(height: 1),
       _railSearchItem(),
       _railCalendarItem(),
+      _railScriptsItem(),
       _railSettingsItem(),
     ];
+  }
+
+  Widget _railScriptsItem() {
+    return InkWell(
+      onTap: () => Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const ScriptEditorScreen())),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        child: Column(
+          children: [
+            Icon(Icons.code),
+            SizedBox(height: 4),
+            Text('Scripts', style: TextStyle(fontSize: 12)),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _railSearchItem() {
@@ -823,6 +843,16 @@ class _HomeShellState extends State<HomeShell> {
               Navigator.of(
                 context,
               ).push(MaterialPageRoute(builder: (_) => const CalendarScreen()));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.code),
+            title: const Text('Scripts'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const ScriptEditorScreen()));
             },
           ),
           ListTile(
