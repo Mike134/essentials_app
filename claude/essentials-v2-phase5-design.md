@@ -1158,12 +1158,19 @@ clean, `test/background_schedule_service_test.dart` (9/9) still passing,
 both `flutter build windows`/`apk --debug` clean, debug APK re-pushed to
 MIKE-12R (unrelated to this Windows-only fix, kept in sync regardless).
 
-**Build-verified and self-tested end-to-end on Windows through the
-dispatch layer — the actual toast notification still needs Mike's own
-visual confirmation.** Next, when resumed: right-click → Run the
-`EssentialsAppBackgroundScheduleCheck` task again (or wait for its next
-~15-minute tick) against a fresh hourly test binding, confirm a real
-Windows toast now appears with the app not open and no window ever
-flashing visibly. Once both platforms are confirmed by Mike, build order
-step 9 (the phase's final step) is a combined real-device verification
-pass across everything Phase 5 has built, start to finish.
+**Confirmed by Mike: a real Windows toast notification appeared,** app
+closed the whole time, no window ever visible — right-click → Run on
+`EssentialsAppBackgroundScheduleCheck` against a freshly-due hourly
+binding (its stale `lastRun` from the earlier, pre-fix test cleared
+first via a throwaway script, same discipline as every other real-db
+diagnostic this project uses). **Step 8 is done, genuinely verified end
+to end, not just build-verified.**
+
+**Build order steps 1-8 are now all complete and confirmed working on
+Windows.** Android's own step 7 background firing (`workmanager`) is
+still only build-verified/self-tested via direct db queries — the actual
+"close the app, wait for a real OS notification with nothing open" check
+on MIKE-12R (per step 7's own write-up) hasn't been done yet. Next, when
+resumed: that Android check, then build order step 9 (the phase's final
+step) — a combined real-device verification pass across everything Phase
+5 has built, both platforms, start to finish.
