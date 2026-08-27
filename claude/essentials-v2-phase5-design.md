@@ -1248,7 +1248,75 @@ re-confirmed passing, both `flutter build windows`/`apk --debug` clean,
 debug APK re-pushed to MIKE-12R.
 
 **Build order steps 1-8 are now all complete and confirmed working on
-both platforms, for real — not just build-verified.** Next, when
-resumed: build order step 9, the phase's final step — one more combined
-real-device pass across everything Phase 5 has built, start to finish,
-on both MIKE-CU and MIKE-12R, before calling Phase 5 itself done.
+both platforms, for real — not just build-verified.**
+
+## Step 9: final regression pass, one more real test-hygiene incident found and fixed, checklist handed to Mike
+
+Before handing off the phase's final real-device pass, ran a full
+regression sweep of every script-engine test file against the current
+committed state — `flutter analyze`, then each DB-backed file
+individually (the standing rule since the Phase 1 Step 3 incident).
+
+**A real, self-inflicted mistake, caught and fixed before it could
+mislead anything:** chained three `SchemaEditorService.createTable`-using
+test files (`js_engine_test.dart`, `script_api_runtime_test.dart`,
+`event_dispatch_service_test.dart`) together in one `flutter test`
+invocation — a direct violation of this project's own standing rule,
+documented repeatedly since the Phase 1 Step 3 incident specifically
+because chaining these files reproduces a real, still-not-root-caused
+`flutter_test` concurrency issue. It reproduced immediately: a stale
+`dropTable` retry against an already-gone table authored a second, real
+`DROP TABLE` migration that failed on apply (`no such table`), which
+`MigrationService.applyPending`'s own halt-on-first-failure design (by
+design, no silent auto-retry) then used to permanently block *every*
+later `createTable`/`addField` call on this device — the exact "Bug 2b"
+failure shape already documented once before in CLAUDE.md's Essentials
+v2 real-device verification session, now reproduced a second time by the
+same mistake (running these files chained) rather than a new root cause.
+Recovered the same documented way: retracted the poisoned `migration_log`
+row (`is_deleted = 1`, a real `crdt.execute()`, not a raw file edit),
+confirmed the pipeline recovered by re-running every affected file
+individually — all passed clean. Also found and cleaned up 16 real
+leaked physical test tables left behind across the incident (checked
+`table_definitions`, soft-deleted anything still active, dropped every
+one through the real `SchemaEditorService.dropTable` pipeline — never a
+raw local `DROP TABLE`, same discipline `test/support/schema_test_cleanup
+.dart`'s own doc comment insists on). `PRAGMA integrity_check` `ok`
+afterward; zero leaked tables remain.
+
+**Final state confirmed clean:** `flutter analyze` clean project-wide;
+every script-engine test file (`js_engine_test.dart`,
+`script_api_runtime_test.dart`, `event_dispatch_service_test.dart`,
+`background_schedule_service_test.dart`, `script_event_daos_test.dart`,
+`last_active_table_test.dart`, `schema_registry_test.dart`,
+`generic_dao_insert_id_test.dart`) passes individually; both `flutter
+build windows`/`apk --debug` clean; debug APK re-pushed to MIKE-12R.
+
+**Step 9 itself — the phase's final real-device pass — is Mike's to run,
+per this project's own established working style** (Code builds and
+verifies; Mike does interactive UI/UX testing). Checklist handed off,
+covering every build-order step in one combined pass rather than
+re-testing each in isolation again:
+
+1. **Button field** — open a record with a button-format field, confirm
+   it still renders and runs its bound script.
+2. **Script API** — confirm `record`/`table()`/`notify()`/`navigate` all
+   still work via the two existing test scripts ("Script 1"/"Script 2").
+3. **Data + UI events** — create/edit/delete a record on a table with an
+   event binding, confirm the bound script fires (SnackBar, foreground).
+4. **Script editor + event binding UI** — confirm Scripts, Manage Events,
+   and Scheduled Events all still open and list correctly on both
+   platforms.
+5. **`app_launch`** — confirm it still fires once per real app open on
+   both platforms.
+6. **Android background firing** — confirm the "Approximately every
+   hour" binding (or a fresh one) still fires with the app fully closed.
+7. **Windows background firing** — same, via the registered Scheduled
+   Task.
+8. **Cross-device** — confirm a script/event binding created on one
+   device is visible and runs correctly on the other (scripts are
+   shared, not per-device, by design).
+
+Once Mike confirms this checklist, Essentials v2 Phase 5 — Scripts &
+Events is done, all nine build order steps complete and real-device
+verified on both platforms.
