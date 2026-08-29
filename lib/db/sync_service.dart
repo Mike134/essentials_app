@@ -179,10 +179,41 @@ class SyncService {
         // mitigation for the one real gap HomeShell's launch-time
         // applyPending() can't close on its own (a migration and
         // migration-dependent data arriving in the same catch-up pull).
-        // Fire-and-forget -- a failure here already recorded a real
-        // migration_status row of its own; nothing here needs to block
-        // the connection.
-        MigrationService().applyPending();
+        //
+        // **`fetchFromServer()` too, not just `applyPending()` -- a real
+        // gap found live, not theorized.** The original design only ran
+        // `fetchFromServer()`+`applyPending()` once, before the very
+        // first `SyncService.connect()` of a session (see
+        // `HomeShell._bootstrapAndLoadGroups`) -- every *later* reconnect
+        // here only ever re-ran `applyPending()`, which only processes
+        // migrations this device already has locally. Confirmed live
+        // against MIKE-12R: an `ALTER TABLE ADD COLUMN` migration
+        // (`books.my_button`, authored on MIKE-CU) and its own row data
+        // arrived bundled in the *same* catch-up changeset on a
+        // mid-session reconnect -- `crdt_sync`'s merge is one
+        // all-or-nothing transaction (confirmed via `adb logcat`:
+        // `SqliteException: table books has no column named my_button`),
+        // so the whole batch rolled back, `migration_log` entry included
+        // -- the exact "genuine infinite loop" failure mode
+        // `MigrationService`'s own doc comment already documents for a
+        // brand-new *table* arriving this way, just never previously hit
+        // for an *existing* table's new column via a plain mid-session
+        // reconnect (as opposed to the very first connect, which
+        // `fetchFromServer()` already protected). Adding it here doesn't
+        // make this airtight -- `crdt_sync` calls `onConnect` without
+        // awaiting it, so there's no hard guarantee this finishes before
+        // the risky changeset merge starts -- but it meaningfully
+        // shrinks the window on every reconnect (including the periodic
+        // one below) instead of only protecting the first connection of
+        // a session, consistent with this app's existing "best-effort,
+        // not airtight" posture for this exact class of race (see the
+        // periodic-reconnect mechanism's own doc comment). Fire-and-forget
+        // -- a failure here already recorded a real migration_status row
+        // of its own; nothing here needs to block the connection.
+        () async {
+          await MigrationService().fetchFromServer();
+          await MigrationService().applyPending();
+        }();
       },
       onDisconnect: (nodeId, code, reason) =>
           _log('disconnected from server (code=$code reason=$reason)'),

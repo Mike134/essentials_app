@@ -1381,4 +1381,69 @@ five real, physically-backed tables. Cleaned up the same way as the
 the real synced pipeline, never a raw local drop. `PRAGMA
 integrity_check` `ok` afterward, zero leaked tables remain.
 
-**Remaining checklist items (4-8), not yet run.**
+**Item 8 (cross-device), partially surfaced a real, separate sync bug —
+root-caused and fixed, not just worked around.** While checking that a
+new "Books" record created on MIKE-CU reached MIKE-12R, it never arrived
+— MIKE-12R was otherwise nearly fully caught up (within 1 `migration_log`
+row of MIKE-CU) but was missing a consistent, recent *chunk* of items
+together: the new Books row, ~58 `table_definitions` rows, and ~60
+`script_definitions` rows — a pattern pointing at one failed batch merge,
+not general connectivity.
+
+**Root-caused via `adb logcat`, not guessed** (`crdt_sync`'s own merge
+exceptions are `print()`-ed, not truly silent — findable in logcat if you
+know to look): `SqliteException: table books has no column named
+my_button`. Mike had added the "My Button" field to `Books` (checklist
+item 1) on MIKE-CU; that `ALTER TABLE` migration and the new Books row
+that used the resulting column arrived bundled in the *same* catch-up
+changeset on a mid-session reconnect to MIKE-12R. `crdt_sync`'s merge is
+one all-or-nothing transaction, so the whole batch rolled back — the
+exact "genuine infinite loop" failure mode `MigrationService`'s own doc
+comment already documents for a brand-new *table* arriving this way
+(Phase 1's "Ordering guarantee" fix), just never previously hit for an
+*existing* table's new column arriving via a plain mid-session reconnect
+rather than the very first connection of a session (which
+`fetchFromServer()` already protected, since it's called once at
+`HomeShell` bootstrap before `SyncService.connect()` ever runs).
+
+**Two fixes, one for the current stuck state, one for future
+recurrence:**
+1. **Immediate recovery**, same established playbook as every prior
+   incident like this: force-stopped the app on MIKE-12R, pulled its
+   `essentials.db` (+`-wal`), used `tool/adopt_migrations.dart` to apply
+   the missing `ALTER TABLE "books" ADD COLUMN "my_button" TEXT`
+   migration directly (`migration_log` row was already present on
+   MIKE-12R — only the physical DDL had never landed, confirming the
+   rollback took the DDL down with it but the row-sync of `migration_log`
+   itself apparently succeeded in an earlier partial attempt), pushed the
+   fixed copy back, pulled and byte-diffed to confirm the push landed
+   correctly, relaunched. Confirmed via direct query afterward: both
+   Books rows present on MIKE-12R, `table_definitions`/`script_definitions`
+   counts now match MIKE-CU exactly (1735/143), `PRAGMA integrity_check`
+   `ok` on both copies.
+2. **Reduces recurrence risk going forward** (not airtight — see below):
+   `SyncService.connect()`'s `onConnect` callback now calls
+   `MigrationService().fetchFromServer()` before `applyPending()` on
+   *every* connect/reconnect, not just the implicit protection the very
+   first connection of a session already had via `HomeShell`'s own
+   bootstrap sequence. **Deliberately documented as not a hard
+   guarantee** — `crdt_sync` calls `onConnect` without awaiting it
+   (confirmed by reading its source), so there's no way to force the
+   catch-up changeset merge to wait for this fetch to finish first; it
+   just meaningfully shrinks the race window on every reconnect instead
+   of only the first one, consistent with this app's existing
+   "best-effort, not airtight" posture for this exact class of problem
+   (same reasoning as the periodic-reconnect mechanism itself). A real,
+   deeper fix would need to live at the `crdt_sync` library-integration
+   level (the server holding off on offering row data until its own
+   creating/altering migration has been locally applied) — flagged, not
+   attempted, same as this project's other open items in this category.
+
+`flutter analyze` clean, both `flutter build windows`/`apk --debug`
+clean, debug APK pushed to MIKE-12R. **Confirmed by Mike, immediately
+after:** editing a record on MIKE-12R fired the bound script there too
+(confirming item 3's grid-edit dispatch fix also holds on Android) and
+the edit itself propagated back to MIKE-CU correctly — real, live
+bidirectional sync confirmed healthy again post-recovery.
+
+**Remaining checklist items (4-7), not yet run.**
