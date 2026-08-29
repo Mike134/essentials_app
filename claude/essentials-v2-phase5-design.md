@@ -1320,3 +1320,65 @@ re-testing each in isolation again:
 Once Mike confirms this checklist, Essentials v2 Phase 5 — Scripts &
 Events is done, all nine build order steps complete and real-device
 verified on both platforms.
+
+### Mike's step 9 pass, in progress
+
+**Item 1 (button field): confirmed.** Added a button field to `Books`,
+bound a script to it via Manage Events, clicked it in form view — ran
+correctly. Also confirmed, live: button fields render as a blank column
+in the grid — this is the documented, deliberate scope call from step 1
+(same precedent as `barcode`'s form-only scan affordance), not a bug.
+
+**Item 2 (script API): confirmed.** "Script 1"/"Script 2" both still run
+correctly on app launch.
+
+**Item 3 (data events), first pass surfaced a real, previously-scoped-out
+gap, now closed:** editing a bound field via the form correctly fired
+`record_updated`/`field_changed`, but the identical edit made directly in
+the grid (TrinaGrid's own inline cell editor) did not — exactly the
+"known, deliberate scope limit" `EventDispatchService`'s own doc comment
+already flagged back in step 4 ("`GenericListScreen`'s own inline grid
+cell-edit path... is a second, separate write call site that could fire
+`record_updated`/`field_changed` too but doesn't yet"). Mike asked to
+close this gap now rather than leave it. Fixed in `GenericListScreen
+._saveCellEdit`: mirrors `GenericFormScreen._save()`'s own dispatch
+sequence for an edit — `record_updated`, then `field_changed` scoped to
+the one column just written, then `record_saved` — fired unconditionally
+on a successful write rather than diffing against the prior value first
+(this call site has no cheap access to the pre-edit value the way the
+form's `widget.existing` does, and a user-initiated cell edit already
+implies a real change). `flutter analyze` clean,
+`event_dispatch_service_test.dart` (6/6, needs `quickjs_c_bridge.dll`
+copied in first per the standing test-harness workaround) re-confirmed
+passing — this particular behavior lives in `GenericListScreen` itself,
+which needs a real widget/device to exercise the grid path directly, so
+no new automated test covers the exact call site; **confirmed instead by
+Mike, live, on Windows:** an inline grid edit on a bound field now fires
+the same as a form save.
+
+**Android push blocked this round** — MIKE-12R's wireless adb connection
+had dropped (a known, already-documented recurring flake with this
+device) by the time the fix was ready; Windows-only confirmation for now,
+Android to follow once reconnected. The fix itself is platform-agnostic
+Dart with no Android-specific code path, so no reason to expect a
+different result there.
+
+**Also found and cleaned up during this pass, unrelated to any of the
+checklist items themselves:** two more batches of leaked physical test
+tables from the same chained-test-file mistake documented above —
+5 `dispatch_*`-tagged tables (`event_dispatch_service_test.dart`'s own
+"Dispatch Basic/Disabled/Field/None/Write" test tables) that were
+genuinely *active* (not just tombstoned residue) and visible in Mike's
+real nav sidebar, caught by Mike noticing them directly during his own
+testing rather than by any automated check. Root cause: mid-chain, this
+file's own `createTestTable` helper's `table_definitions` row got written
+in the same transaction as its migration, but the migration pipeline was
+already poisoned by that point (see the incident above), and
+`SchemaMetadataDao.softDeleteTable`'s own call inside `dropTestTable`
+apparently failed too in that exact window, leaving `is_deleted = 0` on
+five real, physically-backed tables. Cleaned up the same way as the
+`script_*` batch: soft-delete + `SchemaEditorService.dropTable` through
+the real synced pipeline, never a raw local drop. `PRAGMA
+integrity_check` `ok` afterward, zero leaked tables remain.
+
+**Remaining checklist items (4-8), not yet run.**

@@ -480,6 +480,44 @@ class _GenericListScreenState extends State<GenericListScreen> {
   Future<void> _saveCellEdit(int id, String column, Object? value) async {
     try {
       await _dao.update(id, {column: value});
+      // Essentials v2 Phase 5 -- inline grid cell edits were a known,
+      // deliberate scope gap when build order step 4 shipped
+      // (EventDispatchService's own doc comment: "GenericListScreen's own
+      // inline grid cell-edit path is a second, separate write call site
+      // that could fire record_updated/field_changed too but doesn't
+      // yet"). Wired up here, mirroring GenericFormScreen._save()'s own
+      // dispatch sequence for an edit -- record_updated, field_changed
+      // for the one column just written, then record_saved -- fired
+      // unconditionally on a successful write rather than diffing against
+      // the prior value first, since a user-initiated cell edit already
+      // implies a real change and this call site has no cheap access to
+      // the pre-edit value the way the form's own `widget.existing` does.
+      if (mounted) {
+        final dispatcher = EventDispatchService();
+        await dispatcher.dispatchAndApplyEffects(
+          context,
+          tableName: widget.config.tableName,
+          eventType: 'record_updated',
+          recordId: id,
+        );
+        if (mounted) {
+          await dispatcher.dispatchAndApplyEffects(
+            context,
+            tableName: widget.config.tableName,
+            eventType: 'field_changed',
+            fieldName: column,
+            recordId: id,
+          );
+        }
+        if (mounted) {
+          await dispatcher.dispatchAndApplyEffects(
+            context,
+            tableName: widget.config.tableName,
+            eventType: 'record_saved',
+            recordId: id,
+          );
+        }
+      }
       // Always reload, not just when the table has a computed (readOnly)
       // field. Two independent reasons this matters, not just the
       // originally-scoped one:
