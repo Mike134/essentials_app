@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../db/event_definitions_dao.dart';
 import '../db/script_definitions_dao.dart';
+import '../db/sync_service.dart';
 
 /// Essentials v2 Phase 5 build order step 5 -- the one *global* (not
 /// per-table) event binding screen, since `schedule_daily`/
@@ -40,10 +42,32 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
   List<ScriptDefinition> _availableScripts = const [];
   bool _loading = true;
 
+  /// Live-refresh subscription -- see `ScriptEditorScreen`'s own doc
+  /// comment for the "sync works, this screen's own reactivity doesn't"
+  /// reasoning, extended here for the same gap.
+  StreamSubscription<Set<String>>? _dataChangeSubscription;
+  Timer? _dataChangeDebounce;
+
   @override
   void initState() {
     super.initState();
     _reload();
+    _dataChangeSubscription = SyncService.dataChanges.listen(_onDataChanged);
+  }
+
+  void _onDataChanged(Set<String> tables) {
+    if (!tables.contains('event_definitions') && !tables.contains('script_definitions')) return;
+    _dataChangeDebounce?.cancel();
+    _dataChangeDebounce = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) _reload();
+    });
+  }
+
+  @override
+  void dispose() {
+    _dataChangeSubscription?.cancel();
+    _dataChangeDebounce?.cancel();
+    super.dispose();
   }
 
   Future<void> _reload() async {

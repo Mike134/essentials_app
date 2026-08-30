@@ -1446,4 +1446,28 @@ after:** editing a record on MIKE-12R fired the bound script there too
 the edit itself propagated back to MIKE-CU correctly — real, live
 bidirectional sync confirmed healthy again post-recovery.
 
-**Remaining checklist items (4-7), not yet run.**
+**Item 4 (script editor + event binding UI), one more real gap found and
+fixed:** Scripts/Manage Events/Scheduled Events all confirmed opening
+and listing correctly on both platforms. But editing a script's code on
+one device didn't show up on another until that device happened to fully
+leave and re-enter the Scripts screen — the exact same "sync itself
+already works, this screen's own reactivity to a remote change doesn't"
+gap `GenericListScreen` already closed for the data grid (`SyncService
+.dataChanges`), just never extended to any of the three Phase 5 UI
+screens built in step 5, before that live-refresh pattern existed
+project-wide. Fixed in all three: `ScriptEditorScreen` (the script list)
+now subscribes to `dataChanges` filtered on `script_definitions`;
+`ManageEventsScreen` filters on both `event_definitions` (reloads the
+current table's bindings) and `script_definitions` (refreshes the script
+picker's own list, so a script renamed elsewhere doesn't leave a stale
+name in the dropdown); `ScheduledEventsScreen` filters on both and just
+calls its own existing combined `_reload()`. All three debounce 500ms,
+same reasoning as `GenericListScreen`'s own subscription
+(`onChangesetReceived` fires before the merge is actually awaited).
+Deliberately does **not** live-patch an already-open `ScriptEditScreen`
+mid-edit — only the *list* refreshes, so a fresh open picks up the
+latest content; silently overwriting whatever someone might be actively
+typing would be its own new bug. `flutter analyze` clean, both `flutter
+build windows`/`apk --debug` clean.
+
+**Remaining checklist items (5-7), not yet run.**

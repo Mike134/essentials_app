@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../db/event_definitions_dao.dart';
 import '../db/schema_metadata_dao.dart';
 import '../db/script_definitions_dao.dart';
+import '../db/sync_service.dart';
 
 /// Essentials v2 Phase 5 build order step 5 -- per-table event bindings
 /// (data events, form lifecycle, `field_changed`, `button_clicked`). See
@@ -35,6 +38,16 @@ class _ManageEventsScreenState extends State<ManageEventsScreen> {
   List<ScriptDefinition> _availableScripts = const [];
   bool _loadingBindings = false;
 
+  /// Live-refresh subscription -- see `ScriptEditorScreen`'s own doc
+  /// comment for the full "sync works, this screen's own reactivity
+  /// doesn't" reasoning (already fixed there, extended here for the same
+  /// gap). Refreshes the current table's bindings on an `event_definitions`
+  /// change and the script picker's own list on a `script_definitions`
+  /// change (e.g. a script renamed elsewhere would otherwise leave this
+  /// screen's dropdown showing its old name until manually reopened).
+  StreamSubscription<Set<String>>? _dataChangeSubscription;
+  Timer? _dataChangeDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -43,6 +56,29 @@ class _ManageEventsScreenState extends State<ManageEventsScreen> {
     _scripts.loadAll().then((scripts) {
       if (mounted) setState(() => _availableScripts = scripts);
     });
+    _dataChangeSubscription = SyncService.dataChanges.listen(_onDataChanged);
+  }
+
+  void _onDataChanged(Set<String> tables) {
+    if (!tables.contains('event_definitions') && !tables.contains('script_definitions')) return;
+    _dataChangeDebounce?.cancel();
+    _dataChangeDebounce = Timer(const Duration(milliseconds: 500), () async {
+      if (!mounted) return;
+      if (tables.contains('script_definitions')) {
+        final scripts = await _scripts.loadAll();
+        if (mounted) setState(() => _availableScripts = scripts);
+      }
+      if (tables.contains('event_definitions') && mounted) {
+        await _reloadBindings();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _dataChangeSubscription?.cancel();
+    _dataChangeDebounce?.cancel();
+    super.dispose();
   }
 
   Future<void> _selectTable(String? tableName) async {

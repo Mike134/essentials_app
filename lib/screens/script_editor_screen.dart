@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_code_editor/flutter_code_editor.dart';
 import 'package:flutter_highlight/themes/monokai-sublime.dart';
 import 'package:highlight/languages/javascript.dart';
 
 import '../db/script_definitions_dao.dart';
+import '../db/sync_service.dart';
 
 /// Essentials v2 Phase 5 build order step 5 -- the script list, reached
 /// via a new nav rail/drawer entry (same pattern as Search, Phase 6). See
@@ -19,10 +22,39 @@ class _ScriptEditorScreenState extends State<ScriptEditorScreen> {
   final _dao = ScriptDefinitionsDao();
   late Future<List<ScriptDefinition>> _scriptsFuture;
 
+  /// Live-refresh subscription -- same "sync itself already works, this
+  /// screen's own reactivity to a change made on *another* device
+  /// didn't" gap [GenericListScreen] already closed for the grid, never
+  /// previously extended to the Scripts list. Found live: editing a
+  /// script's code on one device didn't show up on another until that
+  /// other device happened to leave and return to this screen -- opening
+  /// the editor from the still-stale list then handed
+  /// [ScriptEditScreen] the pre-edit `ScriptDefinition` object. Debounced
+  /// the same short beat [SyncService.dataChanges] itself recommends
+  /// (`onChangesetReceived` fires before the merge is actually awaited).
+  StreamSubscription<Set<String>>? _dataChangeSubscription;
+  Timer? _dataChangeDebounce;
+
   @override
   void initState() {
     super.initState();
     _reload();
+    _dataChangeSubscription = SyncService.dataChanges.listen(_onDataChanged);
+  }
+
+  void _onDataChanged(Set<String> tables) {
+    if (!tables.contains('script_definitions')) return;
+    _dataChangeDebounce?.cancel();
+    _dataChangeDebounce = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) _reload();
+    });
+  }
+
+  @override
+  void dispose() {
+    _dataChangeSubscription?.cancel();
+    _dataChangeDebounce?.cancel();
+    super.dispose();
   }
 
   void _reload() {
