@@ -1470,4 +1470,19 @@ latest content; silently overwriting whatever someone might be actively
 typing would be its own new bug. `flutter analyze` clean, both `flutter
 build windows`/`apk --debug` clean.
 
-**Remaining checklist items (5-7), not yet run.**
+**Item 5 (`app_launch`): confirmed.** Still fires once per real app open
+on both MIKE-CU and MIKE-12R.
+
+**Item 8 (cross-device), re-confirmed cleanly this time:** a script
+modified on MIKE-12R showed up quickly on MIKE-CU, and a new script
+created on MIKE-CU showed up quickly on MIKE-12R — both directions,
+no incident this time (unlike the earlier pass through this same item,
+which surfaced the batch-merge bug above). Confirms both that fix and
+this session's live-refresh fix together.
+
+**Remaining checklist items (6-7), in progress** — Mike has a fresh
+hourly binding (or equivalent) running on both platforms with the apps
+fully closed, waiting for a real background fire on each (~15 minutes,
+per each platform's own check interval). Once both land, all nine build
+order steps of Phase 5 are confirmed end to end on both platforms and
+the phase is done.
