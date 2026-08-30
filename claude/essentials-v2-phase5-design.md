@@ -1483,7 +1483,36 @@ this session's live-refresh fix together.
 **Item 6 (Android background firing): confirmed.** Fired correctly with
 the app fully closed on MIKE-12R.
 
-**Remaining checklist item (7): in progress** — same check on Windows via
-the registered Scheduled Task. Once confirmed, all nine build order steps
-of Phase 5 are verified end to end on both platforms and the phase is
-done.
+**Item 7 (Windows background firing): confirmed.** Fired correctly with
+the app fully closed on MIKE-CU, via the registered Scheduled Task.
+
+## Phase 5 — Scripts & Events: done
+
+All nine build order steps built and confirmed end to end on both
+MIKE-CU and MIKE-12R, not just build-verified: schema + `button` field
+format, `flutter_js` integration, the `record`/`table`/`notify`/`navigate`
+script API, foreground data/UI event wiring, the script editor + event
+binding UI, `app_launch` firing, Android background firing (`workmanager`),
+Windows background firing (hidden-window relaunch + Scheduled Task), and
+this final combined real-device pass across everything above.
+
+Real bugs found and fixed along the way, beyond what any of the earlier
+per-step write-ups anticipated: the frozen-`hlc` table-rename bug, the
+`crdt_sync` batch-atomicity/500-table-limit incident and the test-cleanup
+pattern that caused it, `ManageFieldsScreen`'s reload race, the
+linked-field-value type mismatch, the `exitApplication`-vs-`exit()` hang
+on Windows, `DeviceId.resolve()` failing silently in Android's background
+isolate, `ScriptNotifications` missing Windows init settings, grid inline
+edits never dispatching data events, three Phase 5 UI screens missing
+live-refresh, and a mid-session schema-change sync race that stranded
+MIKE-12R's data until root-caused via `adb logcat`. Every one confirmed
+fixed by Mike on real hardware, not just re-tested in isolation.
+
+Also shipped alongside this final pass, not originally part of the
+build order: `USER_GUIDE.md` — a brief, technical, user-facing reference
+covering every feature in the app (not just Phase 5), including a
+"Known gaps / not yet built" section listing every deliberate scope
+decision and open limitation surfaced across this whole project.
+
+**Next session:** not yet decided — either real usage, or the next
+phase per `claude/essentials-v2-architecture.md`'s roadmap sequencing.

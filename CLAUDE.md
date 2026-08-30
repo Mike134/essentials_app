@@ -7882,3 +7882,66 @@ yet decided -- per the confirmed roadmap sequencing, **Phase 5 — Scripts &
 Events** is the last item on `claude/essentials-v2-architecture.md`'s
 list, or Mike's own real usage of the now-complete import/export/template
 tooling.
+
+## Essentials v2 Phase 5 — Scripts & Events: done, real-device verified on both platforms
+
+Full build-order write-up (all nine steps) and the final real-device
+verification pass live in `claude/essentials-v2-phase5-design.md` -- this
+is the chronological pointer entry, same pattern as every other phase.
+Schema + a new `button` field format; `flutter_js`/QuickJS integration
+behind an isolate-abandonment safety wrapper (a native `timeout:` ctor
+param turned out not to actually interrupt a real infinite loop --
+confirmed empirically, not assumed); a `record`/`table()`/`notify()`/
+`navigate` script API (synchronous JS calling into a worker isolate,
+writes queued and applied only after the script finishes, through a
+fresh `SqliteCrdt` connection so no custom node identity is ever
+invented); foreground data/UI event wiring (`record_created/updated/
+saved/deleted`, `form_opened/closed`, `field_changed`, `button_clicked`);
+a script editor + per-table/global event-binding UI; `app_launch` firing;
+and real background firing on **both** platforms -- Android via
+`workmanager`, Windows via a hidden-window relaunch of the same exe
+(`--background-schedule-check`) triggered by a one-time-registered
+Scheduled Task, after a real spike confirmed `flutter_js` cannot run in
+`server.dart`'s bare Dart process at all (needs `dart:ui`, same failure
+mode already documented for Phase 1's `table_config.dart`).
+
+Real bugs found and fixed along the way, several serious enough to be
+worth remembering as general patterns, not just this phase's own
+footnotes: a frozen-`hlc` bug in `SchemaMetadataDao.updateTable` that
+silently broke cross-device sync for every table rename since Phase 3;
+a recurrence of the `crdt_sync` batch-atomicity/500-physical-table limit
+incident, this time traced to this project's own test files' cleanup
+pattern; a `ReorderableListView`/`FutureBuilder` reload race in
+`ManageFieldsScreen`; every v2 linked field's stored value being read as
+the wrong Dart type in both the grid and the form; a Windows-specific
+process hang from using `dart:io`'s bare `exit(0)` on a live Flutter GUI
+app instead of the engine's own `exitApplication` quit path; `DeviceId
+.resolve()` throwing `MissingPluginException` inside Android's
+`workmanager` background isolate (its platform channel only exists on
+`MainActivity`'s own engine, not the separate headless one WorkManager
+creates); `flutter_local_notifications` requiring real
+`WindowsInitializationSettings` that were never supplied; grid inline
+cell edits never dispatching the same data events the form's save flow
+already did; three of this phase's own new UI screens (Scripts, Manage
+Events, Scheduled Events) missing the live-refresh subscription
+`GenericListScreen` already had; and a genuine mid-session schema-change
+sync race (an `ADD COLUMN` migration and its own row data landing in one
+atomic changeset) that stranded MIKE-12R's real data until root-caused
+live via `adb logcat` and recovered through the established
+`adopt_migrations.dart` playbook. Every one of these was confirmed fixed
+by Mike on real hardware during the phase's own final verification pass,
+not just re-tested in isolation afterward.
+
+**`USER_GUIDE.md`** (repo root) was written alongside this final pass --
+a brief, technical, user-facing reference covering the whole app (not
+just Phase 5), including a "Known gaps / not yet built" section listing
+every deliberate scope decision and open limitation surfaced across the
+project so far. Distinct from this file and `claude/*.md`: those are for
+Claude/Mike's own project history and design record; `USER_GUIDE.md` is
+what Mike actually uses day to day.
+
+**Essentials v2 Phase 5 is done, all nine build order steps verified end
+to end on both MIKE-CU and MIKE-12R.** Next session: not yet decided --
+either Mike's own real usage (now that scripting closes out the last
+planned phase on `claude/essentials-v2-architecture.md`'s roadmap), or
+whatever new work that usage surfaces.
