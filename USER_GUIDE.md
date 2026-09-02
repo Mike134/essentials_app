@@ -3,6 +3,29 @@
 Reference for using the app day to day. Not a design doc — see `CLAUDE.md`
 and `claude/*.md` for architecture/history.
 
+## Contents
+
+- [Getting around](#getting-around)
+- [Tables and records](#tables-and-records)
+- [Field formats](#field-formats)
+- [Views](#views)
+- [Scripts and events](#scripts-and-events)
+- [Schema engine (Settings)](#schema-engine-settings)
+- [Import, export, backup](#import-export-backup)
+- [Search](#search)
+- [Settings](#settings)
+- [Sync](#sync)
+- [Known gaps / not yet built](#known-gaps--not-yet-built)
+
+## Getting around
+
+The nav sidebar (Windows) / drawer (Android) lists, top to bottom: your
+tables (grouped, if you've grouped any — see below), **Search**,
+**Scripts**, then a **Settings** icon. Everything table-specific — Manage
+fields, Manage events, Manage views, Import/Export, Backup — lives inside
+that table's own screen or the Settings menu, not the sidebar itself.
+**Scheduled Events** and **Manage events** are both reached via Settings.
+
 ## Tables and records
 
 - Every table has a **Grid** view by default (spreadsheet-style), plus
@@ -170,7 +193,9 @@ actually happen once the script finishes without error.
 ## Search
 
 **Search** (nav sidebar): full-text search across every table's plain
-text fields (not linked/lookup/computed values).
+text fields (not linked/lookup/computed values). Results are grouped by
+table with the match highlighted in a snippet — tap/click a result to
+open that record's form directly.
 
 ## Settings
 
@@ -183,6 +208,12 @@ overrides (reset-to-theme available once set), grid row heights
 Changes sync automatically between devices in the background — no manual
 export/import step. Scripts and their event bindings sync too, so a
 script edited on one device is live on every other device.
+
+If the same record is edited on two devices before they sync, the more
+recent edit wins **per field**, not per record — editing different
+fields on the same record on two offline devices merges cleanly; editing
+the *same* field on both, the later timestamp wins and the earlier edit
+is silently lost. No manual conflict-resolution step or prompt.
 
 ## Known gaps / not yet built
 
