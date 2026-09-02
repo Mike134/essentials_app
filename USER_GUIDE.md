@@ -33,6 +33,9 @@ that table's own screen or the Settings menu, not the sidebar itself.
 - **Add** (bottom-right `+`) opens a blank form. **Copy** (icon next to
   it) duplicates the currently-selected grid row into a new form,
   `id` excluded.
+- **Save** is in the form's own AppBar, directly right of the "Edit"/"Add"
+  title — not at the bottom of the form, so it's reachable without
+  scrolling through a long record first.
 - Grid cells are inline-editable: click to select, click again (or
   double-click) to edit. Lookup/inline-select cells edit via a dropdown;
   linked-record cells via a picker dialog (the link icon in the cell).
