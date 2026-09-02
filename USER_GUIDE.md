@@ -249,6 +249,10 @@ just things to know before you go looking for them.
 - **Button fields render blank in the grid** — form view only. Same
   precedent as barcode's scan button below; no grid interaction model was
   designed for either.
+- **"Set column footer..." doesn't work on Rating columns** — Whole
+  number/Decimal/Currency/Percentage all support it; Rating's grid cell
+  isn't a real number-typed column under the hood, so it's not offered
+  there.
 - **Barcode scan button is form-only and Android-only** — no grid
   affordance, no scan on Windows (the field is still a normal editable
   text field there).

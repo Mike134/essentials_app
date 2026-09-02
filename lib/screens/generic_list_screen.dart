@@ -908,17 +908,43 @@ class _GenericListScreenState extends State<GenericListScreen> {
     return null;
   }
 
+  /// True for any field the "Set column footer..." menu item/a restored
+  /// saved choice should apply to -- the *one* source of truth for "which
+  /// columns support a footer aggregate," shared by [_seedAggregate] here
+  /// and the `aggregatableColumns` set built for [_ColumnMenuDelegate] in
+  /// [build]. Originally two independently-written checks that drifted:
+  /// widening the menu to also offer Currency/Percentage (real bug found
+  /// live -- Mike could set one, but it silently never survived leaving
+  /// and returning to the table) only touched the menu-visibility set,
+  /// not this method's own narrower [FieldType]-only check, so the
+  /// *restore* half kept dropping exactly the two formats the *offer*
+  /// half had just started allowing. Currency/Percentage are
+  /// `FieldType.text` under the hood (their real numeric behavior lives
+  /// in a `FieldFormatHandler`, not the type enum -- see
+  /// `FormulaService.isNumericField`'s own doc comment for the same
+  /// distinction hit once already), so a plain type check alone was
+  /// always going to miss them; matching by `field.format` catches both
+  /// without touching [FieldType] at all. Rating deliberately stays
+  /// excluded -- its grid column is a plain readOnly text-typed column
+  /// with a custom star renderer, not one of trina_grid's own numeric
+  /// column types, so `_footerRendererFor`'s `TrinaColumnTypeWithNumberFormat`
+  /// cast would throw for it.
+  bool _isAggregatableField(FieldConfig field) =>
+      field.type == FieldType.integer ||
+      field.type == FieldType.real ||
+      field.format == 'currency' ||
+      field.format == 'percentage';
+
   /// Seeds [_columnAggregates] from [setting] the first time [field] is
   /// built (same `putIfAbsent` reasoning as [_wrapTextColumns] -- see
   /// [_buildFieldColumn]'s doc comment on that map) and returns the
   /// resulting current value, for immediate use building that column's
-  /// `footerRenderer`. Only meaningful for [FieldType.integer]/
-  /// [FieldType.real] -- returns `null` without touching the map for any
-  /// other field type, which is also what keeps aggregates off of
-  /// lookup/boolean/text/date columns entirely (see the map's own doc
-  /// comment).
+  /// `footerRenderer`. `null` without touching the map for any field
+  /// [_isAggregatableField] excludes, which is also what keeps aggregates
+  /// off of lookup/boolean/text/date/Rating columns entirely (see that
+  /// method's own doc comment).
   TrinaAggregateColumnType? _seedAggregate(FieldConfig field, ColumnSetting? setting) {
-    if (field.type != FieldType.integer && field.type != FieldType.real) return null;
+    if (!_isAggregatableField(field)) return null;
     return _columnAggregates.putIfAbsent(
       field.column,
       () => _parseAggregate(setting?.aggregate),
@@ -1216,7 +1242,24 @@ class _GenericListScreenState extends State<GenericListScreen> {
   ) {
     final handler = _formatHandlerFor(field);
     if (handler != null) {
-      return _withColumnSetting(handler.buildGridColumn(field), setting);
+      final column = handler.buildGridColumn(field);
+      // A FieldFormatHandler-built column (Currency/Percentage, the only
+      // aggregatable ones -- see _isAggregatableField) never gets a
+      // footerRenderer from its own buildGridColumn -- that method has no
+      // idea about this screen's saved per-device aggregate choice at
+      // all. The plain/readOnly branches below set footerRenderer inline
+      // in their own TrinaColumn(...) constructor call; this branch
+      // returns early before ever reaching them, so it needs the
+      // identical wiring done explicitly here instead -- a real bug found
+      // live: the menu offered "Set column footer..." on a Currency
+      // column, the choice saved correctly to table_column_settings, but
+      // it silently never came back after leaving and returning to the
+      // table, because this exact spot never restored it in the first
+      // place.
+      if (_isAggregatableField(field)) {
+        column.footerRenderer = _footerRendererFor(_seedAggregate(field, setting));
+      }
+      return _withColumnSetting(column, setting);
     }
 
     if (field.readOnly) {
@@ -1913,10 +1956,12 @@ class _GenericListScreenState extends State<GenericListScreen> {
               // count would work on any column, but isn't offered outside
               // this set either, to keep "which columns get this item" one
               // simple rule instead of a per-aggregate-type exception.
+              // Shares [_isAggregatableField] with [_seedAggregate] --
+              // see that method's own doc comment for why these two used
+              // to be independent checks, and the real bug that caused.
               aggregatableColumns: {
                 for (final field in widget.config.fields)
-                  if (field.type == FieldType.integer || field.type == FieldType.real)
-                    field.column,
+                  if (_isAggregatableField(field)) field.column,
               },
               columnAggregates: _columnAggregates,
               onSetColumnAggregate: _setColumnAggregate,
