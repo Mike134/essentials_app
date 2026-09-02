@@ -34,6 +34,8 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _fontColorController;
   late final TextEditingController _backgroundColorController;
+  late final TextEditingController _gridStripeColorController;
+  late final TextEditingController _listStripeColorController;
   bool _rebuildingSearchIndex = false;
   bool _backingUp = false;
 
@@ -51,12 +53,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? ''
           : ThemeController.colorToHex(controller.backgroundColorOverride!),
     );
+    _gridStripeColorController = TextEditingController(
+      text: controller.gridStripeColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.gridStripeColorOverride!),
+    );
+    _listStripeColorController = TextEditingController(
+      text: controller.listStripeColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listStripeColorOverride!),
+    );
   }
 
   @override
   void dispose() {
     _fontColorController.dispose();
     _backgroundColorController.dispose();
+    _gridStripeColorController.dispose();
+    _listStripeColorController.dispose();
     super.dispose();
   }
 
@@ -150,6 +164,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _applyGridStripeColor(ThemeController controller, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await controller.setGridStripeColorOverride(null);
+      return;
+    }
+    final color = ThemeController.parseHexColor(trimmed);
+    if (color == null) {
+      _showInvalidHexMessage();
+      _gridStripeColorController.text = controller.gridStripeColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.gridStripeColorOverride!);
+      return;
+    }
+    await controller.setGridStripeColorOverride(color);
+  }
+
+  Future<void> _applyListStripeColor(ThemeController controller, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await controller.setListStripeColorOverride(null);
+      return;
+    }
+    final color = ThemeController.parseHexColor(trimmed);
+    if (color == null) {
+      _showInvalidHexMessage();
+      _listStripeColorController.text = controller.listStripeColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listStripeColorOverride!);
+      return;
+    }
+    await controller.setListStripeColorOverride(color);
+  }
+
   void _showInvalidHexMessage() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Not a valid hex color (e.g. #1A73E8).')),
@@ -168,6 +216,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (picked == null) return;
     _backgroundColorController.text = ThemeController.colorToHex(picked);
     await controller.setBackgroundColorOverride(picked);
+  }
+
+  Future<void> _pickGridStripeColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _gridStripeColorController.text = ThemeController.colorToHex(picked);
+    await controller.setGridStripeColorOverride(picked);
+  }
+
+  Future<void> _pickListStripeColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _listStripeColorController.text = ThemeController.colorToHex(picked);
+    await controller.setListStripeColorOverride(picked);
   }
 
   Widget _colorSwatch(Color color) {
@@ -373,6 +435,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onSubmitted: (text) => _applyBackgroundColor(controller, text),
                 onTapOutside: (_) => _applyBackgroundColor(controller, _backgroundColorController.text),
               ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text('Row colors', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Alternate row colors in Grid view'),
+                value: controller.gridStripeEnabled,
+                onChanged: (v) => controller.setGridStripeEnabled(v ?? false),
+              ),
+              if (controller.gridStripeEnabled) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Grid stripe color'),
+                    if (controller.gridStripeColorOverride != null)
+                      TextButton(
+                        onPressed: () {
+                          controller.setGridStripeColorOverride(null);
+                          _gridStripeColorController.clear();
+                        },
+                        child: const Text('Reset to default'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _gridStripeColorController,
+                  decoration: InputDecoration(
+                    hintText: '#RRGGBB -- blank to use the default',
+                    suffixIcon: IconButton(
+                      icon: _colorSwatch(controller.gridStripeColor(context)),
+                      tooltip: 'Pick a color',
+                      onPressed: () =>
+                          _pickGridStripeColor(controller, controller.gridStripeColor(context)),
+                    ),
+                  ),
+                  onSubmitted: (text) => _applyGridStripeColor(controller, text),
+                  onTapOutside: (_) => _applyGridStripeColor(controller, _gridStripeColorController.text),
+                ),
+                const SizedBox(height: 16),
+              ],
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Alternate row colors in List view'),
+                value: controller.listStripeEnabled,
+                onChanged: (v) => controller.setListStripeEnabled(v ?? false),
+              ),
+              if (controller.listStripeEnabled) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('List stripe color'),
+                    if (controller.listStripeColorOverride != null)
+                      TextButton(
+                        onPressed: () {
+                          controller.setListStripeColorOverride(null);
+                          _listStripeColorController.clear();
+                        },
+                        child: const Text('Reset to default'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _listStripeColorController,
+                  decoration: InputDecoration(
+                    hintText: '#RRGGBB -- blank to use the default',
+                    suffixIcon: IconButton(
+                      icon: _colorSwatch(controller.listStripeColor(context)),
+                      tooltip: 'Pick a color',
+                      onPressed: () =>
+                          _pickListStripeColor(controller, controller.listStripeColor(context)),
+                    ),
+                  ),
+                  onSubmitted: (text) => _applyListStripeColor(controller, text),
+                  onTapOutside: (_) => _applyListStripeColor(controller, _listStripeColorController.text),
+                ),
+              ],
               const SizedBox(height: 32),
               const Divider(),
               const SizedBox(height: 16),

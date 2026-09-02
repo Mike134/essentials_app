@@ -43,6 +43,22 @@ class ThemeController extends ChangeNotifier {
   double get rowHeight => rowHeightOverride ?? defaultRowHeight;
   double get wrapRowHeight => wrapRowHeightOverride ?? defaultWrapRowHeight;
 
+  /// Alternating row stripes -- Grid and List each get their own on/off
+  /// toggle and color, shared across devices (same governing rule as every
+  /// other visual setting here: an organizational look, not a per-screen
+  /// fact). Unset colors fall back to [defaultStripeColor], not a hardcoded
+  /// literal, so the stripe stays visually appropriate across theme/dark
+  /// mode changes until Mike explicitly picks his own.
+  bool gridStripeEnabled = false;
+  Color? gridStripeColorOverride;
+  bool listStripeEnabled = false;
+  Color? listStripeColorOverride;
+
+  Color defaultStripeColor(BuildContext context) => Theme.of(context).colorScheme.surfaceContainerHighest;
+
+  Color gridStripeColor(BuildContext context) => gridStripeColorOverride ?? defaultStripeColor(context);
+  Color listStripeColor(BuildContext context) => listStripeColorOverride ?? defaultStripeColor(context);
+
   ThemeSettingsDao? _dao;
   bool _loaded = false;
   bool get loaded => _loaded;
@@ -58,6 +74,10 @@ class ThemeController extends ChangeNotifier {
     fontFamilyOverride = _nullIfEmpty(appSettings['font_family']);
     fontColorOverride = parseHexColor(appSettings['font_color']);
     backgroundColorOverride = parseHexColor(appSettings['background_color']);
+    gridStripeEnabled = appSettings['grid_stripe_enabled'] == '1';
+    gridStripeColorOverride = parseHexColor(appSettings['grid_stripe_color']);
+    listStripeEnabled = appSettings['list_stripe_enabled'] == '1';
+    listStripeColorOverride = parseHexColor(appSettings['list_stripe_color']);
 
     final fontSizeText = await dao.loadDeviceFontSize();
     fontSizeOverride = fontSizeText == null ? null : double.tryParse(fontSizeText);
@@ -114,6 +134,30 @@ class ThemeController extends ChangeNotifier {
   Future<void> setWrapRowHeightOverride(double? height) async {
     wrapRowHeightOverride = height;
     await _dao?.setDeviceSetting(ThemeSettingsDao.wrapRowHeightKey, height?.toString());
+    notifyListeners();
+  }
+
+  Future<void> setGridStripeEnabled(bool enabled) async {
+    gridStripeEnabled = enabled;
+    await _dao?.setAppSetting('grid_stripe_enabled', enabled ? '1' : '0');
+    notifyListeners();
+  }
+
+  Future<void> setGridStripeColorOverride(Color? color) async {
+    gridStripeColorOverride = color;
+    await _dao?.setAppSetting('grid_stripe_color', color == null ? null : colorToHex(color));
+    notifyListeners();
+  }
+
+  Future<void> setListStripeEnabled(bool enabled) async {
+    listStripeEnabled = enabled;
+    await _dao?.setAppSetting('list_stripe_enabled', enabled ? '1' : '0');
+    notifyListeners();
+  }
+
+  Future<void> setListStripeColorOverride(Color? color) async {
+    listStripeColorOverride = color;
+    await _dao?.setAppSetting('list_stripe_color', color == null ? null : colorToHex(color));
     notifyListeners();
   }
 

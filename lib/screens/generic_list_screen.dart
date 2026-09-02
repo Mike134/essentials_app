@@ -1978,9 +1978,20 @@ class _GenericListScreenState extends State<GenericListScreen> {
         ? const TrinaGridStyleConfig.dark()
         : const TrinaGridStyleConfig();
 
+    // Alternating row stripes -- TrinaGrid already has first-class support
+    // for this (`oddRowColor`/`evenRowColor`), so no custom renderer is
+    // needed. `evenRowColor` is set explicitly to the plain background
+    // (rather than left `null`) whenever striping is on, so toggling it on
+    // never depends on whatever `rowColor` happens to already be.
+    final stripeEnabled = ThemeController.instance.gridStripeEnabled;
+    final oddRowColor = stripeEnabled ? ThemeController.instance.gridStripeColor(context) : null;
+    final evenRowColor = stripeEnabled ? backgroundColor : null;
+
     return base.copyWith(
       gridBackgroundColor: backgroundColor,
       rowColor: backgroundColor,
+      oddRowColor: TrinaOptional(oddRowColor),
+      evenRowColor: TrinaOptional(evenRowColor),
       cellTextStyle: textStyle,
       columnTextStyle: textStyle.copyWith(fontWeight: FontWeight.w600),
       // Grid-wide, not per-row -- see [_wrappedRowHeight]'s doc comment for

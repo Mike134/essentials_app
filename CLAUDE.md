@@ -7945,3 +7945,137 @@ to end on both MIKE-CU and MIKE-12R.** Next session: not yet decided --
 either Mike's own real usage (now that scripting closes out the last
 planned phase on `claude/essentials-v2-architecture.md`'s roadmap), or
 whatever new work that usage surfaces.
+
+## "Bug Fixes and Improvements" session, concluded
+
+First real-usage session since Phase 5 closed the roadmap -- a mix of
+one real sync-reliability fix and a batch of small feature requests off
+Mike's own to-do list, all verified on both platforms.
+
+### MinInput never reached MIKE-12R -- root cause found and fixed, not just retracted
+
+A table created on MIKE-CU (`MinInput`) synced its `table_definitions`
+row to 12R but never its physical table. Root-caused by direct `adb
+pull`/query, not guessed: a migration from 2026-08-26 (`CREATE TABLE
+script_definitions`/`event_definitions`) had failed on 12R with "table
+already exists" and been recorded `'failed'` in `migration_status` --
+`MigrationService.applyPending`'s own halt-on-failure design meant that
+one stuck entry permanently blocked every migration authored after it,
+380 of them by the time this was found, MinInput's 11 included.
+
+**Why it actually collided:** 12R's `migration_status` history showed
+two different device identities within ~5 minutes of each other
+(`CPH2611` from an `adopt_migrations.dart` recovery run, then
+`MIKE-12R` from the real device's own next `DeviceId.resolve()`) --
+the same physical device re-attempted a migration it had already
+applied under its other identity and legitimately hit "already exists."
+
+**Two fixes, not one:** immediate unblock via a new `tool
+/retract_migration.dart` (soft-deletes a stuck `migration_log` row
+through the real `crdt.execute()` API, same convention as every other
+retraction in this project) applied to CU/`hub.db`/12R directly, plus
+the actual root-cause fix: `MigrationService._attempt` (both the client
+copy and the server's duplicated one) now treats "table already
+exists"/"duplicate column name" as an idempotent no-op per statement
+instead of a fatal failure -- the DDL's goal state is already achieved,
+so there's nothing to halt over. New regression test,
+`test/migration_service_already_exists_test.dart`, reproduces the exact
+incident shape (forces a device to "forget" it already applied a
+migration, confirms `succeeded` not `failed`, confirms the pipeline
+keeps processing later migrations). Server rebuilt and redeployed
+(stopped the full tray-host process tree, not just `server.exe` --
+this project's own documented gotcha about `taskkill` alone leaking the
+tray icon), confirmed via direct query that MinInput's table and row
+landed on 12R after a plain relaunch, no manual intervention. Committed
+as `df26bee`.
+
+### Kanban can now group by a dropdown-lookup field, not just a fixed list
+
+Original design deliberately scoped Kanban's Group field to inline-select
+only, explicitly flagged as "worth revisiting if Mike ever asks for
+lookup-field grouping." Asked for, given real usage skews toward status-
+code lookup tables rather than fields with options defined directly on
+them. `KanbanViewScreen` now accepts either; board columns for a lookup
+field come from that lookup table's live rows (already fetched, in order,
+by `loadSavedViewData`'s `lookupMaps`), same "blank/unmatched value gets
+its own column, never hidden" behavior as before. Confirmed working by
+Mike on CU. Committed as `58c83a9`.
+
+### Four items off Mike's own to-do list, all confirmed on both platforms
+
+- **"Now"/"Today" button** on date/dateTime form fields, alongside the
+  existing picker icon (`InputDecoration.suffixIcon` widened from one
+  icon to a `Row` of two, with an explicit `suffixIconConstraints:
+  BoxConstraints()` override -- the default fixed-width slot clips a
+  second icon otherwise).
+- **Alternating row stripes**, Grid and List views, each its own on/off
+  toggle and color in Settings -- shared across devices, same governing
+  rule as theme/font/background color. Grid uses TrinaGrid's own
+  built-in `oddRowColor`/`evenRowColor` (no custom renderer needed); List
+  computes a continuous index across group boundaries (prefix-sum of
+  each group's row count) so stripes read as one sequence whether the
+  view is grouped or not, not reset to 0 per group.
+- **Default values for fields already existed** (every writable format
+  already supported them, set at Add Field time or edited later via
+  Manage Fields) -- just undocumented. Added to `USER_GUIDE.md`.
+- **Geo Location field group** -- deliberately *not* a new stored field
+  format. Picking "Geo Location" in Add Field creates four ordinary
+  Decimal fields (Latitude/Longitude/Altitude/Accuracy) at once; nothing
+  in the schema marks them as a group afterward. `lib/util
+  /geo_location.dart`'s `geoLocationFieldsOf`/`mapLocationFieldOf`
+  re-derive the group purely by field display-name match (case-
+  insensitive), the same "detect by name, not a stored flag" heuristic
+  `shipment`'s displayColumn/orderBy sentinels already established. A
+  "Capture current location" button appears on the form right after
+  whichever of the four sorts last in field order (so it still lands
+  sensibly if the fields get reordered later) -- Android-only via
+  `geolocator` (new dependency), visible but explicitly disabled on
+  Windows (no GPS hardware, Mike's own explicit ask: show why it's off,
+  don't hide it). If a table also has a field literally named "Map
+  Location" (a plain multi-line text field added separately, not part of
+  the Geo Location group), the same tap reverse-geocodes into it via
+  `geocoding` (new dependency) -- skipped silently if that field doesn't
+  exist. `geolocator_android`'s own plugin manifest declares no
+  permissions itself (confirmed directly, unlike `mobile_scanner`'s
+  CAMERA permission, which does) -- `ACCESS_FINE_LOCATION`/
+  `ACCESS_COARSE_LOCATION` added to this app's own
+  `AndroidManifest.xml`. **Hit the project's own documented XML-comment
+  landmine while doing that** -- a bare `--` inside the added comment
+  broke Gradle's manifest merge, the exact same failure mode already
+  recorded from batch 3's `url_launcher` `<queries>` addition; fixed by
+  rewording, not quoting/escaping.
+
+**Real bug found by Mike's own testing, fixed same session: Map
+Location only ever showed its first line.** The stored value was
+confirmed correct and complete the whole time (`132 Sage St\nLake
+Jackson, Texas 77566`, verified via direct `hex()` query showing a real
+`0A` newline byte) -- this was purely a rendering bug, not a data one,
+confirmed by checking the data before touching any code. Root cause: a
+plain text field defaults to autocomplete-enabled unless explicitly
+unchecked (`FieldConfig.isAutocompleteText`'s own `options['autocomplete']
+!= false` check treats *absent* as *on*), and `GenericFormScreen
+._buildAutocompleteField` deliberately hardcodes `maxLines: 1` --
+`Autocomplete`'s keyboard highlight-navigation needs a single-line field
+(see Phase 2's column-autocomplete write-up for why). Map Location,
+created as an ordinary text field with autocomplete left at its default,
+silently inherited that one-line cap despite holding genuinely multi-line
+address text. Fixed by exempting the recognized Map Location field from
+the autocomplete render path entirely, regardless of its own stored
+`autocomplete` setting -- `field != _mapLocationField &&
+field.isAutocompleteText` in `GenericFormScreen._buildField`. Confirmed
+fixed by Mike on both MIKE-CU and MIKE-12R.
+
+All four items plus the Map Location fix committed together as
+`2b8f518`, given how interleaved the changes were within
+`generic_form_screen.dart` (Now button, Geo Location button, and the
+autocomplete fix all touch the same file's same field-building loop) --
+same "don't retroactively untangle a single incremental session into
+artificial commit boundaries" reasoning as prior multi-feature sessions
+in this project. `flutter analyze` clean throughout (save for the five
+pre-existing `avoid_print` info-lints on `tool/*.dart` CLI scripts, which
+every tool script in this project carries), `flutter build windows` and
+`flutter build apk --debug` both clean at every checkpoint, all pushed to
+and confirmed working on MIKE-12R.
+
+**Next session:** not yet decided -- whatever Mike's own continued real
+usage surfaces next.

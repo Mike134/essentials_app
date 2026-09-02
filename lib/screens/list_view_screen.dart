@@ -9,6 +9,7 @@ import '../db/sync_service.dart';
 import '../db/theme_settings_dao.dart';
 import '../db/view_definitions_dao.dart';
 import '../models/table_config.dart';
+import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/saved_view_data.dart';
 import 'generic_form_screen.dart';
@@ -317,7 +318,11 @@ class _ListViewScreenState extends State<ListViewScreen> {
     if (changed == true) _reload();
   }
 
-  Widget _buildRow(Map<String, Object?> row, FieldConfig primaryField, SavedViewData data) {
+  /// [index] is this row's position among every *visible* row in the
+  /// screen, continuous across group boundaries (not reset to 0 per group)
+  /// -- so stripes read as one continuous alternating sequence down the
+  /// whole list, grouped or not, matching Grid's own uniform striping.
+  Widget _buildRow(Map<String, Object?> row, FieldConfig primaryField, SavedViewData data, int index) {
     final line1 = savedViewDisplayText(primaryField, row[primaryField.column], data);
     final secondaryField = fieldByColumn(widget.config, _config['secondary_field'] as String?);
     final extraColumns = (_config['extra_line2_fields'] as List?)?.cast<String>() ?? const [];
@@ -334,7 +339,7 @@ class _ListViewScreenState extends State<ListViewScreen> {
       if (text.isNotEmpty) line2Parts.add(text);
     }
 
-    return ListTile(
+    final tile = ListTile(
       title: Text(
         line1.isEmpty ? '(blank)' : line1,
         style: const TextStyle(fontWeight: FontWeight.bold),
@@ -347,6 +352,11 @@ class _ListViewScreenState extends State<ListViewScreen> {
       ),
       onTap: () => _openRow(row),
     );
+
+    final stripe = (ThemeController.instance.listStripeEnabled && index.isOdd)
+        ? ThemeController.instance.listStripeColor(context)
+        : null;
+    return stripe == null ? tile : Container(color: stripe, child: tile);
   }
 
   Widget _buildGroupHeader(_ListGroup group, bool collapsed) {
@@ -407,21 +417,34 @@ class _ListViewScreenState extends State<ListViewScreen> {
       return ListView.separated(
         itemCount: sorted.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
-        itemBuilder: (context, i) => _buildRow(sorted[i], primaryField, data),
+        itemBuilder: (context, i) => _buildRow(sorted[i], primaryField, data, i),
       );
     }
 
     final groups = _buildGroups(sorted, primaryField, data);
+    // Prefix sums of each group's row count -- gives every row a single
+    // running index across all groups, even though ListView.builder only
+    // ever builds one group's worth of children at a time (see _buildRow's
+    // own doc comment for why this needs to be continuous, not per-group).
+    final groupStartIndex = <int>[];
+    var runningIndex = 0;
+    for (final group in groups) {
+      groupStartIndex.add(runningIndex);
+      runningIndex += group.rows.length;
+    }
     return ListView.builder(
       itemCount: groups.length,
       itemBuilder: (context, i) {
         final group = groups[i];
         final collapsed = _collapsedGroups.contains(group.key);
+        final start = groupStartIndex[i];
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildGroupHeader(group, collapsed),
-            if (!collapsed) for (final row in group.rows) _buildRow(row, primaryField, data),
+            if (!collapsed)
+              for (var j = 0; j < group.rows.length; j++)
+                _buildRow(group.rows[j], primaryField, data, start + j),
           ],
         );
       },

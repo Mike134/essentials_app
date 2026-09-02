@@ -60,7 +60,7 @@ requires a data migration.
 | Text | Plain text. Column-value autocomplete offers previously-used values in the same column as you type. |
 | Whole number / Decimal number | Decimal number has an optional "Decimal places" setting. |
 | Yes/No | Checkbox in grid and form. |
-| Date / Date & time | Calendar/time picker. |
+| Date / Date & time | Calendar/time picker, plus a "Now"/"Today" button on the form for the common case of just stamping the current moment. |
 | Choose one (dropdown lookup) | Points at another table's rows — pick the target table, the field to display, and what happens on delete (Block / Cascade / Ignore). |
 | Fixed list of options | A small hardcoded list you define inline (e.g. Low/Medium/High) — no linked table. |
 | Link to record(s) in another table | Links one or many rows in another table. Same Block/Cascade/Ignore choice as above. Shows as a link icon + picker in the grid, a dropdown/checkbox list in the form. |
@@ -74,6 +74,12 @@ requires a data migration.
 | Barcode / QR code | Plain text field; Android form view adds a camera-scan button (no scan affordance on Windows or in the grid). |
 | Calculated (formula) | Read-only. A small expression language — see below. |
 | Button (runs a script) | Form only (blank in the grid). Runs its bound script on tap — see "Scripts and events." |
+| Geo Location | Not a real format itself — picking it adds 4 ordinary Decimal fields (Latitude, Longitude, Altitude, Accuracy) to the table at once. See "Location capture" below. |
+
+**Default values:** every writable format (all but the read-only ones —
+Show/Calculate-from-linked-records, Calculated, Button) can have a
+default value, set when adding the field and editable later via Manage
+Fields. A required field without a default can't be added.
 
 **Formulas** support `+ - * /`, string concatenation (`||`), comparisons
 (`= != < <= > >=`), parentheses, and the functions `ROUND`, `IF`, `ABS`,
@@ -81,13 +87,28 @@ requires a data migration.
 (the physical field name, not the display label — check Manage Fields if
 unsure). Example: `IF({qty} = 0, 0, ROUND({total} / {qty}, 2))`.
 
+### Location capture
+
+A table with a Latitude/Longitude/Altitude/Accuracy field group (see
+"Geo Location" above) shows a **Capture current location** button on its
+form, right after those four fields. Tapping it (Android only — the
+button is visible but disabled on Windows, no GPS hardware) fills all
+four from a live GPS reading. If the table also has a field literally
+named **Map Location** (a plain multi-line text field you add yourself),
+the same tap also reverse-geocodes into it as a short street/city/state/
+zip block — skipped silently if that field doesn't exist.
+
+The four Latitude/Longitude/Altitude/Accuracy fields and the button are
+matched purely by field name — rename one and the button stops
+appearing until the name matches again.
+
 ## Views
 
 - **Grid** always exists, first in the view switcher, never something
   you create.
 - **List**: groups rows by one field, two-level sort, optional extra
   line under each entry, expand/collapse groups.
-- **Kanban**: one inline-select (or fixed-list) field becomes the board
+- **Kanban**: one fixed-list *or* dropdown-lookup field becomes the board
   columns; drag cards between columns to change that field. A blank or
   unrecognized value gets its own column rather than being hidden.
 - **Calendar**: a separate top-level nav item (not per-table) — pick
@@ -201,7 +222,9 @@ open that record's form directly.
 
 Theme preset, font family, font size (per device), font/background color
 overrides (reset-to-theme available once set), grid row heights
-(no-wrap/wrapped, per device).
+(no-wrap/wrapped, per device). **Row colors**: alternating stripe colors
+for Grid and List views, each its own on/off toggle and color (shared
+across devices, reset-to-default available once overridden).
 
 ## Sync
 
@@ -226,6 +249,11 @@ just things to know before you go looking for them.
 - **Barcode scan button is form-only and Android-only** — no grid
   affordance, no scan on Windows (the field is still a normal editable
   text field there).
+- **Geo Location's Capture button is Android-only** — visible but
+  disabled on Windows (no GPS hardware). The Latitude/Longitude/Altitude/
+  Accuracy fields and the optional Map Location field are matched purely
+  by their display name, not a stored marker — renaming any of them
+  breaks the match until the name is fixed.
 - **Windows scheduled scripts need a one-time manual setup step**
   (`windows\register_background_schedule_task.ps1`, elevated PowerShell)
   — not registered automatically the way Android's is. Re-run it after a

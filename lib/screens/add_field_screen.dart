@@ -8,6 +8,7 @@ import '../models/table_config.dart';
 import '../util/color_default_value_field.dart';
 import '../util/field_format_choice.dart';
 import '../util/field_options.dart';
+import '../util/geo_location.dart';
 import '../util/formula/formula_field_editor.dart';
 import '../util/formula/formula_service.dart';
 import '../util/inline_option_editor.dart';
@@ -431,6 +432,47 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
     }
   }
 
+  /// "Geo Location" is deliberately not a real stored field format -- per
+  /// Mike's own framing, "when you add that field to a record, what it
+  /// really does is add 4 decimal types." This is a one-time convenience
+  /// that creates four genuinely ordinary `real` fields (each editable,
+  /// removable, renameable afterward exactly like any other field, no
+  /// lingering "this is a group" marker anywhere in the schema) -- matched
+  /// back up by [geoLocationFieldsOf]'s plain display-name lookup, not a
+  /// stored flag. Runs all four `addField` calls in sequence, not
+  /// concurrently, same reasoning as [NewTableScreen]'s own initial-fields
+  /// loop: `addField`'s own identifier-collision check would otherwise race
+  /// itself for two calls against the same table.
+  Future<void> _submitGeoLocationGroup() async {
+    final table = _selectedTable;
+    if (table == null) return;
+
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+
+    try {
+      for (final label in geoLocationFieldLabels) {
+        await _editor.addField(tableName: table, displayName: label, format: 'real');
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Latitude/Longitude/Altitude/Accuracy added to "$table" -- syncing to every other device.',
+          ),
+        ),
+      );
+      Navigator.pop(context, true);
+    } catch (e) {
+      setState(() {
+        _saving = false;
+        _error = 'Failed: $e';
+      });
+    }
+  }
+
   /// "Which field to show" -- shared by `select`'s and `linkRecord`'s
   /// options blocks (both write `options.displayField`, see
   /// [autoDisplayField]'s doc comment for why this exists at all). A plain
@@ -500,6 +542,16 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
               );
             },
           ),
+          if (_selectedTable != null) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _saving ? null : _submitGeoLocationGroup,
+              icon: const Icon(Icons.my_location_outlined),
+              label: const Text('Add Geo Location fields (Latitude, Longitude, Altitude, Accuracy)'),
+            ),
+          ],
+          const SizedBox(height: 20),
+          const Divider(),
           const SizedBox(height: 12),
           TextField(
             controller: _displayNameController,

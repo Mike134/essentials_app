@@ -160,6 +160,16 @@ dependencies:
   # CodeTheme at all, which is also why selected text was hard to read
   # (a real bug Mike hit live, not cosmetic guesswork).
   flutter_highlight: ^0.7.0
+  # Geo Location field group's "Capture location" button -- Android only
+  # (no GPS hardware on Windows desktop; the button renders visible but
+  # disabled there, per Mike's explicit ask). `geolocator` (federated
+  # plugin, actively maintained) gives a single reading's lat/long/
+  # altitude/accuracy directly, no separate calls needed.
+  geolocator: ^14.0.2
+  # Reverse-geocodes a Geo Location field's coordinates into the optional
+  # "Map Location" text field (street/city/state/zip), a genuinely
+  # separate lookup step from geolocator's own GPS reading.
+  geocoding: ^4.0.0
 
 dev_dependencies:
   flutter_test:

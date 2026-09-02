@@ -11,6 +11,7 @@ import '../util/bool_value.dart';
 import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/field_formats/field_format_handler.dart';
+import '../util/geo_location.dart';
 import '../util/link_record.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
@@ -104,6 +105,16 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   Future<List<ReverseLink>>? _reverseLinksFuture;
 
   bool _saving = false;
+
+  /// This table's Geo Location group (`null` if it doesn't have all four
+  /// fields) and its optional Map Location field -- computed once, since
+  /// [widget.config] never changes for this screen's lifetime (a fresh
+  /// push per record, never re-pointed at a different table). See
+  /// `lib/util/geo_location.dart`'s own doc comment for why these are
+  /// detected by field label, not a stored flag.
+  late final GeoLocationFields? _geoLocationFields = geoLocationFieldsOf(widget.config.fields);
+  late final FieldConfig? _mapLocationField = mapLocationFieldOf(widget.config.fields);
+  bool _capturingLocation = false;
 
   @override
   void initState() {
@@ -308,6 +319,82 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     _recomputePreview();
   }
 
+  /// Sets a date/dateTime field to the current moment directly, without
+  /// going through the picker dialog -- Mike's ask: a quick "Now" button
+  /// alongside the existing picker icon for the common "just stamp it with
+  /// right now" case (e.g. a journal entry's timestamp), rather than always
+  /// having to pick today's date and the current time by hand.
+  void _setFieldToNow(FieldConfig field) {
+    final controller = _controllers[field.column]!;
+    final now = DateTime.now();
+    controller.text = field.type == FieldType.dateTime ? isoDateTime(now) : isoDate(now);
+    _recomputePreview();
+  }
+
+  /// One button fills the whole Geo Location group, and -- if a Map
+  /// Location field is also present -- reverse-geocodes into it too, per
+  /// Mike's explicit ask ("If there is a Map Location field, it fills that
+  /// in too. Otherwise it just does not call geocoding."). Never called
+  /// with [geoLocationCaptureSupported] false (the button is disabled
+  /// there, not hidden -- see [_buildGeoLocationCaptureButton]).
+  Future<void> _captureLocation() async {
+    final geo = _geoLocationFields!;
+    setState(() => _capturingLocation = true);
+    try {
+      final position = await captureCurrentPosition();
+      _controllers[geo.latitude.column]!.text = position.latitude.toString();
+      _controllers[geo.longitude.column]!.text = position.longitude.toString();
+      _controllers[geo.altitude.column]!.text = position.altitude.toString();
+      _controllers[geo.accuracy.column]!.text = position.accuracy.toString();
+
+      final mapField = _mapLocationField;
+      if (mapField != null) {
+        final address = await reverseGeocodeToText(position.latitude, position.longitude);
+        if (address != null) _controllers[mapField.column]!.text = address;
+      }
+      _recomputePreview();
+    } on GeoLocationCaptureException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not get location: $e')));
+    } finally {
+      if (mounted) setState(() => _capturingLocation = false);
+    }
+  }
+
+  /// Visible but disabled on Windows (no GPS hardware), per Mike's explicit
+  /// ask -- not hidden, same "don't ship a dead-looking live control, show
+  /// why it's off" instinct already established elsewhere in this app
+  /// (`ManageFieldsScreen`'s "Permanently delete" placeholder,
+  /// `BarcodeFormatHandler`'s Android-only scan icon takes the opposite,
+  /// "just don't render it" approach instead -- this one Mike specifically
+  /// wants visible everywhere).
+  Widget _buildGeoLocationCaptureButton() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Tooltip(
+        message: geoLocationCaptureSupported
+            ? 'Fill Latitude/Longitude/Altitude/Accuracy from this device\'s current location.'
+            : 'Only available on Android -- this device has no GPS hardware.',
+        child: OutlinedButton.icon(
+          onPressed: (geoLocationCaptureSupported && !_capturingLocation) ? _captureLocation : null,
+          icon: _capturingLocation
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.my_location_outlined),
+          label: const Text('Capture current location'),
+        ),
+      ),
+    );
+  }
+
   Future<void> _recomputePreview() async {
     final compute = widget.config.computePreview;
     if (compute == null) return;
@@ -429,7 +516,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                   decoration: const InputDecoration(labelText: 'ID'),
                 ),
               ),
-            for (final field in widget.config.fields) _buildField(field),
+            for (final entry in widget.config.fields.asMap().entries) ...[
+              _buildField(entry.value),
+              if (_geoLocationFields != null &&
+                  entry.key == _geoLocationFields.lastPosition(widget.config.fields))
+                _buildGeoLocationCaptureButton(),
+            ],
             if (widget.isEditing) _buildReverseLinksSection(),
             const SizedBox(height: 24),
             FilledButton(
@@ -626,7 +718,17 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       );
     }
 
-    if (field.isAutocompleteText) {
+    // The recognized Map Location field is exempt from autocomplete
+    // regardless of its own stored options -- a real bug found live: a
+    // plain text field defaults to autocomplete ON unless explicitly
+    // unchecked, and _buildAutocompleteField deliberately hardcodes
+    // maxLines: 1 (keyboard highlight-navigation needs a single-line
+    // field, see that method's own doc comment). Map Location is meant to
+    // hold a multi-line street/city/state/zip block -- the full value was
+    // always saved correctly underneath, but this silently truncated it to
+    // one visible line the moment autocomplete was left on, which it is
+    // by default for any newly-added text field.
+    if (field != _mapLocationField && field.isAutocompleteText) {
       return _buildAutocompleteField(field);
     }
 
@@ -677,17 +779,44 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                   onPressed: () => _pickColorForField(field),
                 )
               : field.type == FieldType.date
-              ? IconButton(
-                  icon: const Icon(Icons.calendar_today_outlined),
-                  tooltip: 'Pick a date',
-                  onPressed: () => _pickDateForField(field),
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.today_outlined),
+                      tooltip: 'Set to today',
+                      onPressed: () => _setFieldToNow(field),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.calendar_today_outlined),
+                      tooltip: 'Pick a date',
+                      onPressed: () => _pickDateForField(field),
+                    ),
+                  ],
                 )
               : field.type == FieldType.dateTime
-              ? IconButton(
-                  icon: const Icon(Icons.event_outlined),
-                  tooltip: 'Pick a date and time',
-                  onPressed: () => _pickDateTimeForField(field),
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.schedule_outlined),
+                      tooltip: 'Set to now',
+                      onPressed: () => _setFieldToNow(field),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.event_outlined),
+                      tooltip: 'Pick a date and time',
+                      onPressed: () => _pickDateTimeForField(field),
+                    ),
+                  ],
                 )
+              : null,
+          // Unconstrained rather than the default fixed-width box -- the
+          // date/dateTime cases above pack two IconButtons into this slot
+          // (the new "Now" button alongside the existing picker icon),
+          // which would otherwise get clipped to a single icon's width.
+          suffixIconConstraints: (field.type == FieldType.date || field.type == FieldType.dateTime)
+              ? const BoxConstraints()
               : null,
         ),
         keyboardType: switch (field.type) {

@@ -2,6 +2,12 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
+    <!-- Geo Location field group's "Capture location" button. geolocator's
+         own Android plugin manifest declares no permissions itself (checked
+         directly, unlike mobile_scanner's CAMERA permission, which does),
+         so these have to be declared here. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <application
         android:label="essentials_app"
         android:name="${applicationName}"
