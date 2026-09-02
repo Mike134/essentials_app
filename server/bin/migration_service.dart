@@ -69,6 +69,18 @@ class MigrationService {
   static const _maxLockRetries = 3;
   static const _lockRetryDelay = Duration(milliseconds: 300);
 
+  /// True if [message] is SQLite's own "this DDL target already exists"
+  /// error -- see the client's identical helper
+  /// (`essentials_app/lib/db/migration_service.dart`) for the full
+  /// incident write-up this is fixing. A statement that fails this way has
+  /// already achieved its goal state, so it's treated as a no-op rather
+  /// than a fatal failure -- makes the pipeline self-healing against a
+  /// double-application race instead of needing a manual retraction.
+  static bool _isAlreadyExistsError(String message) {
+    final lower = message.toLowerCase();
+    return lower.contains('already exists') || lower.contains('duplicate column name');
+  }
+
   /// **Retries a transient "database is locked" error a few times before
   /// giving up -- a real incident on this exact server, not a
   /// theoretical one.** Once `server.dart`'s `onChangesetReceived` started
@@ -100,7 +112,14 @@ class MigrationService {
         await _crdt.execute('PRAGMA foreign_keys = OFF');
         await _crdt.transaction((txn) async {
           for (final statement in splitSqlStatements(sqlText)) {
-            await txn.execute(statement);
+            try {
+              await txn.execute(statement);
+            } catch (e) {
+              if (_isAlreadyExistsError(e.toString())) {
+                continue;
+              }
+              rethrow;
+            }
           }
         });
         outcome = 'succeeded';

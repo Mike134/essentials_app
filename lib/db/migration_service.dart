@@ -134,6 +134,27 @@ class MigrationService {
   static const _maxLockRetries = 3;
   static const _lockRetryDelay = Duration(milliseconds: 300);
 
+  /// True if [message] is SQLite's own "this DDL target already exists"
+  /// error -- `table X already exists` (CREATE TABLE) or
+  /// `duplicate column name: X` (ALTER TABLE ADD COLUMN). A statement that
+  /// fails this way has already achieved its goal state: the object it was
+  /// trying to create is already there. Root-caused by a real incident
+  /// (CLAUDE.md "Bug Fixes and Improvements" session, 2026-09-02):
+  /// MIKE-12R's Android device name (`Settings.Global.DEVICE_NAME`, what
+  /// `DeviceId.resolve()` reads) drifted between two resolved identities
+  /// mid-recovery, so the same physical device re-attempted a migration it
+  /// had *already* physically applied under its other identity, and
+  /// collided on this exact error -- permanently halting every later
+  /// migration on that device until manually retracted. Treating this
+  /// class of error as a no-op rather than a fatal failure makes the whole
+  /// pipeline self-healing against that (or any other) double-application
+  /// path, instead of needing another manual `migration_log` retraction
+  /// every time it recurs.
+  static bool _isAlreadyExistsError(String message) {
+    final lower = message.toLowerCase();
+    return lower.contains('already exists') || lower.contains('duplicate column name');
+  }
+
   /// Runs [sqlText] (one or more statements) wrapped in a transaction with
   /// `PRAGMA foreign_keys` off/on around it, then records the outcome.
   /// Returns whether it succeeded.
@@ -175,7 +196,16 @@ class MigrationService {
         await crdt.execute('PRAGMA foreign_keys = OFF');
         await crdt.transaction((txn) async {
           for (final statement in splitSqlStatements(sqlText)) {
-            await txn.execute(statement);
+            try {
+              await txn.execute(statement);
+            } catch (e) {
+              if (_isAlreadyExistsError(e.toString())) {
+                // Already achieved -- skip this statement, keep applying
+                // the rest of the migration's other statements normally.
+                continue;
+              }
+              rethrow;
+            }
           }
         });
         outcome = 'succeeded';
