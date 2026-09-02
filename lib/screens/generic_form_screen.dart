@@ -488,7 +488,24 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.isEditing ? 'Edit' : 'Add'),
-        actions: widget.appBarActions,
+        // Save lives here, not at the bottom of the form -- Mike's ask:
+        // reachable without scrolling through a long form first. Directly
+        // right of the title, before any other appBarActions (e.g. the
+        // split-pane order screen's "Items" button) so it's the first
+        // thing reached tabbing/scanning right from the title.
+        actions: [
+          TextButton(
+            onPressed: _saving ? null : _save,
+            child: _saving
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Save'),
+          ),
+          ...?widget.appBarActions,
+        ],
       ),
       body: Form(
         key: _formKey,
@@ -496,11 +513,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           // Same system-nav-bar overlap fix as SettingsScreen/
           // ManageTablesScreen/ManageFieldsScreen/NewTableScreen/
           // AddFieldScreen (see CLAUDE.md's real-device verification
-          // session) -- this screen just never got it at the time, since
-          // it predates that pass and wasn't one of the four screens
-          // checked. Found live on MIKE-12R: the Save button sat under
-          // the three-button nav bar, tappable-looking but not actually
-          // reachable at the very bottom edge.
+          // session) -- originally added because Save sat at the very
+          // bottom of this ListView and landed under MIKE-12R's
+          // three-button nav bar. Save has since moved into the AppBar
+          // (Mike's ask: reachable without scrolling a long form), but
+          // kept here regardless -- the reverse-links section can still be
+          // the last thing on screen, and this padding costs nothing when
+          // there's no nav bar to avoid (Windows: `MediaQuery.paddingOf
+          // (context).bottom` is just 0).
           padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
           children: [
             // The surrogate PK is database-controlled and never editable,
@@ -523,17 +543,6 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                 _buildGeoLocationCaptureButton(),
             ],
             if (widget.isEditing) _buildReverseLinksSection(),
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _saving ? null : _save,
-              child: _saving
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Save'),
-            ),
           ],
         ),
       ),
