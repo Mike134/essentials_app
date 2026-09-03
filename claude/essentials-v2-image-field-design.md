@@ -1,7 +1,7 @@
 # Essentials v2 — `image` Field Format: Design
 
 **Session date:** 2026-09-03
-**Status:** Design, not yet built. Supersedes the `attachment` sketch in `claude/essentials-v2-architecture.md`'s "File / Attachment Sync" section and `claude/essentials-v2-phase2-design.md`'s `attachment` entry — those described a generic file-attachment field; this is narrower and simpler, images only.
+**Status: DONE, 2026-09-03, real-device verified on MIKE-CU and MIKE-12R.** Built exactly as designed below and shipped. Supersedes the `attachment` sketch in `claude/essentials-v2-architecture.md`'s "File / Attachment Sync" section and `claude/essentials-v2-phase2-design.md`'s `attachment` entry — those described a generic file-attachment field; this is narrower and simpler, images only. See `claude/essentials-v2-image-field-ui-design.md`'s own status line and CLAUDE.md's "Image field: designed, built, real-device verified" session write-up for the full verification record, including the real bugs found and fixed along the way (most notably a cross-device sync bug in this doc's own "What happens on capture/drop" section, now fixed).
 **Companion docs:** `claude/essentials-v2-architecture.md` (Deferred list, "File / Attachment Sync"), `claude/essentials-v2-phase2-design.md` (`attachment`, dropped from Phase 2), `claude/essentials-v2-file-transfer-endpoint-design.md` (the hub endpoint this field's sync depends on), `claude/essentials-v2-image-field-ui-design.md` (the actual widget — capture, drag-and-drop, preview)
 **Not yet assigned a phase number.** Same status the deferred `attachment` work had: designed, not scheduled.
 

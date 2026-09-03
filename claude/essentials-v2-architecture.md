@@ -492,7 +492,7 @@ Hit **six times** across five different sessions, always the same shape:
 - ~~**Global search strategy**~~ — resolved 2026-08-24: one unified FTS5 virtual table, not per-table. See `claude/essentials-v2-phase6-design.md`.
 - **Starter template set** — which 5–10 templates ship built-in?
 - **Record history UI** — CRDT timestamps give implicit history; surface it to users?
-- ~~**Attachment phase number**~~ — resolved by shipping the narrower `image` field directly, 2026-09-03, real-device verified — see `claude/essentials-v2-image-field-design.md`. Its own open items (delete behavior, concurrent-edit orphaned files, size limits, content-addressing) remain genuinely open, not blocking further use.
+- ~~**Attachment phase number**~~ — resolved by shipping the narrower `image` field directly, 2026-09-03, real-device verified — see `claude/essentials-v2-image-field-design.md`. Delete behavior is now resolved too (real file deletion, not a tombstone). Still genuinely open, not blocking further use: concurrent-edit orphaned hub files, size limits, full content-hash dedup (a narrower, specifically-hit collision bug in the same area was fixed, see that doc's "Content-addressing" entry).
 - ~~**CSV import design**~~ — done, built, and real-device verified, 2026-08-23. See `claude/essentials-v2-csv-import-design.md`.
 - ~~**`color` field format**~~ — done and real-device verified, 2026-08-23. See `CLAUDE.md`'s note; no separate design doc was needed.
 - ~~**Column autocomplete**~~ — done and real-device verified, 2026-08-24. See `claude/essentials-v2-column-autocomplete-design.md`.

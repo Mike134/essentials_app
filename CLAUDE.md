@@ -8470,4 +8470,81 @@ of this write-up (just needs its next natural `workmanager` cycle, no
 action needed); and `cmd jobscheduler run -f` couldn't force that cycle
 early from `adb` -- WorkManager's own job namespace isn't reachable
 through that command on this Android version, not worth fighting further
+than the workaround already documented in `USER_GUIDE.md`.
+
+## Image field: designed, built, real-device verified (2026-09-03)
+
+The deferred `attachment` field (see architecture doc's "Deferred" list
+-- dropped from Phase 2, 2026-08-23, "not shipped half-built") finally
+got built, as a narrower `image`-only design rather than the originally-
+sketched generic file-attachment field. Three linked design docs cover
+it in full: `claude/essentials-v2-image-field-design.md` (storage/sync
+model -- a relative key, `{table}/{record_id}/{field_name}/{filename}`,
+resolved per-device against a local files-root), `claude/essentials-v2-
+file-transfer-endpoint-design.md` (the hub's `PUT`/`GET`/`HEAD`/`DELETE`
+`/files/...` endpoint), and `claude/essentials-v2-image-field-ui-design.md`
+(the actual widget -- camera/gallery on Android, drag-and-drop/browse on
+Windows, three-state preview). All three now marked DONE.
+
+Built in six steps (hub endpoint -> client `FileSyncService` -> registry
+entry -> Android capture UI -> Windows drag-and-drop/browse -> real-
+device verification), each independently tested before the next began.
+Real-device verification -- both directions, real hardware, not
+simulated -- confirmed a captured/dropped/replaced image genuinely syncs
+MIKE-CU <-> MIKE-12R, byte-identical, through several full rounds
+(capture, drop, remove, recapture) across both devices.
+
+**Real bugs found and fixed along the way, not just features shipped:**
+
+- **The throwaway test table's creation hit the pre-existing `crdt_sync`
+  new-table-creation race** (this doc's own "Known Systemic Risks" --
+  now occurrence 6, previously `view_definitions`/`kanban_test`/
+  `calendar_test`). Recovered with the already-existing
+  `tool/adopt_migrations.dart` against the stopped hub -- no new fix
+  needed, the existing recovery tool handled it exactly as designed.
+- **Manage Fields' floating "Add field" button covered the last field's
+  drag handle** -- only became visible once a real field ended up last
+  in a real table. Fixed with list bottom padding.
+- **The Windows drag-and-drop target was fully wired but functionally
+  invisible** -- no resting-state visual cue, only a border once already
+  mid-drag. Read as "there is no drag and drop," not "undiscovered
+  feature." Fixed with a permanent outlined hint box.
+- **CSV export silently dropped every image field entirely.** The grid
+  column's `cellValueFor` returned `''` unconditionally (reasoning: the
+  column is blank by design), but CSV export reads the grid's own cell
+  values, not the raw row -- the grid's custom renderer already keeps it
+  visually blank independent of the underlying value, so returning the
+  real value fixed export with zero visual change to the grid.
+- **The most serious one: a recaptured/replaced image never displaced a
+  stale copy already cached on another device.** Every capture used a
+  fixed filename (`image.<ext>`), so replacing an image wrote the
+  *identical* relative key every time -- `FileSyncService.fetch`'s
+  "local file already exists -> skip the network" check had no way to
+  know the hub's content changed if the key it was asked for never did.
+  Caught for real: MIKE-12R kept showing an old test photo after MIKE-CU
+  uploaded a genuinely new one under the same unchanged key. Fixed by
+  timestamping every capture's filename, so a replacement is a genuinely
+  new key -- a device that's never seen it always goes to the network,
+  same as any other unfamiliar value. Also now cleans up the *previous*
+  key's hub copy on replace, since the key genuinely changes now.
+
+**Delete behavior, one of the design's originally-open items, also
+resolved along the way:** real deletion (not a tombstone) on both the
+"Remove" button and actual record deletion (`GenericDao.delete`) --
+`GenericListScreen`'s own confirmation already says "This cannot be
+undone," so eager file cleanup matches what was already promised. A
+"Save..." button (reusing the same `file_picker.saveFile` call
+`_exportCsv` already used) lets a copy be rescued to the device's own
+storage first, deliberately not gated behind the record being saved
+the way every write action here is.
+
+**Known, deliberately-unresolved gaps**, all documented on their owning
+design doc, none blocking: a CASCADE-deleted child row's own image field
+isn't cleaned up (cascade goes through a raw bulk `DELETE`, not a
+recursive `GenericDao.delete` call); no content-hash dedup (two
+identical images still get two separate keys); no size limits; a failed
+upload has no retry queue.
+
+Not yet assigned a phase number -- built and shipped ad hoc, same as
+several other post-Phase-7 sessions.
 given the natural cycle works fine on its own.

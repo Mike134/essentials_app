@@ -1,7 +1,7 @@
 # Essentials v2 — Hub File-Transfer Endpoint: Design
 
 **Session date:** 2026-09-03
-**Status:** Design, grounded in a read of the live `server/bin/server.dart` and `lib/db/migration_service.dart` / `lib/db/sync_service.dart` — same discipline every other design doc here follows. Not built.
+**Status: DONE, 2026-09-03, real-device verified.** `PUT`/`GET`/`HEAD`/`DELETE` all built and shipped in `server/bin/server.dart`, verified against isolated scratch harnesses before ever touching the live hub, then confirmed for real against the live hub server and real devices (MIKE-CU, MIKE-12R). Grounded in a read of the live `server/bin/server.dart` and `lib/db/migration_service.dart` / `lib/db/sync_service.dart` — same discipline every other design doc here follows.
 **Companion docs:** `claude/essentials-v2-image-field-design.md` (the field format this exists to support), `claude/essentials-v2-architecture.md` ("File / Attachment Sync" — original aspirational sketch, superseded by this), `claude/essentials-v2-image-field-ui-design.md` (the client, `FileSyncService`, that calls these routes)
 
 ---
