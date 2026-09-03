@@ -445,7 +445,7 @@ Phase 3's three view types (List, Calendar, Kanban) are now all conceptually set
 ### Deferred (explicitly, not forgotten)
 - Reporting / printing — significant effort, moderate value
 - iOS / Mac — not a target
-- Attachment fields (local storage + hub file-transfer sync, designed and built together) — dropped from Phase 2, not yet assigned a phase number
+- Attachment fields (local storage + hub file-transfer sync, designed and built together) — dropped from Phase 2, not yet assigned a phase number. **Superseded by a narrower `image`-only design, 2026-09-03, now complete (storage/sync model, hub endpoint, and UI):** `claude/essentials-v2-image-field-design.md`, `claude/essentials-v2-file-transfer-endpoint-design.md`, `claude/essentials-v2-image-field-ui-design.md`. Not yet assigned a phase number — ready to build when scheduled.
 - Card/gallery view — cut from Phase 3, 2026-08-24 ("maybe someday" v2-later item, not deleted from the concept). Mike's real-life usage of card views elsewhere (Excel on Android) is nil-to-negative, so no case for building it here yet.
 
 ---
@@ -491,7 +491,7 @@ Hit **five times** across four different sessions, always the same shape:
 - ~~**Global search strategy**~~ — resolved 2026-08-24: one unified FTS5 virtual table, not per-table. See `claude/essentials-v2-phase6-design.md`.
 - **Starter template set** — which 5–10 templates ship built-in?
 - **Record history UI** — CRDT timestamps give implicit history; surface it to users?
-- **Attachment phase number** — where local storage + sync (dropped from Phase 2) lands in the roadmap; not yet decided.
+- **Attachment phase number** — where local storage + sync (dropped from Phase 2) lands in the roadmap; not yet decided. Design itself now exists for the narrower `image` field — see `claude/essentials-v2-image-field-design.md` — including its own open items (delete behavior, concurrent-edit orphaned files, size limits, content-addressing).
 - ~~**CSV import design**~~ — done, built, and real-device verified, 2026-08-23. See `claude/essentials-v2-csv-import-design.md`.
 - ~~**`color` field format**~~ — done and real-device verified, 2026-08-23. See `CLAUDE.md`'s note; no separate design doc was needed.
 - ~~**Column autocomplete**~~ — done and real-device verified, 2026-08-24. See `claude/essentials-v2-column-autocomplete-design.md`.

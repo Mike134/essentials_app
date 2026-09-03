@@ -1,0 +1,108 @@
+# Essentials v2 — `image` Field: UI Design (capture, drop-in, preview)
+
+**Session date:** 2026-09-03
+**Status:** Design, grounded in a read of the live codebase (`lib/util/field_formats/*.dart`, `lib/screens/generic_form_screen.dart`, `lib/db/database_helper.dart`, `pubspec.yaml`) — same discipline every doc here follows. Not built.
+**Companion docs:** `claude/essentials-v2-image-field-design.md` (storage/sync model this UI writes into), `claude/essentials-v2-file-transfer-endpoint-design.md` (the hub endpoint `FileSyncService` calls), `claude/essentials-v2-phase2-design.md` (`FieldFormatHandler` pattern this follows)
+
+This is the last of the three docs for this feature — storage model, hub endpoint, and now the actual widget. Together they're a complete, buildable design.
+
+---
+
+## `FieldFormatChoice` entry
+
+```dart
+image('image', 'Image'),
+```
+
+A genuinely new stored format (not a shared-`value` variant like `url`/`color`) — same category as `link_file`/`currency`/`rating`/`button`. `options: {}`, nothing configurable in v1 (no size limits, no "allow multiple" — this is a single-image field, matching the storage doc's one-relative-key-per-field model).
+
+---
+
+## Two-handler split — following the `button` precedent exactly
+
+`button` already established the pattern this needs: **a format whose form-field needs more than the shared `FieldFormatHandler.buildFormField(context, field, controller)` interface can pass** (table name, record id) gets special-cased directly in `GenericFormScreen._buildField`, *before* the generic handler dispatch — the registered handler's own `buildFormField` becomes unreachable dead code, kept only because the interface requires an implementation. `image` needs exactly the same thing `button` needs (table name + record id — here, to build the relative storage key `{table}/{record_id}/{field_name}/{filename}`), so it gets the same treatment:
+
+- **`ImageFormatHandler`** (new, `lib/util/field_formats/image_format_handler.dart`) — registered in `FieldFormatRegistry` for **grid column only**, mirroring `ButtonFormatHandler` line for line: `readOnly: true`, `renderer: (_) => const SizedBox.shrink()`, no actual per-row content. This is where the earlier storage-design doc's "Form view only, no grid thumbnail" decision actually gets enforced — the grid column exists purely because every registered format needs one, not because this field renders anything there.
+- **`GenericFormScreen._buildImageField`** (new method, alongside the existing `_buildButtonField`) — the real widget, special-cased in `_buildField` the same way: `if (field.format == 'image') return _buildImageField(field);`, checked before `_formatHandlerFor` dispatch.
+
+---
+
+## The "record doesn't exist yet" problem — same one `button` already has, same answer
+
+`button` is disabled on Add (`onPressed: id == null ? null : ...`) because running a `button_clicked` script needs a real row id to bind to. The image field has the identical structural problem: the relative storage key needs `record_id`, and on Add, no row exists yet — `widget.existing` is null, there is no id.
+
+**Chosen: same answer as `button` — disabled until the record is saved once.** Consistent with the "simplest way possible" preference already stated for this feature, and it's the precedent already sitting in this exact codebase rather than a new pattern introduced just for this field. The image field's capture/drop affordances render visibly but inactive on Add (greyed out, a tooltip like "Save the record first, then add an image"), and become live once `widget.existing` is non-null — same `id == null ? null : ...` gate `_buildButtonField` already uses.
+
+**Alternative considered, not chosen:** pre-generating the row's id client-side (matching the `CAST(unixepoch('now','subsec')*1000 AS INTEGER)*1000 + (abs(random())%1000)` scheme every business table's `id` DEFAULT already uses) before the Add form even opens, so a real id exists to key the file path against from the start, and passing it explicitly on insert instead of relying on the column DEFAULT. This would let capture work during Add too — genuinely more capable, but it's new machinery (every other Add flow today lets SQLite's own DEFAULT mint the id, confirmed by `GenericDao.insert()`'s doc comment) for a benefit ("attach a photo before the first Save") that's easy to work around by just saving first. Worth revisiting only if the disabled-on-Add experience turns out to be a real friction point in practice, not designed in from the start.
+
+---
+
+## Entry methods, per platform
+
+Same "different affordance per platform, degrade cleanly rather than fake a lowest-common-denominator" precedent `barcode` and the Geo Location capture button already established (`Platform.isAndroid`/`Platform.isWindows` gates, not a single cross-platform widget pretending both platforms are the same).
+
+**Android — camera capture or gallery pick, both via `image_picker` (new dependency):**
+- Camera icon → `ImagePicker().pickImage(source: ImageSource.camera)`
+- A second "choose existing" icon (photo-library glyph) → `ImagePicker().pickImage(source: ImageSource.gallery)` — this is the mobile-side answer to "copied into the field" from the simplified spec: picking an existing photo already on the device.
+- Needs `Permission.camera` requested first for the camera path — same `permission_handler` call already used by `BarcodeFormatHandler._scan`, same "show a SnackBar and bail if denied" handling, no new permission-handling pattern.
+
+**Windows — drag-and-drop or browse, no camera (desktops don't have one):**
+- A `DropTarget` (new dependency: `desktop_drop` — nothing in this codebase does native OS drag-and-drop today; this is the one genuinely new *interaction* this feature introduces, not just a new format) wrapping the preview area. Drop a file → `onDragDone` hands back the dropped path(s); take the first, verify it's a recognized image extension (`jpg`/`jpeg`/`png`/`heic`/`webp` — same list the hub endpoint's content-type map uses) before treating it as a valid drop, ignore/snackbar-reject otherwise.
+- A "Browse..." icon using `file_picker` (already a dependency, already used identically by `LinkFileFormatHandler` for exactly this "pick a file from disk" job) as the non-drag-and-drop path — covers both "copied into" (browse to a file the user copied somewhere) and gives Windows users an affordance that doesn't require a working drag gesture.
+- No camera icon on Windows at all — same "no icon at all, not a greyed-out one" rule `barcode` already established for its own Windows behavior, not a new call.
+
+---
+
+## What happens on capture/drop — the local write
+
+1. Source bytes land as a `File` (from `image_picker`'s result, `desktop_drop`'s dropped path, or `file_picker`'s picked path) — one `File` object regardless of which of the four entry points produced it, so everything past this point is unified.
+2. Compute the destination directory: `{platform files root}/{table}/{record_id}/{field_name}/` — `{platform files root}` is `C:\Databases\essentials_app\files` (Windows) or `/storage/emulated/0/Databases/essentials_app/files` (Android), per the storage design doc's corrected paths, mirroring `DatabaseHelper._windowsDirectory`/`_androidDirectory` exactly rather than introducing a separate convention.
+3. **Delete any existing file(s) already in that directory first** — a field holds exactly one image; replacing it (recapture, drop a different file) shouldn't leave the old one behind as an orphan on the *local* disk (the hub-side/other-devices' copies of the old file are a separate, already-flagged open item — see the storage doc's "Concurrent edit"/orphan-file items, unchanged by this).
+4. Copy the source bytes in as `image.<ext>` (extension taken from the source — camera capture is typically `.jpg`, a dropped/picked file keeps its own). Fixed filename, not the original picker-supplied name — keeps the directory single-item and predictable, and side-steps ever needing to sanitize an arbitrary OS filename into a URL path segment (the endpoint design's path-traversal validation still applies regardless, but a fixed, app-chosen filename removes an entire class of "what did the OS actually hand us" edge cases).
+5. Write the relative key (`{table}/{record_id}/{field_name}/image.<ext>`) into the field's `TextEditingController` — this is what actually gets saved to the row on form Save, same as every other format's controller-driven save path.
+6. Fire `FileSyncService().upload(...)` (see the endpoint design doc) — not awaited by the UI; the preview already has the bytes locally (step 4), so the upload is a background concern. Failure is swallowed-and-logged the same way `FileSyncService.upload` already specifies, relying on the next successful reconnect rather than a bespoke retry here.
+
+---
+
+## Preview widget
+
+Lives inside `_buildImageField`'s returned widget, above the capture/browse/drop row, inside the same `InputDecorator`-with-label shape `RatingFormatHandler.buildFormField` already established for a non-`TextFormField` form field:
+
+- **Local file exists at the resolved path** (the common case right after capture, or on the device that originally added it) — `Image.file(file, fit: BoxFit.cover)` in a fixed-size box (e.g. 160×160 — small enough not to dominate the form, matching this field's "Form view only, not a gallery" scope).
+- **Field has a value but no local file yet** (a device that just synced the row but hasn't pulled the bytes) — a placeholder box with a spinner, and a one-shot `FileSyncService().fetch(...)` call from `initState`/on first build for that field; swap to the real `Image.file` once it resolves, fall back to a broken-image icon on a 404/failure (matches the endpoint doc's "404 is an expected outcome, not an alarm" framing — the UI's job is just to show that plainly, not treat it as an error state).
+- **Field is empty** — the capture/browse/drop row itself is the only content; no placeholder box needed (nothing to preview yet).
+
+An additional small "remove image" affordance (X icon on the preview, when non-empty) clears the controller's text — the actual file-deletion-on-clear question is the storage doc's already-flagged open "delete behavior" item, not resolved here; clearing the field's *value* is independent of whether the now-orphaned file on disk/hub ever gets cleaned up.
+
+---
+
+## New dependencies to add
+
+- **`image_picker`** — Android camera capture + gallery pick. (Windows support in this package is limited/inconsistent across versions — not relied on here; Windows uses `desktop_drop`/`file_picker` instead, per the platform split above. Worth a quick pub.dev check at implementation time for the currently-recommended version, same "spike before pinning" discipline `barcode`'s `mobile_scanner` choice already followed, rather than guessing a version number in this doc.)
+- **`desktop_drop`** — Windows drag-and-drop target. Genuinely new interaction pattern for this codebase; confirm at implementation time that it builds cleanly on Windows (same `flutter build windows` check `mobile_scanner`'s spike already did for its own package) before committing.
+- **`file_picker`** — already a dependency, reused as-is (no version change needed).
+- **`permission_handler`** — already a dependency, reused as-is for `Permission.camera`.
+
+---
+
+## `options` JSON
+
+```json
+// image
+{}
+```
+
+Nothing configurable in v1 — no max dimensions, no compression setting, no "allow multiple images" toggle. Matches `link_file`/`barcode`'s own "options is always `{}`, nothing configurable yet" minimalism.
+
+---
+
+## Build order (within this feature, once scheduled to a phase)
+
+Mirrors the discipline every phase design doc here already follows — prove the riskiest new mechanism first, in isolation, before wiring the full field:
+
+1. **Hub file-transfer endpoint** (`claude/essentials-v2-file-transfer-endpoint-design.md`) — nothing else in this doc works without it; build and verify `PUT`/`GET`/`HEAD` against real files over the real LAN (MIKE-CU ↔ MIKE-12R) before touching UI code at all.
+2. **`FileSyncService`** client-side (`upload`/`fetch`) against the endpoint from step 1 — provable independently of any UI, same "prove the mechanism, then build the screen on top of it" order Phase 2's own build order used for `FieldFormatHandler` itself.
+3. **`ImageFormatHandler` + `FieldFormatChoice.image` entry** — the grid-column-only registration, `AddFieldScreen` picker entry. Low risk, mechanical, same shape as every other format's addition.
+4. **`GenericFormScreen._buildImageField`**, Android path first (camera + gallery via `image_picker`) — single-platform, proves the local-write-then-preview-then-upload flow end to end on one device before adding Windows's different interaction model.
+5. **Windows path** (`desktop_drop` + `file_picker` browse) — added once step 4's underlying write/preview/upload plumbing is already proven, so this step is purely "a different way to get a `File` in," not new plumbing.
+6. **Real-device verification**, both directions — capture on MIKE-12R, confirm the preview appears on MIKE-CU after a pull (and vice versa for a Windows-dropped image appearing on the phone) — same "real hardware, both directions, not simulated" bar every sync-related claim in this project is held to (see the CRDT sync work's own Part D verification).
