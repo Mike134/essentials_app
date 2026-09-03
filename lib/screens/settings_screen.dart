@@ -8,6 +8,7 @@ import '../theme/theme_controller.dart';
 import '../theme/theme_preset.dart';
 import '../util/color_picker.dart';
 import 'add_field_screen.dart';
+import 'background_processes_screen.dart';
 import 'manage_events_screen.dart';
 import 'manage_fields_screen.dart';
 import 'manage_tables_screen.dart';
@@ -582,6 +583,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       context,
                     ).push(MaterialPageRoute(builder: (_) => const ScheduledEventsScreen())),
                     child: const Text('Scheduled events'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => const BackgroundProcessesScreen())),
+                    child: const Text('Background processes'),
                   ),
                 ],
               ),

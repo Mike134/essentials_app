@@ -111,36 +111,101 @@ class BackgroundScheduleService {
 
   static String _lastRunKey(int eventDefinitionId) => 'schedule_last_run:$eventDefinitionId';
 
+  /// `device_settings` keys ([ThemeSettingsDao.loadDeviceSetting]/
+  /// [ThemeSettingsDao.setDeviceSetting]) this class records every pass
+  /// into, regardless of platform -- both the in-app "Background
+  /// Processes" screen ([BackgroundProcessesScreen]) and the Windows
+  /// watchdog script read the same values, so what the UI shows and what
+  /// trips the toast alarm can never silently disagree. Chosen over a new
+  /// table specifically to avoid touching `SchemaEditorService`/
+  /// `migration_log` for what's purely internal bookkeeping, never
+  /// user-visible schema -- see this project's own hard-won caution
+  /// around that pipeline (`MigrationService`'s halt-on-failure doc
+  /// comment, and the incident `test/support/schema_test_cleanup.dart`
+  /// documents).
+  static const statusLastAttemptKey = 'bg_check:last_attempt_at';
+  static const statusLastResultKey = 'bg_check:last_result';
+  static const statusLastErrorKey = 'bg_check:last_error';
+  static const statusLastSuccessAtKey = 'bg_check:last_success_at';
+  static const statusConsecutiveFailuresKey = 'bg_check:consecutive_failures';
+  static const statusLastAppliedCountKey = 'bg_check:last_applied_count';
+
   /// Checks every enabled scheduled (non-`app_launch`) binding, runs
   /// whichever ones are due, records their new last-run time, and posts a
   /// real OS notification for any `notify()` effect a script produced --
   /// there's no foreground `SnackBar` to show when the app isn't even
   /// running, which is the whole point of this class existing.
+  ///
+  /// Also records this pass's own outcome under the `statusLast*`/
+  /// `statusConsecutiveFailuresKey` keys above -- best-effort (a status
+  /// write failing must never be what makes a background check fail) and
+  /// on the way out, not swallowed: a thrown exception here still
+  /// propagates to the caller exactly as before, since
+  /// `backgroundDispatcherCallback` depends on that to tell WorkManager
+  /// to retry. Recording status is additive instrumentation, not a
+  /// change to that contract.
   Future<void> runDueScheduledEvents() async {
-    final bindings = await _events.loadScheduled();
-    final now = DateTime.now();
     final settings = await _settings;
-    for (final binding in bindings) {
-      if (!binding.enabled) continue;
-      if (binding.eventType == 'app_launch') continue;
+    final attemptedAt = DateTime.now().toUtc().toIso8601String();
+    await _tryRecordStatus(settings, {statusLastAttemptKey: attemptedAt});
 
-      final lastRunText = await settings.loadDeviceSetting(_lastRunKey(binding.id));
-      final lastRun = lastRunText == null ? null : DateTime.tryParse(lastRunText);
-      if (!_isDue(binding, lastRun, now)) continue;
+    try {
+      final bindings = await _events.loadScheduled();
+      final now = DateTime.now();
+      var appliedCount = 0;
+      for (final binding in bindings) {
+        if (!binding.enabled) continue;
+        if (binding.eventType == 'app_launch') continue;
 
-      final results = await _dispatcher.dispatch(tableName: null, eventType: binding.eventType);
-      await settings.setDeviceSetting(_lastRunKey(binding.id), now.toIso8601String());
+        final lastRunText = await settings.loadDeviceSetting(_lastRunKey(binding.id));
+        final lastRun = lastRunText == null ? null : DateTime.tryParse(lastRunText);
+        if (!_isDue(binding, lastRun, now)) continue;
 
-      for (final result in results) {
-        for (final message in result.effects.notifications) {
-          await _tryNotify(message);
-        }
-        if (result.outcome.timedOut) {
-          await _tryNotify('A scheduled script timed out.');
-        } else if (result.outcome.error != null) {
-          await _tryNotify('Scheduled script error: ${result.outcome.error}');
+        final results = await _dispatcher.dispatch(tableName: null, eventType: binding.eventType);
+        await settings.setDeviceSetting(_lastRunKey(binding.id), now.toIso8601String());
+        appliedCount++;
+
+        for (final result in results) {
+          for (final message in result.effects.notifications) {
+            await _tryNotify(message);
+          }
+          if (result.outcome.timedOut) {
+            await _tryNotify('A scheduled script timed out.');
+          } else if (result.outcome.error != null) {
+            await _tryNotify('Scheduled script error: ${result.outcome.error}');
+          }
         }
       }
+
+      await _tryRecordStatus(settings, {
+        statusLastResultKey: 'ok',
+        statusLastErrorKey: null,
+        statusLastSuccessAtKey: attemptedAt,
+        statusConsecutiveFailuresKey: '0',
+        statusLastAppliedCountKey: '$appliedCount',
+      });
+    } catch (e) {
+      final priorFailures = int.tryParse(await settings.loadDeviceSetting(statusConsecutiveFailuresKey) ?? '0') ?? 0;
+      await _tryRecordStatus(settings, {
+        statusLastResultKey: 'error',
+        statusLastErrorKey: e.toString(),
+        statusConsecutiveFailuresKey: '${priorFailures + 1}',
+      });
+      rethrow;
+    }
+  }
+
+  /// Swallows its own failures on purpose -- see [runDueScheduledEvents]'s
+  /// doc comment. A `null` value deletes that key
+  /// ([ThemeSettingsDao.setDeviceSetting]'s own convention), used here for
+  /// [statusLastErrorKey] on a successful pass.
+  Future<void> _tryRecordStatus(ThemeSettingsDao settings, Map<String, String?> values) async {
+    try {
+      for (final entry in values.entries) {
+        await settings.setDeviceSetting(entry.key, entry.value);
+      }
+    } catch (_) {
+      // Same posture as _tryNotify -- status bookkeeping is best-effort.
     }
   }
 

@@ -9,9 +9,12 @@
 // test file since the Phase 1 Step 3 incident.
 import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/event_definitions_dao.dart';
+import 'package:essentials_app/db/event_dispatch_service.dart';
 import 'package:essentials_app/db/script_definitions_dao.dart';
 import 'package:essentials_app/db/theme_settings_dao.dart';
 import 'package:essentials_app/util/scripting/background_schedule_service.dart';
+import 'package:essentials_app/util/scripting/script_api_runtime.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
@@ -186,8 +189,93 @@ void main() {
     final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
     expect(lastRun, isNotNull);
   });
+
+  // The `bg_check:*` device_settings keys BackgroundProcessesScreen and the
+  // Windows watchdog script both read -- see runDueScheduledEvents' own doc
+  // comment for why they're recorded from this one shared place rather than
+  // duplicated per-caller.
+  group('bg_check status recording', () {
+    tearDown(() async {
+      for (final key in [
+        BackgroundScheduleService.statusLastAttemptKey,
+        BackgroundScheduleService.statusLastResultKey,
+        BackgroundScheduleService.statusLastErrorKey,
+        BackgroundScheduleService.statusLastSuccessAtKey,
+        BackgroundScheduleService.statusConsecutiveFailuresKey,
+        BackgroundScheduleService.statusLastAppliedCountKey,
+      ]) {
+        await settings.setDeviceSetting(key, null);
+      }
+    });
+
+    test('a successful pass records ok status and resets consecutive failures', () async {
+      await settings.setDeviceSetting(BackgroundScheduleService.statusConsecutiveFailuresKey, '3');
+
+      await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
+
+      expect(
+        DateTime.tryParse(await settings.loadDeviceSetting(BackgroundScheduleService.statusLastAttemptKey) ?? ''),
+        isNotNull,
+      );
+      expect(await settings.loadDeviceSetting(BackgroundScheduleService.statusLastResultKey), 'ok');
+      expect(await settings.loadDeviceSetting(BackgroundScheduleService.statusLastErrorKey), isNull);
+      expect(
+        DateTime.tryParse(await settings.loadDeviceSetting(BackgroundScheduleService.statusLastSuccessAtKey) ?? ''),
+        isNotNull,
+      );
+      expect(await settings.loadDeviceSetting(BackgroundScheduleService.statusConsecutiveFailuresKey), '0');
+    });
+
+    test('a failing pass records the error, increments consecutive failures, and still rethrows', () async {
+      await settings.setDeviceSetting(BackgroundScheduleService.statusConsecutiveFailuresKey, '1');
+
+      final service = BackgroundScheduleService(
+        events: events,
+        dispatcher: _ThrowingDispatcher(),
+        settings: settings,
+        notify: (_) async {},
+      );
+
+      // Needs a real due binding to reach the dispatcher at all.
+      final scriptId = await createScript("notify('never runs $runTag');");
+      await bindSchedule(scriptId, 'schedule_hourly');
+
+      await expectLater(service.runDueScheduledEvents(), throwsA(isA<StateError>()));
+
+      expect(await settings.loadDeviceSetting(BackgroundScheduleService.statusLastResultKey), 'error');
+      expect(
+        await settings.loadDeviceSetting(BackgroundScheduleService.statusLastErrorKey),
+        contains('simulated dispatch failure'),
+      );
+      expect(await settings.loadDeviceSetting(BackgroundScheduleService.statusConsecutiveFailuresKey), '2');
+    });
+  });
 }
 
 const _weekdayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 String _weekdayKeyFor(DateTime date) => _weekdayKeys[(date.weekday - 1) % 7];
+
+/// Fake for the one failing-pass test above -- throws instead of running
+/// any script, to reach runDueScheduledEvents' catch/rethrow path without
+/// needing a script that can actually fail script execution itself.
+class _ThrowingDispatcher implements EventDispatchService {
+  @override
+  Future<List<ScriptRunResult>> dispatch({
+    required String? tableName,
+    required String eventType,
+    String? fieldName,
+    int? recordId,
+  }) async {
+    throw StateError('simulated dispatch failure');
+  }
+
+  @override
+  Future<void> dispatchAndApplyEffects(
+    BuildContext context, {
+    required String? tableName,
+    required String eventType,
+    String? fieldName,
+    int? recordId,
+  }) => throw UnimplementedError();
+}
