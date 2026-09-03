@@ -8169,3 +8169,305 @@ just not in this repo.
 usage surfaces next. Mike flagged, as future (not immediate) work: the
 document's comprehensiveness around Views (features/limitations per view
 type) and Scripting could use a deeper pass at some point.
+
+## Background-check reliability session (2026-09-03)
+
+Started from Mike noticing `essentials_app.exe` crashing on Windows,
+found only by accident while investigating an unrelated "Claude Desktop
+won't open" issue with Chat. Turned into five connected threads: the
+crash itself, an `hub.db` growth question that came out of reading its
+own reliability data, real-time/in-app monitoring built specifically to
+close the "found by accident" gap, a related migration-pipeline safety
+fix (done by a peer session working in this same checkout), and a real,
+separate crash found on MIKE-12R once this session went looking there
+too.
+
+### `essentials_app.exe` crash-looping every 15 minutes since 2026-08-26, undetected for over a week
+
+Mike's Windows Reliability Monitor export showed `essentials_app.exe`
+"Stopped working" in pairs, every ~15 minutes, going back at least to
+`2026-08-26` -- not "since midnight," which is what it looked like at
+first glance given Mike had just woken up. **Direct `Get-WinEvent`
+queries against the Application event log (filtering `ProviderName =
+'Application Error'`) turned out far more useful than the Reliability
+Monitor XML export itself** -- the export is UTF-16 and awkward to
+parse, and became genuinely inaccessible mid-session (an OneDrive
+on-demand file dehydrating out from under the conversation); `Get-
+WinEvent` gave the real fault module/offset/exception code directly and
+never had that problem. Worth reaching for first next time. That query
+showed a consistent `flutter_windows.dll` fault at the same offset every
+single time, `0xC0000005` (access violation) immediately followed by
+`0xC000041D` (fatal app exit) a few seconds later -- and `Get-
+ScheduledTask`/`Get-ScheduledTaskInfo` traced it straight to
+`EssentialsAppBackgroundScheduleCheck`, the Task Scheduler entry
+launching `essentials_app.exe --background-schedule-check` every 15
+minutes (see "Essentials v2 Phase 5" above for what that flag is for).
+
+**First hypothesis was wrong, and disproven by actually testing it, not
+just reasoning about it.** The initial read of `flutter_window.cpp` was
+that `SetNextFrameCallback`'s `this->Show()` callback could fire on
+Flutter's raster thread after the hidden background-check window had
+already been torn down, racing `Show()` against a destroyed
+`FlutterWindow`. A fix was built and shipped (`suppress_auto_show_`,
+skipping that callback registration entirely for background runs) --
+then verified against the *real* command Task Scheduler runs, repeatedly,
+rather than assumed correct from the code change alone. It still crashed,
+identically, same offset. The race theory was fully eliminated by that
+one test; the actual cause was somewhere else entirely.
+
+**Real root cause, found by bisecting the Dart-side entrypoint down to
+nothing and reading the Windows embedder's own source (fetched live from
+`flutter/flutter`'s GitHub mirror, `engine/src/flutter/shell/platform/
+windows/`):** `WidgetsBinding.exitApplication(AppExitType.required)` --
+what `windows_background_entrypoint.dart` used to end the background-
+check process -- calls the `System.exitApplication` platform channel
+without ever threading an `HWND` through. `PlatformHandler
+::SystemExitApplication` → `WindowsLifecycleManager::Quit` branches on
+whether an `hwnd` was passed; with none, it takes the bare
+`::PostQuitMessage(exit_code)` path, which skips `WM_CLOSE`/`WM_DESTROY`
+entirely -- so `FlutterWindow::OnDestroy()` (the thing that safely resets
+`flutter_controller_`) never runs before the message loop exits. The
+engine then gets torn down by ordinary C++ destructor unwind, on the
+stack-allocated `FlutterWindow` in `main.cpp`'s `wWinMain`, *after* the
+loop has already ended -- a teardown path the embedder was never built to
+go through, and it crashed in `flutter_windows.dll` on effectively every
+run.
+
+**`dart:io`'s `exit(0)` -- the original approach before someone switched
+to `exitApplication`, per that file's own pre-existing doc comment -- was
+also re-tested live and found to now hang the process 100% of the time**,
+not "intermittently" as documented. So neither of the two previously-
+tried approaches actually worked; both were broken, just in different
+ways (one crashed, the other hung).
+
+**Fix:** a small native method channel (`essentials/background_quit`,
+wired up in `flutter_window.cpp`/`.h`, only when the window is created
+with `suppress_auto_show=true`) that posts a real `WM_CLOSE` to the
+window itself instead of going through either broken exit path -- the
+exact same `DefWindowProc → DestroyWindow → WM_DESTROY → OnDestroy()`
+teardown a user closing the window normally takes, which has no crash
+history at all. `main.cpp`'s stale doc comments (still describing the
+already-superseded `SW_HIDE`/`exit(0)` approaches from two fixes ago)
+were corrected in the same pass rather than left to rot.
+
+**Verified against the real thing, not just a rebuild:** 35 real
+invocations of `essentials_app.exe --background-schedule-check` (the
+exact command the scheduled task runs) across the fix's iterations --
+0 crashes, 0 hangs, exit code 0 every time, versus 100% reproducible
+crashes/hangs before. Committed as `dee3b16`.
+
+### `hub.db`'s `migration_log`/`migration_status` growth investigated -- not a bug, expected by design, one harmless orphan found
+
+Mike's other Claude Chat had separately flagged these two tables growing
+to "10k+" rows. Investigated directly against `hub.db`
+(`C:\Databases\essentials_app\server\hub.db`, via `sqlite3`/Python):
+`migration_log` at 5,210 rows, `migration_status` at 15,621. **Not a
+leak or a bug** -- `migration_log` is the permanent, ordered replay log
+every device (including a brand-new one) uses to rebuild its own schema
+from scratch (see `MigrationService.applyPending`'s own doc comment,
+above), so it has to stay forever; `migration_status` can't be safely
+bulk-pruned either, since `applyPending` halts a device's entire
+migration pipeline on the first `'failed'` row it hits for that device,
+no auto-retry -- deleting an old `'succeeded'` status row would make an
+already-applied `DROP TABLE`/`DROP COLUMN` migration replay, genuinely
+fail with "no such table," and re-trigger exactly that halt.
+
+Almost 4,000 of the 5,210 `migration_log` rows landed in a two-day span,
+`2026-08-23`/`08-24` -- test-created throwaway tables
+(`setv2_drop_name_reuse_*`, `gds4_linker_a_*`), which is intentional, not
+a leak: this project's tests deliberately run against the real `hub.db`/
+`essentials.db` on purpose, specifically because of the "500-table
+sync-breaking incident" `test/support/schema_test_cleanup.dart`'s own doc
+comment already documents (raw local `DROP TABLE IF EXISTS` in tests used
+to leak physical tables onto every synced device silently, until the
+server's own physical table count crossed SQLite's 500-term compound-
+SELECT limit and broke sync for everyone). Growth has settled to tens of
+rows/day since `08-25`; only 23 physical tables exist on `hub.db` today,
+nowhere near that limit.
+
+**One real, harmless leftover found:** an empty orphaned physical table,
+`script_delete_1787789549921449`, sitting in `hub.db` -- its stage-1
+soft-delete (`table_definitions.is_deleted = 1`) had completed, but its
+stage-2 `DROP TABLE` migration (id `1787789550490409`, from `08-27`) had
+failed with "no such table" on `MIKE-CU` and been *retracted*
+(`migration_log.is_deleted = 1`) rather than fixed -- which stopped it
+from ever re-applying anywhere, including on `hub.db`, where the table
+still genuinely needed dropping. A first cleanup attempt
+(`test/_tmp_drop_orphan_table.dart`, since deleted) called
+`SchemaEditorService.dropTable()` against the wrong replica --
+`DatabaseHelper` always opens the *client's* `essentials.db`
+(`C:\Databases\essentials_app\essentials.db`), not `hub.db`, and the
+table had already separately vanished from `essentials.db` by then, so
+`dropTable()`'s own physical-existence check silently no-op'd. That dead
+end became the seed for the halt-on-failure gap fixed below, and the
+real cleanup that followed once it was fixed.
+
+### `bg_check:*` status tracking, an in-app "Background Processes" screen, and a real-time Windows toast watchdog
+
+Direct response to the crash above going undetected for over a week --
+Mike's own framing: a real-time "alarm bell" plus an in-app historical
+view, agreed as the right split (the alarm catches it *while* it's
+happening; the screen answers "has this been running, and did it error"
+whenever someone thinks to look).
+
+`BackgroundScheduleService.runDueScheduledEvents()` -- the one method
+both Android's `workmanager` and Windows' scheduled task already call
+(see "Essentials v2 Phase 5" above) -- now records its own outcome into
+`device_settings` on every pass, under `bg_check:*` keys (last attempt/
+success time, last result, last error, consecutive-failure count, how
+many bindings it applied). Deliberately reused `device_settings` (a
+generic per-device key/value table) rather than a new table specifically
+to stay away from `SchemaEditorService`/`migration_log` for what's purely
+internal bookkeeping, never user-visible schema -- see the `hub.db`
+thread above for exactly why that pipeline deserves caution. Best-effort
+(a status write failing never blocks the real work) and additive only --
+a thrown exception still propagates to the caller exactly as before,
+since `backgroundDispatcherCallback` depends on that to tell WorkManager
+to retry. Two new tests cover both the success and failure recording
+paths, including that the failure path still rethrows.
+
+**`BackgroundProcessesScreen`** (Settings → Background processes) reads
+those keys across *every* synced device, not just whichever one you're
+on -- `device_settings` syncs like everything else, so MIKE-CU can see
+MIKE-12R's background-check health and vice versa.
+
+**`windows/background_check_watchdog.ps1`** (+ its one-time,
+elevated-required registration script, `register_background_check_
+watchdog.ps1`) reads the same keys on its own 30-minute Task Scheduler
+task and raises a real Windows toast (via `BurntToast`) -- or an
+Application-log warning as a fallback if `BurntToast` isn't installed --
+when a device has 2+ consecutive failures or hasn't attempted a check in
+45+ minutes. Re-alerts only when a device's state gets worse or after a
+4-hour cooldown, tracked in a small local state file next to
+`essentials.db`, so an already-known, still-unresolved problem doesn't
+spam a fresh toast every 30 minutes. Registering the Event Log source
+needs one-time admin rights, which is why this has its own separate
+registration script rather than folding into `register_background_
+schedule_task.ps1`.
+
+**Real bug found live, during actual end-to-end verification, not just
+from reading the code:** the registration script's first `Install-Module
+BurntToast -Scope CurrentUser` ran through whichever shell happened to
+launch the elevated registration script -- `powershell.exe` (Windows
+PowerShell 5.1, the natural pick for a plain "Run as Administrator"
+prompt) -- but the watchdog task always launches `pwsh.exe` (PowerShell
+7, required for the script's own `??`/`ConvertFrom-Json -AsHashtable`
+syntax). 5.1 and 7 have separate `CurrentUser` module paths, so the
+install silently landed somewhere `pwsh.exe` never looks, and the
+registration script's own "Installed BurntToast -- real toast
+notifications are now live" success message was simply wrong. Fixed by
+routing the install through `pwsh.exe` explicitly, `& $pwsh.Source
+-Command "Install-Module ..."`, regardless of which shell is running the
+registration script itself. Caught only because this was actually
+registered and run for real on Mike's machine, not just built and
+assumed correct -- re-confirms the same "verify against the real thing"
+lesson the crash fix above already needed.
+
+Verified end-to-end for real: the actual scheduled task triggered
+(`Start-ScheduledTask`) against both a healthy state (silent, exit 0)
+and a simulated failure state (`LastTaskResult: 0` even through the
+`New-BurntToastNotification` call, which runs under `$ErrorAction
+Preference = 'Stop'` and would have failed the whole script had the
+toast call itself errored) -- and **Mike confirmed a real toast actually
+popped up.** Committed as `1ccd693` (status tracking, screen, watchdog)
+and `229dc94` (the BurntToast install-path fix).
+
+### Migration-retry halt-on-failure gap fixed, and the live `hub.db` orphan actually cleaned up (peer session, `essentials-4f`)
+
+Spun off as a follow-up task from the `hub.db` thread above: `_attempt`
+(both `lib/db/migration_service.dart` and its separately-maintained
+server copy, `server/bin/migration_service.dart` -- "duplicated, not
+shared" by this project's own established convention) only ever treated
+"already exists"/"duplicate column name" as a safe no-op
+(`_isAlreadyExistsError`), never the mirror-image case -- a DROP-type
+migration replaying against a target that's already gone (`no such
+table`/`no such column`), which is exactly what happened to
+`script_delete_1787789549921449`'s own drop migration and got it
+retracted rather than fixed, orphaning the table on `hub.db` for good
+with the retraction in place.
+
+Fixed by adding a matching `_isAlreadyGoneError` check alongside the
+existing one, in both copies, so that class of DROP replay is now a safe
+no-op instead of a permanent per-device halt. Covered by two new tests
+(`test/migration_service_already_gone_test.dart`, against the real
+`essentials.db`) -- succeeded-not-failed, and confirmation the pipeline
+doesn't halt for later migrations either. Then, with the gap actually
+fixed, the live orphan was cleaned up for real: a fresh `DROP TABLE`
+migration authored directly into `hub.db` (`tool/reauthor_script_delete_
+drop.dart`) -- deliberately *not* via `SchemaEditorService.dropTable()`,
+which would have silently no-op'd again since the client's own
+`essentials.db` already lacked the table (the same trap the first
+cleanup attempt above hit) -- then applied for real by starting the
+server, since `MigrationService.applyPending()` runs there before
+`HttpServer.bind`. Confirmed directly against `hub.db`:
+`script_delete_1787789549921449` is physically gone, and
+`migration_status` shows `'succeeded'` for the new migration id under the
+`server` device. Committed as `bafdcff`.
+
+Worth noting for anyone reading this cold: this peer session worked
+directly in this same `C:\Flutter\essentials_app` checkout, not an
+isolated worktree -- its uncommitted changes were visible in `git status`
+from the other session throughout, and it correctly declined to commit
+on a peer session's say-so alone, holding off until Mike said so directly
+in his own session.
+
+### MIKE-12R: a real, separate crash found -- investigated, concluded device memory pressure, not an app bug
+
+Once the Windows crash-loop fix landed, Mike asked to verify MIKE-12R too
+-- worth noting up front there's no Windows-runner-code equivalent to
+verify there at all; that bug lived entirely in `windows/runner/`,
+which Android's build doesn't compile. Connected over wireless `adb`
+(paired via the one-time pairing code, then `adb connect` using the
+*separate* persistent "IP address & port" shown on the phone's own
+Wireless debugging screen -- the pairing port and the connect port are
+different numbers, easy to conflate).
+
+`adb logcat -b crash -d` turned up one real, genuine crash:
+`2026-09-03T01:25:23`, `SIGABRT`, `Abort message: '.../dart/runtime/vm/
+object.cc: 2913: error: Out of memory.'` -- stack trace running straight
+through `dev.fluttercommunity.workmanager.BackgroundWorker.startWork` →
+`DartExecutor.executeDartCallback`, i.e. Android's own equivalent
+background-check path (`backgroundDispatcherCallback`, see "Essentials
+v2 Phase 5" above). Investigated whether this was the known, accepted
+"hung script leaks memory forever" risk `ScriptApiRuntime`/`JsEngine`'s
+own doc comments already warn about (`isolate.kill()` can't reclaim a
+script genuinely stuck in native QuickJS execution with no yield point)
+-- and ruled it out on the actual data: only one script is bound to any
+scheduled event on this device at all, and it's a trivial one-line
+`notify(...)` call; a full survey of every script in the app (7 total)
+found none with so much as a loop anywhere. The crash's own stack trace
+points earlier than script execution entirely -- `FlutterJNI
+.runBundleAndSnapshotFromLibrary`, Flutter engine/isolate-snapshot
+startup for the fresh headless `workmanager` engine -- consistent with a
+one-time large allocation failing under general device memory pressure
+rather than a leak from anything this app's own code did. Circumstantial
+support: `dumpsys jobscheduler` showed dozens of other apps' own
+periodic background jobs competing on the same device. Non-recurring --
+`workmanager`'s own job-execution history showed clean runs on every
+cycle since. No code fix made; nothing to fix. If it ever happens again,
+today's `bg_check:*` status tracking will actually surface it now,
+instead of vanishing without a trace the way this one did until someone
+happened to go looking.
+
+### MIKE-12R updated to today's build
+
+`flutter build apk --release` (88.5MB, the pre-existing documented
+`flutter_js`/`mobile_scanner`/`workmanager_android` KGP warning aside),
+installed via `adb install -r` (in-place update, preserves app data --
+confirmed directly, `essentials.db`/`search_index.db` both intact and
+recently-modified on-device afterward, not wiped). `lastUpdateTime` in
+`dumpsys package` confirmed the real install. Both MIKE-CU and MIKE-12R
+are now on today's build; the Background Processes screen on MIKE-CU
+already showed real "2m ago" data immediately, MIKE-12R's own first
+`workmanager` cycle since the install was still pending as of this
+write-up (this device has been observed running closer to hourly than
+the requested 15 minutes -- see "Background firing setup" in
+`USER_GUIDE.md`).
+
+**Next session:** not yet decided. Two loose ends worth knowing about if
+picked back up: MIKE-12R's `bg_check:*` status hadn't populated yet as
+of this write-up (just needs its next natural `workmanager` cycle, no
+action needed); and `cmd jobscheduler run -f` couldn't force that cycle
+early from `adb` -- WorkManager's own job namespace isn't reachable
+through that command on this Android version, not worth fighting further
+given the natural cycle works fine on its own.
