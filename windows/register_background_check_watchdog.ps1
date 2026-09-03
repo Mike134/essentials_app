@@ -20,6 +20,18 @@
 # retrying later with `Install-Module BurntToast -Scope CurrentUser`
 # rather than blocking the rest of this registration on it.
 #
+# **Installed via `pwsh.exe` specifically, not whatever shell is running
+# this registration script.** Windows PowerShell 5.1 and PowerShell 7
+# have separate CurrentUser module paths (`Documents\WindowsPowerShell\
+# Modules` vs `Documents\PowerShell\Modules`) -- confirmed live: running
+# this registration script from `powershell.exe` (5.1, the natural thing
+# to reach for from a plain "Run as Administrator" prompt) installed
+# BurntToast into 5.1's path, but the watchdog task below always launches
+# `pwsh.exe`, which never looked there -- so the toast silently never
+# showed despite "Installed BurntToast module" printing success. Since
+# the task is hardcoded to pwsh.exe, the install has to go through
+# pwsh.exe too, unconditionally, regardless of what's running this file.
+#
 # Runs every 30 minutes -- doesn't need to match
 # EssentialsAppBackgroundScheduleCheck's own 15-minute cadence, only to
 # be frequent enough that a real problem doesn't sit unnoticed for long;
@@ -43,27 +55,28 @@ if (-not [System.Diagnostics.EventLog]::SourceExists($eventSource)) {
     Write-Host "Event Log source '$eventSource' already registered."
 }
 
-if (Get-Module -ListAvailable -Name BurntToast) {
-    Write-Host 'BurntToast module already installed.'
+$pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+if (-not $pwsh) {
+    Write-Error 'pwsh.exe (PowerShell 7+) not found -- background_check_watchdog.ps1 uses syntax (??, ConvertFrom-Json -AsHashtable) that needs it, not Windows PowerShell 5.1.'
+    exit 1
+}
+
+$hasBurntToast = & $pwsh.Source -NoProfile -Command "if (Get-Module -ListAvailable -Name BurntToast) { 'yes' } else { 'no' }"
+if ($hasBurntToast -eq 'yes') {
+    Write-Host 'BurntToast module already installed (for pwsh.exe).'
 } else {
-    try {
-        Install-Module BurntToast -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        Write-Host 'Installed BurntToast module -- real toast notifications are now live.'
-    } catch {
-        Write-Warning "Could not install BurntToast automatically ($($_.Exception.Message)). Real toasts won't show until it's installed -- retry later with:"
-        Write-Warning '  Install-Module BurntToast -Scope CurrentUser'
+    & $pwsh.Source -NoProfile -Command "Install-Module BurntToast -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Installed BurntToast module for pwsh.exe -- real toast notifications are now live.'
+    } else {
+        Write-Warning "Could not install BurntToast automatically. Real toasts won't show until it's installed -- retry later with:"
+        Write-Warning '  pwsh -Command "Install-Module BurntToast -Scope CurrentUser"'
         Write-Warning 'Until then, the watchdog still logs to the Application event log and console -- just not a toast.'
     }
 }
 
 $scriptPath = Join-Path $PSScriptRoot 'background_check_watchdog.ps1'
 $scriptPath = [System.IO.Path]::GetFullPath($scriptPath)
-
-$pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
-if (-not $pwsh) {
-    Write-Error 'pwsh.exe (PowerShell 7+) not found -- background_check_watchdog.ps1 uses syntax (??, ConvertFrom-Json -AsHashtable) that needs it, not Windows PowerShell 5.1.'
-    exit 1
-}
 
 $taskName = 'EssentialsAppBackgroundCheckWatchdog'
 
