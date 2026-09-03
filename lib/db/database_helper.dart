@@ -207,6 +207,36 @@ class DatabaseHelper {
     );
   }
 
+  static const String _filesDirectoryName = 'files';
+
+  /// The `image` field's own local files-root, alongside `essentials.db`
+  /// in the same directory on each platform -- see
+  /// claude/essentials-v2-image-field-design.md. Mirrors
+  /// [resolveSearchIndexDatabasePath]'s exact shape (a sibling path, not a
+  /// table inside `essentials.db`) for the same platform-conditional
+  /// reasoning, but a directory instead of a single file:
+  /// `FileSyncService` resolves `{table}/{record_id}/{field_name}/
+  /// {filename}` relative keys against this root, joined the same way on
+  /// every device. Unlike `essentials.db` itself, this directory has no
+  /// external provisioning step -- created here if it doesn't exist yet,
+  /// since the first image ever captured/dropped is what creates it.
+  Future<String> resolveFilesDirectory() async {
+    late final String base;
+    if (Platform.isWindows) {
+      base = _windowsDirectory;
+    } else if (Platform.isAndroid) {
+      await _ensureAndroidStoragePermission();
+      base = _androidDirectory;
+    } else {
+      throw UnsupportedError(
+        'essentials_app only targets Windows desktop and Android.',
+      );
+    }
+    final dir = join(base, _filesDirectoryName);
+    await Directory(dir).create(recursive: true);
+    return dir;
+  }
+
   Future<void> _ensureAndroidStoragePermission() async {
     var status = await Permission.manageExternalStorage.status;
     if (status.isGranted) return;
