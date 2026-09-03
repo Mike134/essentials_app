@@ -170,6 +170,16 @@ dependencies:
   # "Map Location" text field (street/city/state/zip), a genuinely
   # separate lookup step from geolocator's own GPS reading.
   geocoding: ^4.0.0
+  # Image field's camera capture + gallery pick -- Essentials v2 image
+  # field design, build order step 4 (see
+  # claude/essentials-v2-image-field-ui-design.md). Android only, gated
+  # behind Platform.isAndroid same as mobile_scanner/geolocator -- this
+  # package does ship an image_picker_windows implementation, but it's
+  # not relied on here; Windows gets its own separate entry point
+  # (desktop_drop drag-and-drop + the existing file_picker "Browse..."),
+  # step 5. `1.2.3` current stable as of this spike (2026-09-03) --
+  # image_picker_android 0.8.13+22, actively maintained.
+  image_picker: ^1.2.3
 
 dev_dependencies:
   flutter_test:

@@ -1,7 +1,14 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' show dirname;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../db/event_dispatch_service.dart';
+import '../db/file_sync_service.dart';
 import '../db/generic_dao.dart';
 import '../db/schema_registry.dart';
 import '../models/table_config.dart';
@@ -115,6 +122,22 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   late final GeoLocationFields? _geoLocationFields = geoLocationFieldsOf(widget.config.fields);
   late final FieldConfig? _mapLocationField = mapLocationFieldOf(widget.config.fields);
   bool _capturingLocation = false;
+
+  /// Image field support -- see claude/essentials-v2-image-field-ui-design.md.
+  /// `_capturingImage` is keyed by `field.column`, same per-field-flag shape
+  /// as everything else in this screen (a form can have more than one image
+  /// field). `_imagePreviewFutures` caches each field's resolved preview
+  /// [File] by the stored relative-key value itself -- already globally
+  /// unique (it embeds table/record/field/filename), so no need to also key
+  /// on `field.column`. Keying on the *value* rather than the field means a
+  /// fresh capture (a new stored value) always gets a fresh resolution
+  /// instead of reusing a stale cached Future for the old value. See
+  /// [_resolveImageFile]/[_ingestPickedImage] for why this still isn't
+  /// enough on its own to avoid a stale *image*, not just a stale Future,
+  /// when a recapture reuses the same filename.
+  final _fileSync = FileSyncService();
+  final Map<String, bool> _capturingImage = {};
+  final Map<String, Future<File?>> _imagePreviewFutures = {};
 
   @override
   void initState() {
@@ -589,8 +612,232 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     );
   }
 
+  static const _imagePreviewSize = 160.0;
+
+  /// `image` -- see claude/essentials-v2-image-field-ui-design.md.
+  /// Special-cased the same way `_buildButtonField` is, before the generic
+  /// [FieldFormatHandler] dispatch: building the relative storage key needs
+  /// a table name and record id, which that shared interface has no way to
+  /// pass. [ImageFormatHandler.buildFormField] is unreachable dead code.
+  Widget _buildImageField(FieldConfig field) {
+    final controller = _controllers[field.column]!;
+    final value = controller.text;
+    // Same "disabled until the record actually exists" gate as
+    // _buildButtonField -- the relative key needs a real record id, and
+    // there isn't one on Add. See the UI design doc's "record doesn't
+    // exist yet" section for the alternative considered (pre-generating
+    // the id) and why it wasn't chosen.
+    final id = widget.isEditing ? widget.existing!['id'] as int : null;
+    final capturing = _capturingImage[field.column] ?? false;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: field.label,
+          border: InputBorder.none,
+          contentPadding: EdgeInsets.zero,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (value.isNotEmpty) ...[
+              _buildImagePreview(value),
+              const SizedBox(height: 8),
+            ],
+            _buildImageActionsRow(field, id: id, capturing: capturing, hasValue: value.isNotEmpty),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Resolves a stored relative key (`{table}/{record_id}/{field_name}/
+  /// {filename}`) to a local [File] via [FileSyncService.fetch] --
+  /// deliberately parsed straight out of the key itself, not rebuilt from
+  /// `widget.config.tableName`/the current record's id. **Real bug, caught
+  /// before it shipped:** a "Copy" flow seeds this field's controller from
+  /// `copyFrom` before any new record id exists (`widget.existing` is
+  /// `null` in that state -- see [GenericFormScreen.copyFrom]'s own doc
+  /// comment), so reconstructing the key from `widget.existing!['id']`
+  /// would throw on a copied row with an image value. Parsing the four
+  /// segments already present in the stored value itself needs no id at
+  /// all, and correctly resolves to the *original* record's file --
+  /// exactly right, since a fresh copy doesn't yet have its own image
+  /// bytes, only a value pointing at where the source record's still live.
+  Future<File?> _resolveImageFile(String relativeKey) {
+    final segments = relativeKey.split('/');
+    if (segments.length != 4) return Future.value(null);
+    final [table, recordId, fieldName, filename] = segments;
+    return _fileSync.fetch(table: table, recordId: recordId, fieldName: fieldName, filename: filename);
+  }
+
+  Widget _buildImagePreview(String value) {
+    final future = _imagePreviewFutures.putIfAbsent(value, () => _resolveImageFile(value));
+    return FutureBuilder<File?>(
+      future: future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const SizedBox(
+            width: _imagePreviewSize,
+            height: _imagePreviewSize,
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          );
+        }
+        final file = snapshot.data;
+        if (file == null) {
+          // Genuinely expected, not an error -- see FileSyncService.fetch's
+          // own doc comment ("404 is an ordinary, expected outcome").
+          return SizedBox(
+            width: _imagePreviewSize,
+            height: _imagePreviewSize,
+            child: Container(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: const Icon(Icons.broken_image_outlined),
+            ),
+          );
+        }
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Image.file(file, width: _imagePreviewSize, height: _imagePreviewSize, fit: BoxFit.cover),
+        );
+      },
+    );
+  }
+
+  /// Android only, per the UI design doc's platform split -- camera capture
+  /// and gallery pick via `image_picker`. Windows gets a separate entry
+  /// point (drag-and-drop + browse), build order step 5, not yet built --
+  /// this row renders empty on Windows for now, same "nothing at all, not
+  /// a dead placeholder" instinct `BarcodeFormatHandler` already applied to
+  /// its own Windows behavior.
+  Widget _buildImageActionsRow(
+    FieldConfig field, {
+    required int? id,
+    required bool capturing,
+    required bool hasValue,
+  }) {
+    final enabled = id != null && !capturing;
+    final spinner = const SizedBox(
+      width: 16,
+      height: 16,
+      child: CircularProgressIndicator(strokeWidth: 2),
+    );
+    return Tooltip(
+      message: id == null ? 'Save the record first, then add an image.' : '',
+      child: Wrap(
+        spacing: 8,
+        children: [
+          if (Platform.isAndroid) ...[
+            OutlinedButton.icon(
+              onPressed: enabled ? () => _captureOrPickImage(field, fromCamera: true) : null,
+              icon: capturing ? spinner : const Icon(Icons.camera_alt_outlined),
+              label: const Text('Camera'),
+            ),
+            OutlinedButton.icon(
+              onPressed: enabled ? () => _captureOrPickImage(field, fromCamera: false) : null,
+              icon: const Icon(Icons.photo_library_outlined),
+              label: const Text('Choose photo'),
+            ),
+          ],
+          if (hasValue)
+            OutlinedButton.icon(
+              onPressed: enabled ? () => _clearImageField(field) : null,
+              icon: const Icon(Icons.close),
+              label: const Text('Remove'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _captureOrPickImage(FieldConfig field, {required bool fromCamera}) async {
+    final id = widget.existing!['id'] as int;
+    setState(() => _capturingImage[field.column] = true);
+    try {
+      if (fromCamera) {
+        final status = await Permission.camera.request();
+        if (!status.isGranted) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Camera permission is needed to take a photo.')));
+          return;
+        }
+      }
+      final picked = await ImagePicker().pickImage(
+        source: fromCamera ? ImageSource.camera : ImageSource.gallery,
+      );
+      if (picked == null) return; // user cancelled
+      await _ingestPickedImage(field, id: id, sourcePath: picked.path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add image: $e')));
+    } finally {
+      if (mounted) setState(() => _capturingImage[field.column] = false);
+    }
+  }
+
+  /// The local-write-then-upload step -- see the UI design doc's "What
+  /// happens on capture/drop" section. Single image per field: any
+  /// existing file(s) already in that field's directory are deleted first,
+  /// not accumulated, so recapturing/replacing never leaves an orphan on
+  /// *this* device (the hub/other-devices' copy of the old file is a
+  /// separate, already-flagged open item, unchanged by this).
+  Future<void> _ingestPickedImage(FieldConfig field, {required int id, required String sourcePath}) async {
+    final table = widget.config.tableName;
+    final recordId = id.toString();
+    final sourceExt = sourcePath.contains('.') ? sourcePath.split('.').last.toLowerCase() : 'jpg';
+    final filename = 'image.$sourceExt';
+
+    final localPath = await _fileSync.localPathFor(
+      table: table,
+      recordId: recordId,
+      fieldName: field.column,
+      filename: filename,
+    );
+    final dir = Directory(dirname(localPath));
+    if (await dir.exists()) {
+      await for (final entity in dir.list()) {
+        if (entity is File) await entity.delete();
+      }
+    } else {
+      await dir.create(recursive: true);
+    }
+    await File(sourcePath).copy(localPath);
+
+    // Flutter's own Image widget cache is keyed by file path, not content
+    // -- recapturing to the same fixed filename (the common case: the
+    // camera always produces .jpg) would silently keep showing the old
+    // bytes without this. Found while building this, not theorized.
+    await FileImage(File(localPath)).evict();
+
+    final relativeKey = '$table/$recordId/${field.column}/$filename';
+    _imagePreviewFutures.remove(relativeKey);
+    setState(() => _controllers[field.column]!.text = relativeKey);
+
+    // Fire-and-forget -- this device's own preview already has the bytes
+    // (the local write above), so nothing about this device's UI depends
+    // on the upload succeeding. See FileSyncService.upload's own doc
+    // comment for the accepted no-retry-in-v1 gap this leaves.
+    unawaited(
+      _fileSync.upload(
+        table: table,
+        recordId: recordId,
+        fieldName: field.column,
+        filename: filename,
+        localFile: File(localPath),
+      ),
+    );
+  }
+
+  void _clearImageField(FieldConfig field) {
+    setState(() => _controllers[field.column]!.text = '');
+  }
+
   Widget _buildField(FieldConfig field) {
     if (field.format == 'button') return _buildButtonField(field);
+    if (field.format == 'image') return _buildImageField(field);
 
     final handler = _formatHandlerFor(field);
     if (handler != null) {
