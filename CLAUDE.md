@@ -8077,5 +8077,95 @@ every tool script in this project carries), `flutter build windows` and
 `flutter build apk --debug` both clean at every checkpoint, all pushed to
 and confirmed working on MIKE-12R.
 
+### Footer aggregates silently not persisting for Currency/Percentage — two distinct bugs, found across three rounds of Mike's own testing
+
+Mike had already used "Set column footer..." (Sum/Avg/Min/Max/Count)
+successfully in an earlier phase (see "Footer aggregates ('Set column
+footer...')" above) -- this round surfaced that it had quietly regressed,
+or never fully worked, for two of the newer numeric-ish formats.
+
+**Round 1 -- menu missing entirely for Currency.** The menu-visibility
+gate (`aggregatableColumns`, `lib/screens/generic_list_screen.dart`) only
+checked `field.type == FieldType.integer || field.type == FieldType.real`
+-- Currency/Percentage (Phase 2 formats) are stored as `FieldType.text`
+under the hood, their real numeric behavior living entirely in a
+`FieldFormatHandler`, not the type enum. Fixed by widening the gate to
+also include `field.format == 'currency' || field.format ==
+'percentage'`. A numeric `Calculated`/formula field already worked
+(`resultType: Number` gives it real `FieldType.real`), confirmed, no
+separate fix needed there.
+
+**Round 2 -- set correctly, saved correctly, but never restored on
+reload, for Currency/Percentage specifically.** `_seedAggregate` (the
+method that reapplies a saved aggregate choice when the grid rebuilds)
+had its **own separate, narrower type check**, never updated when round
+1 widened the menu-visibility gate -- so Currency/Percentage could have
+an aggregate set and correctly persisted to `table_column_settings`, but
+it would never come back after leaving and returning to the table. Fixed
+by extracting one shared `_isAggregatableField(FieldConfig)` helper used
+by both the menu gate and `_seedAggregate`, closing off the class of
+drift that caused this (two independent copies of "is this field
+aggregatable" silently diverging).
+
+**Round 3 -- still not sticking, even after round 2's fix, for Cost/
+YearlyCost specifically (both Currency).** Mike's own narrowed report
+("Position sticks, Cost/YearlyCost don't") was the key clue. Confirmed
+directly via a live query against `table_column_settings` that the
+aggregate value genuinely *was* being saved correctly ('sum' for both) --
+ruling out a save-path bug and pointing at rendering instead. Real root
+cause, found by tracing `_buildFieldColumn`'s control flow: Currency/
+Percentage columns are built via a **completely separate code path**
+(`_formatHandlerFor(field)?.buildGridColumn(field)`, the Phase 2
+`FieldFormatHandler` mechanism) that returns *before* ever reaching the
+plain/readOnly branches later in the same function that wire
+`footerRenderer` inline in their own `TrinaColumn` constructors --
+meaning a handler-built column never got a `footerRenderer` from saved
+settings at all, regardless of rounds 1-2. Fixed by explicitly wiring
+`footerRenderer` (via the now-shared `_isAggregatableField`/
+`_seedAggregate`/`_footerRendererFor`) onto the handler-built column
+before returning it. **Worth remembering as a general pattern**, same
+lesson Phase 2's own build-order write-up already drew once: any new
+grid behavior added to `_buildFieldColumn`'s generic branches needs a
+matching check in the format-handler branch too, since a handler-built
+column bypasses everything after its own early return.
+
+Confirmed working by Mike on both MIKE-CU and MIKE-12R after round 3's
+fix. Committed as `fe6b8a8`. `USER_GUIDE.md`'s existing "Set column
+footer..." documentation and its Rating-specific "Known gaps" bullet were
+already accurate and needed no correction -- they never claimed Currency/
+Percentage didn't work, they just quietly didn't, until now.
+
+### `USER_GUIDE.md` moved out of the repo, into the Obsidian vault (2026-09-02)
+
+Mike's call, not a code change: `USER_GUIDE.md` now lives at
+`C:\Obsidian\PRIMARY\OBJECTIVES\Developing\FLUTTER\Essentials App
+\USER_GUIDE.md`, not the repo root. Reasoning, straight from Mike: he
+prefers editing/reading markdown inside Obsidian generally, and this
+location syncs automatically to every device via the Obsidian vault's
+existing Syncthing pipe (`C:\Obsidian` <> `/storage/emulated/0/Documents
+/Obsidian/PRIMARY`, already documented under "Sync architecture" above --
+a completely separate pipe from `essentials_app`'s own record-level sync,
+unaffected by any of this). Explicitly a "for now" decision, not
+permanent -- Mike said it may move back into the repo's commit/push path
+later.
+
+**Real, load-bearing consequence: `USER_GUIDE.md` is no longer
+git-tracked.** Removed from the repo (`git rm`), no stub or `@`-import
+pointer left behind (grepped first to confirm nothing referenced it via
+that mechanism -- it never was). Every future edit to it happens as a
+plain file write at its real Obsidian-vault path, exactly like any other
+absolute-path file this project already touches (`C:\Databases\...`,
+`server/`'s scripts, etc.) -- no special tooling or workflow needed, just
+remember it's no longer part of `git status`/commit history for this
+repo. The file's own header now carries a note recording the move and
+pointing back to `CLAUDE.md`/`claude/*.md` in the repo for anyone who
+opens it cold from the Obsidian side. This is a different mechanism from
+the `claude/essentials-v2-*.md` design docs' own claude.ai-Project-vs-repo
+duality (see "Repo move: CLAUDE.md/schema.sql" above) -- those still have
+two copies to keep in sync; `USER_GUIDE.md` now has exactly one copy,
+just not in this repo.
+
 **Next session:** not yet decided -- whatever Mike's own continued real
-usage surfaces next.
+usage surfaces next. Mike flagged, as future (not immediate) work: the
+document's comprehensiveness around Views (features/limitations per view
+type) and Scripting could use a deeper pass at some point.
