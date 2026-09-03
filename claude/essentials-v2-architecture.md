@@ -445,7 +445,7 @@ Phase 3's three view types (List, Calendar, Kanban) are now all conceptually set
 ### Deferred (explicitly, not forgotten)
 - Reporting / printing — significant effort, moderate value
 - iOS / Mac — not a target
-- Attachment fields (local storage + hub file-transfer sync, designed and built together) — dropped from Phase 2, not yet assigned a phase number. **Superseded by a narrower `image`-only design, 2026-09-03, now complete (storage/sync model, hub endpoint, and UI):** `claude/essentials-v2-image-field-design.md`, `claude/essentials-v2-file-transfer-endpoint-design.md`, `claude/essentials-v2-image-field-ui-design.md`. Not yet assigned a phase number — ready to build when scheduled.
+- ~~Attachment fields~~ — **superseded and DONE, 2026-09-03.** A narrower `image`-only design shipped instead of the originally-sketched generic `attachment` field, real-device verified on MIKE-CU and MIKE-12R (capture, cross-device sync, byte-identical files confirmed both ends): `claude/essentials-v2-image-field-design.md`, `claude/essentials-v2-file-transfer-endpoint-design.md`, `claude/essentials-v2-image-field-ui-design.md`.
 - Card/gallery view — cut from Phase 3, 2026-08-24 ("maybe someday" v2-later item, not deleted from the concept). Mike's real-life usage of card views elsewhere (Excel on Android) is nil-to-negative, so no case for building it here yet.
 
 ---
@@ -470,11 +470,12 @@ These do not change:
 
 ### `crdt_sync` batch-atomicity gap around new-table creation — confirmed structural, not a one-off (consolidated 2026-08-25)
 
-Hit **five times** across four different sessions, always the same shape:
+Hit **six times** across five different sessions, always the same shape:
 
 1. `schema_admin` session ("Ordering guarantee" section) — a new column's data arriving before the migration that creates it, poisoning the batch and stranding `migration_log` itself.
 2. Phase 1 Step 3 — the deliberate infinite-loop repro: `domain` row data referencing a column that didn't exist yet on the receiving device, same all-or-nothing rollback.
 3–5. Phase 3 — three separate times in one session: `view_definitions`' own bootstrap, `kanban_test`, and `calendar_test`.
+6. Image field design, build order step 6 real-device verification (2026-09-03) — `tool/create_image_test_table.dart`'s `image_field_test` table, created directly against MIKE-CU's local `essentials.db` (a script opening the file directly, not through a live `SyncService` connection — same "no live app pushing it" gap as `kanban_test`/`calendar_test` before it). Recovered the same way: `tool/adopt_migrations.dart` against the stopped hub, confirmed via the server's own connection log and a direct `hub.db` query afterward, then real-device-verified end to end on MIKE-12R (capture) and MIKE-CU (the photo showed up there too) once the table itself was unblocked.
 
 **The mechanism, not just the symptom:** when a brand-new table's `migration_log`-authored DDL and its own row data land in the *same* changeset, and the receiving peer doesn't yet have the physical table (no cached PK info for it), the merge throws (`ON CONFLICT ()`) and the merge transaction — which spans every table in that batch, not just the new one — rolls back entirely. That takes the `migration_log` row down with it too, so the peer has no path to ever learn about the fix that would resolve it, without manual intervention.
 
@@ -491,7 +492,7 @@ Hit **five times** across four different sessions, always the same shape:
 - ~~**Global search strategy**~~ — resolved 2026-08-24: one unified FTS5 virtual table, not per-table. See `claude/essentials-v2-phase6-design.md`.
 - **Starter template set** — which 5–10 templates ship built-in?
 - **Record history UI** — CRDT timestamps give implicit history; surface it to users?
-- **Attachment phase number** — where local storage + sync (dropped from Phase 2) lands in the roadmap; not yet decided. Design itself now exists for the narrower `image` field — see `claude/essentials-v2-image-field-design.md` — including its own open items (delete behavior, concurrent-edit orphaned files, size limits, content-addressing).
+- ~~**Attachment phase number**~~ — resolved by shipping the narrower `image` field directly, 2026-09-03, real-device verified — see `claude/essentials-v2-image-field-design.md`. Its own open items (delete behavior, concurrent-edit orphaned files, size limits, content-addressing) remain genuinely open, not blocking further use.
 - ~~**CSV import design**~~ — done, built, and real-device verified, 2026-08-23. See `claude/essentials-v2-csv-import-design.md`.
 - ~~**`color` field format**~~ — done and real-device verified, 2026-08-23. See `CLAUDE.md`'s note; no separate design doc was needed.
 - ~~**Column autocomplete**~~ — done and real-device verified, 2026-08-24. See `claude/essentials-v2-column-autocomplete-design.md`.
