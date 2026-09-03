@@ -130,13 +130,13 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   /// as everything else in this screen (a form can have more than one image
   /// field). `_imagePreviewFutures` caches each field's resolved preview
   /// [File] by the stored relative-key value itself -- already globally
-  /// unique (it embeds table/record/field/filename), so no need to also key
+  /// unique (it embeds table/record/field/filename, and [_ingestPickedImage]
+  /// gives every capture its own timestamped filename, so no two distinct
+  /// images ever share a key -- see that method's own doc comment for the
+  /// real cross-device bug this specifically fixes), so no need to also key
   /// on `field.column`. Keying on the *value* rather than the field means a
   /// fresh capture (a new stored value) always gets a fresh resolution
-  /// instead of reusing a stale cached Future for the old value. See
-  /// [_resolveImageFile]/[_ingestPickedImage] for why this still isn't
-  /// enough on its own to avoid a stale *image*, not just a stale Future,
-  /// when a recapture reuses the same filename.
+  /// instead of reusing a stale cached Future for the old value.
   final _fileSync = FileSyncService();
   final Map<String, bool> _capturingImage = {};
   final Map<String, Future<File?>> _imagePreviewFutures = {};
@@ -977,7 +977,21 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     final table = widget.config.tableName;
     final recordId = id.toString();
     final sourceExt = sourcePath.contains('.') ? sourcePath.split('.').last.toLowerCase() : 'jpg';
-    final filename = 'image.$sourceExt';
+    // A timestamp, not a fixed "image.<ext>" -- **real bug, found live on
+    // real hardware, not theorized:** a fixed filename means every
+    // recapture writes the exact same relative key string. That silently
+    // broke cross-device sync for a *replacement* image specifically --
+    // FileSyncService.fetch's "local file already exists -> return it,
+    // skip the network" check has no way to know the hub's content
+    // changed if the key it's asked for never changes. Caught exactly
+    // this way: MIKE-12R had an old image cached locally from earlier
+    // testing; a fresh capture on MIKE-CU, uploaded under the identical
+    // key, never displaced it there. A fresh key per capture makes this
+    // structurally impossible -- a device that's never seen the new key
+    // has no local file to short-circuit on, so it always goes to the
+    // network for it, same as any other never-before-seen value.
+    final filename = 'image_${DateTime.now().millisecondsSinceEpoch}.$sourceExt';
+    final previousValue = _controllers[field.column]!.text;
 
     final localPath = await _fileSync.localPathFor(
       table: table,
@@ -996,9 +1010,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     await File(sourcePath).copy(localPath);
 
     // Flutter's own Image widget cache is keyed by file path, not content
-    // -- recapturing to the same fixed filename (the common case: the
-    // camera always produces .jpg) would silently keep showing the old
-    // bytes without this. Found while building this, not theorized.
+    // -- now that every capture gets its own timestamped filename (see
+    // this method's own doc comment on `filename`), a fresh capture
+    // already writes to a genuinely new path, so this eviction is
+    // defensive rather than load-bearing. Kept anyway: harmless, and a
+    // real bug already lived here once (an earlier, fixed-filename
+    // version silently kept showing stale bytes without it).
     await FileImage(File(localPath)).evict();
 
     final relativeKey = '$table/$recordId/${field.column}/$filename';
@@ -1018,6 +1035,19 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         localFile: File(localPath),
       ),
     );
+
+    // Clean up the *old* key's hub copy on a replace, now that the key
+    // actually changes per capture (above) -- otherwise every recapture
+    // would leave a permanent orphan on the hub, not just the
+    // already-accepted concurrent-edit case. Local cleanup already
+    // happened (the directory-wipe step above); this is the hub side
+    // only. Fire-and-forget, same posture as everything else here -- a
+    // failed cleanup leaves an orphan, not a correctness problem for
+    // anything currently displayed (nothing points at the old key
+    // anymore once the controller's text changes above).
+    if (previousValue.isNotEmpty && previousValue != relativeKey) {
+      unawaited(_fileSync.deleteByRelativeKey(previousValue));
+    }
   }
 
   /// Now actually deletes the file (local + hub), not just the field's
