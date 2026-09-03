@@ -32,33 +32,29 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // claude/essentials-v2-phase5-design.md's step 8 write-up: flutter_js
   // transitively needs dart:ui, unavailable outside a real Flutter
   // engine) -- so this still creates a real window and engine, exactly
-  // like a normal launch, then hides it immediately below rather than
-  // skipping window creation. The Dart side (see main.dart) checks for
-  // this same flag and calls exit(0) once the background check
-  // completes, instead of ever calling runApp().
+  // like a normal launch, but with suppress_auto_show=true below so it's
+  // never shown. The Dart side (see main.dart / windows_background_
+  // entrypoint.dart) checks for this same flag and, once the background
+  // check completes, quits via the native channel FlutterWindow wires up
+  // for suppress_auto_show runs, instead of ever calling runApp().
   const bool isBackgroundScheduleCheck =
       std::find(command_line_arguments.begin(), command_line_arguments.end(),
                 "--background-schedule-check") != command_line_arguments.end();
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
-  FlutterWindow window(project);
+  // suppress_auto_show=true for background-schedule-check runs: the window
+  // must never be shown, and it wires up a native quit channel in place of
+  // WidgetsBinding.exitApplication() -- see flutter_window.cpp's
+  // kBackgroundQuitChannel doc comment for why exitApplication() reliably
+  // crashed in flutter_windows.dll for this specific run shape.
+  FlutterWindow window(project, /*suppress_auto_show=*/isBackgroundScheduleCheck);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(L"essentials_app", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
-  if (isBackgroundScheduleCheck) {
-    // Create() already shows the window (SW_SHOWNORMAL) before returning
-    // -- hide it right back immediately rather than editing win32_window
-    // .cpp's own Create() to skip that step, so this stays a minimal,
-    // additive change to otherwise-untouched Flutter-generated
-    // boilerplate. A brief flash is possible but has not been observed
-    // in practice; not worth more invasive surgery on generated code for
-    // a scheduled background task nobody is watching happen.
-    ::ShowWindow(window.GetHandle(), SW_HIDE);
-  }
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {

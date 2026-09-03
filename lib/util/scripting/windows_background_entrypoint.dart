@@ -1,5 +1,4 @@
-import 'dart:ui' show AppExitType;
-
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'background_schedule_service.dart';
@@ -16,6 +15,21 @@ import 'background_schedule_service.dart';
 /// shown, on purpose.
 const backgroundScheduleCheckArg = '--background-schedule-check';
 
+/// Native quit path wired up by `flutter_window.cpp` (only when the
+/// window is created with `suppress_auto_show=true`, i.e. exactly this
+/// background run). `WidgetsBinding.exitApplication()` was tried first
+/// and reliably crashed -- see the method channel name's sibling doc
+/// comment in `flutter_window.cpp` for the full native-side explanation.
+/// `dart:io`'s `exit(0)` was tried before that and reliably hung the
+/// process instead (unresponsive to `Stop-Process`/`taskkill`, only
+/// killable via `Get-CimInstance Win32_Process | Invoke-CimMethod
+/// Terminate`) -- consistent with a forced `ExitProcess` racing the
+/// native window's own COM/message-loop teardown (`main.cpp`'s
+/// `::CoInitializeEx`/`GetMessage` loop) rather than going through it.
+/// Posting our own `WM_CLOSE` drives that same teardown the normal way
+/// instead of racing or bypassing it.
+const _backgroundQuitChannel = MethodChannel('essentials/background_quit');
+
 /// Runs one pass of [BackgroundScheduleService.runDueScheduledEvents],
 /// the same class/logic Android's `workmanager` callback already uses
 /// (see `background_schedule_service.dart`) -- Windows and Android share
@@ -24,26 +38,8 @@ const backgroundScheduleCheckArg = '--background-schedule-check';
 /// nothing else will ever pump the hidden window's message loop closed
 /// (there's no user to click anything), so this process must terminate
 /// itself or it would sit around indefinitely as an invisible zombie.
-///
-/// **Deliberately `WidgetsBinding.instance.exitApplication(AppExitType
-/// .required)`, not `dart:io`'s `exit(0)`.** The first version used
-/// `exit(0)` and was confirmed, empirically, to intermittently leave the
-/// process hung indefinitely (near-zero CPU, unresponsive to
-/// `Stop-Process`/`taskkill`, only killable via `Get-CimInstance
-/// Win32_Process | Invoke-CimMethod Terminate`) -- consistent with a
-/// forced `ExitProcess` racing the native window's own COM/message-loop
-/// teardown (`main.cpp`'s `::CoInitializeEx`/`GetMessage` loop) rather
-/// than going through it. `exitApplication` instead calls into the
-/// Windows embedder's own `System.exitApplication` platform-channel
-/// handler (confirmed by reading the engine source,
-/// `shell/platform/windows/platform_handler.cc`), which posts a real
-/// quit through the same native path a user closing the window normally
-/// takes -- `main.cpp`'s `GetMessage` loop ends on its own, followed by
-/// its own `::CoUninitialize()`/`return EXIT_SUCCESS`. Re-verified stable
-/// across repeated runs after this switch, where `exit(0)` was
-/// reproducibly flaky.
 Future<void> runWindowsBackgroundScheduleCheck() async {
-  final binding = WidgetsFlutterBinding.ensureInitialized();
+  WidgetsFlutterBinding.ensureInitialized();
   try {
     await BackgroundScheduleService().runDueScheduledEvents();
   } catch (_) {
@@ -53,6 +49,6 @@ Future<void> runWindowsBackgroundScheduleCheck() async {
     // should not need manual intervention" posture as the Android side's
     // retry-via-returning-false.
   } finally {
-    await binding.exitApplication(AppExitType.required);
+    await _backgroundQuitChannel.invokeMethod('quit');
   }
 }
