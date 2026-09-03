@@ -155,6 +155,25 @@ class MigrationService {
     return lower.contains('already exists') || lower.contains('duplicate column name');
   }
 
+  /// True if [message] is SQLite's own "this DDL target doesn't exist"
+  /// error -- `no such table: X` (`DROP TABLE`) or `no such column: X`
+  /// (`ALTER TABLE ... DROP COLUMN`). Mirror image of
+  /// [_isAlreadyExistsError]: a DROP-type statement failing this way has
+  /// also already achieved its goal state (the thing it was trying to
+  /// remove is already gone -- e.g. a prior sync already dropped it
+  /// through a different path, or a migration-ordering race), so it's a
+  /// no-op, not a fatal failure, for the same self-healing reason
+  /// [_isAlreadyExistsError] exists. Root-caused by a real stuck orphan:
+  /// `migration_log` id 1787789550490409 (`DROP TABLE
+  /// "script_delete_1787789549921449"`) failed with "no such table" on
+  /// device MIKE-CU and was manually retracted (`is_deleted = 1`) to
+  /// unblock that device -- but retracting also stopped it from ever
+  /// reaching `hub.db`, where the table was still physically present.
+  static bool _isAlreadyGoneError(String message) {
+    final lower = message.toLowerCase();
+    return lower.contains('no such table') || lower.contains('no such column');
+  }
+
   /// Runs [sqlText] (one or more statements) wrapped in a transaction with
   /// `PRAGMA foreign_keys` off/on around it, then records the outcome.
   /// Returns whether it succeeded.
@@ -199,7 +218,8 @@ class MigrationService {
             try {
               await txn.execute(statement);
             } catch (e) {
-              if (_isAlreadyExistsError(e.toString())) {
+              final message = e.toString();
+              if (_isAlreadyExistsError(message) || _isAlreadyGoneError(message)) {
                 // Already achieved -- skip this statement, keep applying
                 // the rest of the migration's other statements normally.
                 continue;

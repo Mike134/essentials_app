@@ -81,6 +81,22 @@ class MigrationService {
     return lower.contains('already exists') || lower.contains('duplicate column name');
   }
 
+  /// True if [message] is SQLite's own "this DDL target doesn't exist"
+  /// error -- `no such table: X` (`DROP TABLE`) or `no such column: X`
+  /// (`ALTER TABLE ... DROP COLUMN`). Mirror image of
+  /// [_isAlreadyExistsError] -- same duplicated-not-shared copy as that
+  /// helper (see the client's identical helper,
+  /// `essentials_app/lib/db/migration_service.dart`, for the full doc
+  /// comment and the incident this is fixing: `migration_log` id
+  /// 1787789550490409's `DROP TABLE "script_delete_1787789549921449"`
+  /// failed with "no such table" on MIKE-CU and had to be manually
+  /// retracted, which also stopped it from ever reaching this database,
+  /// where the table was still physically present).
+  static bool _isAlreadyGoneError(String message) {
+    final lower = message.toLowerCase();
+    return lower.contains('no such table') || lower.contains('no such column');
+  }
+
   /// **Retries a transient "database is locked" error a few times before
   /// giving up -- a real incident on this exact server, not a
   /// theoretical one.** Once `server.dart`'s `onChangesetReceived` started
@@ -115,7 +131,8 @@ class MigrationService {
             try {
               await txn.execute(statement);
             } catch (e) {
-              if (_isAlreadyExistsError(e.toString())) {
+              final message = e.toString();
+              if (_isAlreadyExistsError(message) || _isAlreadyGoneError(message)) {
                 continue;
               }
               rethrow;
