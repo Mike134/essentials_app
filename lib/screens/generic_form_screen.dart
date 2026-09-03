@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path/path.dart' show dirname;
+import 'package:path/path.dart' show dirname, extension;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -138,6 +140,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   final _fileSync = FileSyncService();
   final Map<String, bool> _capturingImage = {};
   final Map<String, Future<File?>> _imagePreviewFutures = {};
+  final Map<String, bool> _imageDragHovering = {};
+
+  /// Same extension set as the hub's own `_imageContentTypes` map (see
+  /// claude/essentials-v2-file-transfer-endpoint-design.md) -- a dropped or
+  /// browsed file outside this list is rejected before ever being ingested,
+  /// same "don't silently accept something the rest of the pipeline can't
+  /// serve a sane content-type for" reasoning.
+  static const _recognizedImageExtensions = {'.jpg', '.jpeg', '.png', '.heic', '.webp', '.gif'};
 
   @override
   void initState() {
@@ -630,6 +640,40 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     final id = widget.isEditing ? widget.existing!['id'] as int : null;
     final capturing = _capturingImage[field.column] ?? false;
 
+    Widget content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (value.isNotEmpty) ...[_buildImagePreview(value), const SizedBox(height: 8)],
+        _buildImageActionsRow(field, id: id, capturing: capturing, hasValue: value.isNotEmpty),
+      ],
+    );
+
+    // Windows drag-and-drop target -- build order step 5. No Android
+    // counterpart (touch devices don't have an OS-level file-drag
+    // gesture); Android's two entry points are the Camera/Choose Photo
+    // buttons in _buildImageActionsRow instead. Wraps the whole field
+    // (label included), same "drop anywhere in the field's area, not just
+    // a small target box" ergonomics a real file-drop affordance wants.
+    if (Platform.isWindows) {
+      final hovering = _imageDragHovering[field.column] ?? false;
+      content = DropTarget(
+        enable: id != null && !capturing,
+        onDragEntered: (_) => setState(() => _imageDragHovering[field.column] = true),
+        onDragExited: (_) => setState(() => _imageDragHovering[field.column] = false),
+        onDragDone: (details) => _handleImageDrop(field, id: id, details: details),
+        child: Container(
+          decoration: hovering
+              ? BoxDecoration(
+                  border: Border.all(color: Theme.of(context).colorScheme.primary, width: 2),
+                  borderRadius: BorderRadius.circular(4),
+                )
+              : null,
+          padding: hovering ? const EdgeInsets.all(6) : EdgeInsets.zero,
+          child: content,
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: InputDecorator(
@@ -638,16 +682,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           border: InputBorder.none,
           contentPadding: EdgeInsets.zero,
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (value.isNotEmpty) ...[
-              _buildImagePreview(value),
-              const SizedBox(height: 8),
-            ],
-            _buildImageActionsRow(field, id: id, capturing: capturing, hasValue: value.isNotEmpty),
-          ],
-        ),
+        child: content,
       ),
     );
   }
@@ -705,12 +740,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     );
   }
 
-  /// Android only, per the UI design doc's platform split -- camera capture
-  /// and gallery pick via `image_picker`. Windows gets a separate entry
-  /// point (drag-and-drop + browse), build order step 5, not yet built --
-  /// this row renders empty on Windows for now, same "nothing at all, not
-  /// a dead placeholder" instinct `BarcodeFormatHandler` already applied to
-  /// its own Windows behavior.
+  /// Android gets Camera + Choose Photo via `image_picker`; Windows gets
+  /// Browse via the already-used `file_picker` (the drag-and-drop target
+  /// itself is wired in [_buildImageField], not here) -- see the UI design
+  /// doc's platform split. No third, generic fallback for any other
+  /// platform, same "this app only targets Windows desktop and Android"
+  /// posture `DatabaseHelper` already enforces elsewhere.
   Widget _buildImageActionsRow(
     FieldConfig field, {
     required int? id,
@@ -740,6 +775,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
               label: const Text('Choose photo'),
             ),
           ],
+          if (Platform.isWindows)
+            OutlinedButton.icon(
+              onPressed: enabled ? () => _browseForImage(field, id: id) : null,
+              icon: const Icon(Icons.folder_open_outlined),
+              label: const Text('Browse...'),
+            ),
           if (hasValue)
             OutlinedButton.icon(
               onPressed: enabled ? () => _clearImageField(field) : null,
@@ -776,6 +817,56 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     } finally {
       if (mounted) setState(() => _capturingImage[field.column] = false);
     }
+  }
+
+  /// Windows "Browse..." -- the `file_picker` counterpart to Android's
+  /// Choose Photo, using the exact same package `LinkFileFormatHandler`
+  /// already depends on for its own file-browse button (no new package
+  /// needed for this entry point, only for the drag-and-drop one).
+  Future<void> _browseForImage(FieldConfig field, {required int id}) async {
+    setState(() => _capturingImage[field.column] = true);
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: [for (final ext in _recognizedImageExtensions) ext.substring(1)],
+      );
+      final path = result?.files.single.path;
+      if (path == null) return; // user cancelled
+      await _ingestValidatedImage(field, id: id, sourcePath: path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add image: $e')));
+    } finally {
+      if (mounted) setState(() => _capturingImage[field.column] = false);
+    }
+  }
+
+  /// Windows drag-and-drop -- see [_buildImageField]'s `DropTarget`. Only
+  /// the first dropped file is used (this is a single-image field, not a
+  /// gallery -- see the storage design doc); anything past it is silently
+  /// ignored rather than rejected, same "just do the reasonable thing"
+  /// choice as taking the first of a multi-select elsewhere in this app.
+  Future<void> _handleImageDrop(FieldConfig field, {required int? id, required DropDoneDetails details}) async {
+    if (id == null || details.files.isEmpty) return;
+    await _ingestValidatedImage(field, id: id, sourcePath: details.files.first.path);
+  }
+
+  /// Shared by both Windows entry points -- rejects (with a SnackBar, not
+  /// a silent no-op) anything outside [_recognizedImageExtensions] before
+  /// ever touching the filesystem, then hands off to [_ingestPickedImage].
+  /// Android's two entry points don't need this: `image_picker`'s camera
+  /// always produces a real photo, and its gallery picker can be scoped to
+  /// images only at the OS level, so there's no equivalent "arbitrary file
+  /// the user dragged in" case to validate there.
+  Future<void> _ingestValidatedImage(FieldConfig field, {required int id, required String sourcePath}) async {
+    if (!_recognizedImageExtensions.contains(extension(sourcePath).toLowerCase())) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${extension(sourcePath)}" isn\'t a recognized image type.')),
+      );
+      return;
+    }
+    await _ingestPickedImage(field, id: id, sourcePath: sourcePath);
   }
 
   /// The local-write-then-upload step -- see the UI design doc's "What

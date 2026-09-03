@@ -180,6 +180,13 @@ dependencies:
   # step 5. `1.2.3` current stable as of this spike (2026-09-03) --
   # image_picker_android 0.8.13+22, actively maintained.
   image_picker: ^1.2.3
+  # Image field's Windows drag-and-drop target -- build order step 5 (see
+  # claude/essentials-v2-image-field-ui-design.md). No camera counterpart
+  # needed on desktop (no hardware); this plus the existing file_picker
+  # "Browse..." affordance are Windows's two entry points, mirroring
+  # image_picker's Android camera+gallery pair. `0.8.4` current stable as
+  # of this spike (2026-09-03).
+  desktop_drop: ^0.8.4
 
 dev_dependencies:
   flutter_test:
