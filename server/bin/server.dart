@@ -14,6 +14,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crdt_sync/crdt_sync_server.dart' as crdt_sync_server;
+import 'package:path/path.dart' as p;
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'migration_service.dart';
@@ -29,6 +30,16 @@ const port = 1340;
 const Duration migrationCheckInterval = Duration(minutes: 5);
 const dbDir = r'C:\Databases\essentials_app\server';
 const dbPath = r'C:\Databases\essentials_app\server\hub.db';
+
+/// Canonical store for `image`-field bytes -- see
+/// claude/essentials-v2-file-transfer-endpoint-design.md. Deliberately
+/// under the hub's own directory (next to hub.db), not
+/// `C:\Databases\essentials_app\files\` -- that's MIKE-CU's own *client*
+/// app instance's separate local cache, next to its `essentials.db`. Two
+/// different files-roots on the same machine, same "two files with
+/// overlapping content, kept correct by the sync layer, not a shared
+/// handle" trade-off already accepted for the database itself.
+const filesDir = r'C:\Databases\essentials_app\server\files';
 
 /// See the client's own copy of this exact function
 /// (`essentials_app/lib/db/sync_service.dart`'s `safeChangesetBuilder`) for
@@ -295,6 +306,7 @@ Future<void> createSchema(CrdtTableExecutor db, int version) async {
 
 Future<void> main() async {
   Directory(dbDir).createSync(recursive: true);
+  Directory(filesDir).createSync(recursive: true);
 
   final crdt = await SqliteCrdt.open(dbPath, version: 1, onCreate: createSchema);
   await crdt.execute('PRAGMA foreign_keys = ON');
@@ -370,6 +382,16 @@ Future<void> main() async {
         continue;
       }
 
+      // `image`-field bytes -- a second instance of the same "plain HTTP
+      // side-channel, not crdt_sync" pattern /migrations already
+      // established, for the same class of reason: crdt_sync's changeset
+      // mechanism is built for row-level SQL merges, not multi-megabyte
+      // binaries. See claude/essentials-v2-file-transfer-endpoint-design.md.
+      if (request.uri.pathSegments.isNotEmpty && request.uri.pathSegments.first == 'files') {
+        await _handleFilesRequest(request);
+        continue;
+      }
+
       await crdt_sync_server.upgrade(
         crdt,
         request,
@@ -416,6 +438,111 @@ Future<void> main() async {
       print('[upgrade error] $e');
     }
   }
+}
+
+/// Extension -> MIME type for `image`-field bytes -- this field is images
+/// only (see the UI design doc's platform-specific pick/capture/drop
+/// entry points), so a small fixed map is enough; not a general-purpose
+/// MIME registry. Falls back to `application/octet-stream` for anything
+/// unrecognized rather than guessing wrong.
+const _imageContentTypes = {
+  'jpg': 'image/jpeg',
+  'jpeg': 'image/jpeg',
+  'png': 'image/png',
+  'heic': 'image/heic',
+  'webp': 'image/webp',
+  'gif': 'image/gif',
+};
+
+ContentType _contentTypeFor(String filename) {
+  final ext = p.extension(filename).replaceFirst('.', '').toLowerCase();
+  final mime = _imageContentTypes[ext];
+  return mime == null ? ContentType.binary : ContentType.parse(mime);
+}
+
+/// Validates one `/files/...` path segment before it's ever joined into a
+/// real filesystem path -- see the design doc's "Path-traversal
+/// validation" section. Rejects anything that's empty, a bare `.`/`..`,
+/// or smuggles a second path separator (`request.uri.pathSegments`
+/// already splits on `/` and percent-decodes, so this is the remaining
+/// check, not the whole job -- the four validated segments are then
+/// joined under a fixed, hardcoded root, never handed to the filesystem
+/// as one unvalidated combined string).
+bool _isValidKeySegment(String segment) {
+  if (segment.isEmpty || segment == '.' || segment == '..') return false;
+  if (segment.contains('/') || segment.contains(r'\')) return false;
+  return true;
+}
+
+/// Routes every `/files/{table}/{record_id}/{field_name}/{filename}`
+/// request -- see claude/essentials-v2-file-transfer-endpoint-design.md.
+/// `PUT` uploads, `GET` downloads, `HEAD` checks existence without a body.
+Future<void> _handleFilesRequest(HttpRequest request) async {
+  // ['files', table, record_id, field_name, filename] -- exactly 5.
+  final segments = request.uri.pathSegments;
+  if (segments.length != 5 || segments.skip(1).any((s) => !_isValidKeySegment(s))) {
+    request.response.statusCode = HttpStatus.badRequest;
+    await request.response.close();
+    return;
+  }
+
+  final relativeParts = segments.skip(1).toList();
+  final filePath = p.joinAll([filesDir, ...relativeParts]);
+
+  switch (request.method) {
+    case 'PUT':
+      await _handleFilesPut(request, filePath);
+    case 'GET':
+      await _handleFilesGet(request, filePath, filename: relativeParts.last);
+    case 'HEAD':
+      await _handleFilesHead(request, filePath);
+    default:
+      request.response.statusCode = HttpStatus.methodNotAllowed;
+      await request.response.close();
+  }
+}
+
+/// Writes to `$filePath.upload-tmp` then renames into place -- `rename`
+/// on the same volume is atomic, so a `GET`/`HEAD` arriving mid-upload
+/// never observes a partial file under the real name. Same class of
+/// concern this project has already been burned by once (the empty-stub
+/// `essentials.db` incidents were exactly "a reader observed a file
+/// mid-write") -- see the design doc's "upload" section.
+Future<void> _handleFilesPut(HttpRequest request, String filePath) async {
+  try {
+    await Directory(p.dirname(filePath)).create(recursive: true);
+    final tempPath = '$filePath.upload-tmp';
+    final sink = File(tempPath).openWrite();
+    await sink.addStream(request);
+    await sink.close();
+    await File(tempPath).rename(filePath);
+    request.response.statusCode = HttpStatus.ok;
+  } catch (e) {
+    print('[files PUT error] $filePath: $e');
+    request.response.statusCode = HttpStatus.internalServerError;
+  }
+  await request.response.close();
+}
+
+Future<void> _handleFilesGet(HttpRequest request, String filePath, {required String filename}) async {
+  final file = File(filePath);
+  if (!await file.exists()) {
+    request.response.statusCode = HttpStatus.notFound;
+    await request.response.close();
+    return;
+  }
+  request.response
+    ..statusCode = HttpStatus.ok
+    ..headers.contentType = _contentTypeFor(filename)
+    ..headers.contentLength = await file.length();
+  await request.response.addStream(file.openRead());
+  await request.response.close();
+}
+
+Future<void> _handleFilesHead(HttpRequest request, String filePath) async {
+  final exists = await File(filePath).exists();
+  request.response.statusCode = exists ? HttpStatus.ok : HttpStatus.notFound;
+  await request.response.close();
 }
 
 /// Every live `migration_log` row's business columns, as JSON -- not
