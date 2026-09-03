@@ -10,6 +10,7 @@ import 'util/field_formats/barcode_format_handler.dart';
 import 'util/field_formats/button_format_handler.dart';
 import 'util/field_formats/currency_format_handler.dart';
 import 'util/field_formats/field_format_handler.dart';
+import 'util/field_formats/image_format_handler.dart';
 import 'util/field_formats/link_file_format_handler.dart';
 import 'util/field_formats/percentage_format_handler.dart';
 import 'util/field_formats/rating_format_handler.dart';
@@ -38,7 +39,11 @@ void main(List<String> args) {
   // doc comment for why. `rating` is step 5, `barcode` is step 7 --
   // the last of Phase 2's format catalog. `button` is Essentials v2
   // Phase 5 build order step 1 -- see claude/essentials-v2-phase5-design
-  // .md and ButtonFormatHandler's own doc comment.
+  // .md and ButtonFormatHandler's own doc comment. `image` is the image
+  // field's build order step 3 -- see
+  // claude/essentials-v2-image-field-ui-design.md and
+  // ImageFormatHandler's own doc comment (registered for its grid column
+  // only, same two-handler split as `button`).
   FieldFormatRegistry.instance = FieldFormatRegistry(const [
     LinkFileFormatHandler(),
     CurrencyFormatHandler(),
@@ -46,6 +51,7 @@ void main(List<String> args) {
     RatingFormatHandler(),
     BarcodeFormatHandler(),
     ButtonFormatHandler(),
+    ImageFormatHandler(),
   ]);
   runApp(const EssentialsApp());
 }

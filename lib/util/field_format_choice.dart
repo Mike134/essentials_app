@@ -91,6 +91,19 @@
 /// [FieldFormatHandler] (`ButtonFormatHandler`), not a variant of
 /// existing rendering and not computed. Renders disabled until Phase 5's
 /// script-wiring steps land -- see that handler's own doc comment.
+///
+/// **`image` is a genuinely new stored format** (`TEXT` holding a
+/// relative storage key, `options: {}` -- see
+/// claude/essentials-v2-image-field-design.md). Same two-handler split as
+/// `button`: [ImageFormatHandler] is registered for
+/// [GenericListScreen]'s grid column only (a blank, always-empty
+/// read-only cell -- this field is Form-view-only by design, see the
+/// storage doc's "Preview" section); the real capture/drag-drop/preview
+/// widget lives in `GenericFormScreen._buildImageField`, special-cased
+/// before generic handler dispatch the same way `_buildButtonField` is,
+/// because it needs a table name and record id the shared
+/// [FieldFormatHandler.buildFormField] interface has no way to pass --
+/// see claude/essentials-v2-image-field-ui-design.md.
 enum FieldFormatChoice {
   text('text', 'Text'),
   integer('integer', 'Whole number'),
@@ -111,7 +124,8 @@ enum FieldFormatChoice {
   linkRecord('link_record', 'Link to record(s) in another table'),
   lookup('lookup', 'Show a value from a linked record'),
   rollup('rollup', 'Calculate from linked records'),
-  button('button', 'Button (runs a script)');
+  button('button', 'Button (runs a script)'),
+  image('image', 'Image');
 
   const FieldFormatChoice(this.value, this.label);
 

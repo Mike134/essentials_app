@@ -8,6 +8,7 @@ import 'package:essentials_app/models/table_config.dart';
 import 'package:essentials_app/util/field_formats/barcode_format_handler.dart';
 import 'package:essentials_app/util/field_formats/currency_format_handler.dart';
 import 'package:essentials_app/util/field_formats/field_format_handler.dart';
+import 'package:essentials_app/util/field_formats/image_format_handler.dart';
 import 'package:essentials_app/util/field_formats/link_file_format_handler.dart';
 import 'package:essentials_app/util/field_formats/percentage_format_handler.dart';
 import 'package:essentials_app/util/field_formats/rating_format_handler.dart';
@@ -31,6 +32,7 @@ void main() {
         PercentageFormatHandler(),
         RatingFormatHandler(),
         BarcodeFormatHandler(),
+        ImageFormatHandler(),
       ]);
       for (final format in ['text', 'integer', 'real', 'boolean', 'date', 'dateTime', 'select']) {
         expect(registry.handlerFor(format), isNull, reason: '$format should have no handler');
@@ -434,5 +436,47 @@ void main() {
       await tester.pump();
       expect(find.text('SKU is required'), findsOneWidget);
     });
+  });
+
+  group('ImageFormatHandler', () {
+    const handler = ImageFormatHandler();
+    const field = FieldConfig(column: 'photo', label: 'Photo', format: 'image');
+
+    test('buildGridColumn is a blank, read-only column -- Form-view-only by design, no thumbnail', () {
+      final column = handler.buildGridColumn(field);
+      expect(column.field, 'photo');
+      expect(column.title, 'Photo');
+      expect(column.readOnly, isTrue);
+    });
+
+    test('cellValueFor always returns empty string -- nothing is ever shown in the grid', () {
+      expect(handler.cellValueFor(field, 'domain/1/photo/image.jpg'), '');
+      expect(handler.cellValueFor(field, null), '');
+    });
+
+    test('valueForSave always returns null -- the grid never writes this field', () {
+      expect(handler.valueForSave(field, 'anything'), isNull);
+      expect(handler.valueForSave(field, null), isNull);
+    });
+
+    testWidgets(
+      'buildFormField is a disabled fallback, never the real capture UI -- '
+      'GenericFormScreen._buildImageField special-cases this format before dispatch reaches here',
+      (tester) async {
+        final controller = TextEditingController(text: 'domain/1/photo/image.jpg');
+        addTearDown(controller.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Builder(builder: (context) => handler.buildFormField(context, field, controller)),
+            ),
+          ),
+        );
+
+        final textField = tester.widget<TextFormField>(find.byType(TextFormField));
+        expect(textField.enabled, isFalse);
+      },
+    );
   });
 }
