@@ -283,6 +283,16 @@ class _ManageFieldsScreenState extends State<ManageFieldsScreen> {
                     final deleted = data.recoverableDeleted;
 
                     return ListView(
+                      // Bottom padding clears the floating "Add field"
+                      // button -- real bug, found live: with no padding,
+                      // the FAB sits directly on top of the last active
+                      // field's trailing Row (delete icon + drag handle),
+                      // covering the drag handle entirely. Only became
+                      // visible once a field actually ended up last in a
+                      // real table -- previously never noticed because
+                      // nobody had scrolled a list where the FAB's resting
+                      // position happened to land on a real control.
+                      padding: const EdgeInsets.only(bottom: 80),
                       children: [
                         if (active.isEmpty)
                           const Padding(

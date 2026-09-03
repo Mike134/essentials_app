@@ -644,7 +644,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (value.isNotEmpty) ...[_buildImagePreview(value), const SizedBox(height: 8)],
-        _buildImageActionsRow(field, id: id, capturing: capturing, hasValue: value.isNotEmpty),
+        _buildImageActionsRow(field, id: id, capturing: capturing, value: value),
       ],
     );
 
@@ -654,22 +654,31 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     // buttons in _buildImageActionsRow instead. Wraps the whole field
     // (label included), same "drop anywhere in the field's area, not just
     // a small target box" ergonomics a real file-drop affordance wants.
+    //
+    // **Real bug, found live (Mike's own real-device pass, not
+    // theorized): a `DropTarget` with no resting-state visual cue is
+    // functionally invisible.** The original version only drew a border
+    // while `hovering` was already true -- which means a user has to
+    // already be mid-drag over the exact right spot before getting any
+    // sign a drop zone exists at all. Reads as "there is no drag and
+    // drop," not "there's a drop zone I haven't found yet." Fixed with a
+    // permanently visible outlined hint box (below), not just a
+    // hover-triggered one -- discoverability, not just correctness.
     if (Platform.isWindows) {
       final hovering = _imageDragHovering[field.column] ?? false;
+      final enabled = id != null && !capturing;
       content = DropTarget(
-        enable: id != null && !capturing,
+        enable: enabled,
         onDragEntered: (_) => setState(() => _imageDragHovering[field.column] = true),
         onDragExited: (_) => setState(() => _imageDragHovering[field.column] = false),
         onDragDone: (details) => _handleImageDrop(field, id: id, details: details),
-        child: Container(
-          decoration: hovering
-              ? BoxDecoration(
-                  border: Border.all(color: Theme.of(context).colorScheme.primary, width: 2),
-                  borderRadius: BorderRadius.circular(4),
-                )
-              : null,
-          padding: hovering ? const EdgeInsets.all(6) : EdgeInsets.zero,
-          child: content,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            content,
+            const SizedBox(height: 8),
+            _buildImageDropHint(hovering: hovering, enabled: enabled),
+          ],
         ),
       );
     }
@@ -683,6 +692,52 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           contentPadding: EdgeInsets.zero,
         ),
         child: content,
+      ),
+    );
+  }
+
+  /// Permanently visible (not just while `hovering`) outlined hint box --
+  /// the actual fix for the discoverability bug described on
+  /// [_buildImageField]'s own doc comment. Brightens (thicker border,
+  /// tinted background) while a drag is actively over the field;
+  /// otherwise stays a quiet, low-contrast outline so it doesn't compete
+  /// visually with the preview/buttons above it, but is still
+  /// unmistakably "a place you can drop something." Plain solid border,
+  /// not a dashed one -- Flutter's `Border` has no built-in dashed style
+  /// without a custom painter or an extra package, not worth it here.
+  Widget _buildImageDropHint({required bool hovering, required bool enabled}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(4),
+        color: hovering ? scheme.primaryContainer : null,
+        border: Border.fromBorderSide(
+          BorderSide(
+            color: !enabled
+                ? scheme.outlineVariant
+                : hovering
+                ? scheme.primary
+                : scheme.outline,
+            width: hovering ? 2 : 1,
+            style: BorderStyle.solid,
+          ),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.file_download_outlined,
+            size: 18,
+            color: enabled ? scheme.onSurfaceVariant : scheme.outlineVariant,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            enabled ? 'Drag and drop an image here' : 'Save the record first to enable drag and drop',
+            style: TextStyle(color: enabled ? scheme.onSurfaceVariant : scheme.outlineVariant),
+          ),
+        ],
       ),
     );
   }
@@ -750,9 +805,10 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     FieldConfig field, {
     required int? id,
     required bool capturing,
-    required bool hasValue,
+    required String value,
   }) {
     final enabled = id != null && !capturing;
+    final hasValue = value.isNotEmpty;
     final spinner = const SizedBox(
       width: 16,
       height: 16,
@@ -780,6 +836,21 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
               onPressed: enabled ? () => _browseForImage(field, id: id) : null,
               icon: const Icon(Icons.folder_open_outlined),
               label: const Text('Browse...'),
+            ),
+          // Save-to-device -- deliberately available whenever there's a
+          // value, not gated on `enabled`/`id != null` the way every other
+          // button here is. Real reasoning, not an oversight: it's a pure
+          // read (never touches the record), and it exists specifically
+          // as the safety net before an irreversible Remove/record-delete
+          // (see FileSyncService.delete's own doc comment) -- gating it
+          // behind the same "record must be saved" rule the *write*
+          // actions need would be backwards for a button whose whole
+          // purpose is "get a copy out before it's gone."
+          if (hasValue)
+            OutlinedButton.icon(
+              onPressed: capturing ? null : () => _saveImageToDevice(field, value),
+              icon: const Icon(Icons.download_outlined),
+              label: const Text('Save...'),
             ),
           if (hasValue)
             OutlinedButton.icon(
@@ -817,6 +888,33 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     } finally {
       if (mounted) setState(() => _capturingImage[field.column] = false);
     }
+  }
+
+  /// "Save..." -- lets the user get a copy of the image out to the
+  /// device's own regular storage before an irreversible Remove or record
+  /// delete (see [FileSyncService.delete]'s own doc comment for why
+  /// those are now real, permanent deletes, not a tombstone). Both
+  /// platforms, via the same `file_picker` `saveFile` call
+  /// `GenericListScreen._exportCsv` already uses and has already proven
+  /// working cross-platform -- no new package, no new pattern.
+  Future<void> _saveImageToDevice(FieldConfig field, String value) async {
+    final file = await _resolveImageFile(value);
+    if (file == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Couldn't reach the image to save it.")));
+      return;
+    }
+    final filename = value.split('/').last;
+    final bytes = await file.readAsBytes();
+    final savedPath = await FilePicker.saveFile(
+      dialogTitle: 'Save ${field.label}',
+      fileName: filename,
+      bytes: bytes,
+    );
+    if (savedPath == null || !mounted) return; // user cancelled
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved to $savedPath')));
   }
 
   /// Windows "Browse..." -- the `file_picker` counterpart to Android's
@@ -922,7 +1020,17 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     );
   }
 
+  /// Now actually deletes the file (local + hub), not just the field's
+  /// value -- the resolution to the storage design doc's originally-open
+  /// "delete behavior" item. See [FileSyncService.delete]'s own doc
+  /// comment for the two-caller reasoning and the fire-and-forget hub
+  /// side.
   void _clearImageField(FieldConfig field) {
+    final value = _controllers[field.column]!.text;
+    if (value.isNotEmpty) {
+      _imagePreviewFutures.remove(value);
+      unawaited(_fileSync.deleteByRelativeKey(value));
+    }
     setState(() => _controllers[field.column]!.text = '');
   }
 

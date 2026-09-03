@@ -476,7 +476,11 @@ bool _isValidKeySegment(String segment) {
 
 /// Routes every `/files/{table}/{record_id}/{field_name}/{filename}`
 /// request -- see claude/essentials-v2-file-transfer-endpoint-design.md.
-/// `PUT` uploads, `GET` downloads, `HEAD` checks existence without a body.
+/// `PUT` uploads, `GET` downloads, `HEAD` checks existence without a body,
+/// `DELETE` removes it -- added once the image field's "delete behavior"
+/// open item was actually resolved (see the image field design doc's
+/// "What happens on capture/drop" section and `FileSyncService.delete`'s
+/// own doc comment), not part of the original endpoint design.
 Future<void> _handleFilesRequest(HttpRequest request) async {
   // ['files', table, record_id, field_name, filename] -- exactly 5.
   final segments = request.uri.pathSegments;
@@ -496,6 +500,8 @@ Future<void> _handleFilesRequest(HttpRequest request) async {
       await _handleFilesGet(request, filePath, filename: relativeParts.last);
     case 'HEAD':
       await _handleFilesHead(request, filePath);
+    case 'DELETE':
+      await _handleFilesDelete(request, filePath);
     default:
       request.response.statusCode = HttpStatus.methodNotAllowed;
       await request.response.close();
@@ -542,6 +548,23 @@ Future<void> _handleFilesGet(HttpRequest request, String filePath, {required Str
 Future<void> _handleFilesHead(HttpRequest request, String filePath) async {
   final exists = await File(filePath).exists();
   request.response.statusCode = exists ? HttpStatus.ok : HttpStatus.notFound;
+  await request.response.close();
+}
+
+/// Idempotent, like every DELETE should be -- always `200`, whether or
+/// not the file was actually there. "Delete this" succeeded either way:
+/// the end state (no file at this key) is what the caller asked for and
+/// now has, regardless of the starting state. Never removes the parent
+/// directories -- harmless empty leftovers, not worth the extra
+/// bookkeeping to clean up.
+Future<void> _handleFilesDelete(HttpRequest request, String filePath) async {
+  try {
+    final file = File(filePath);
+    if (await file.exists()) await file.delete();
+  } catch (e) {
+    print('[files DELETE error] $filePath: $e');
+  }
+  request.response.statusCode = HttpStatus.ok;
   await request.response.close();
 }
 

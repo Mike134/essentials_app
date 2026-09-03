@@ -442,17 +442,21 @@ void main() {
     const handler = ImageFormatHandler();
     const field = FieldConfig(column: 'photo', label: 'Photo', format: 'image');
 
-    test('buildGridColumn is a blank, read-only column -- Form-view-only by design, no thumbnail', () {
+    test('buildGridColumn is visually blank (renderer) and read-only -- Form-view-only by design, no thumbnail', () {
       final column = handler.buildGridColumn(field);
       expect(column.field, 'photo');
       expect(column.title, 'Photo');
       expect(column.readOnly, isTrue);
     });
 
-    test('cellValueFor always returns empty string -- nothing is ever shown in the grid', () {
-      expect(handler.cellValueFor(field, 'domain/1/photo/image.jpg'), '');
-      expect(handler.cellValueFor(field, null), '');
-    });
+    test(
+      'cellValueFor returns the real stored value, not blank -- CSV export reads this, '
+      'the renderer (not this) is what keeps the grid itself visually blank',
+      () {
+        expect(handler.cellValueFor(field, 'domain/1/photo/image.jpg'), 'domain/1/photo/image.jpg');
+        expect(handler.cellValueFor(field, null), '');
+      },
+    );
 
     test('valueForSave always returns null -- the grid never writes this field', () {
       expect(handler.valueForSave(field, 'anything'), isNull);

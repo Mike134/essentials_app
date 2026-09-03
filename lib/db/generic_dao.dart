@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import '../models/table_config.dart';
@@ -7,6 +9,7 @@ import '../util/link_record.dart';
 import '../util/linked_field/linked_field_service.dart';
 import '../util/sql_identifiers.dart';
 import 'database_helper.dart';
+import 'file_sync_service.dart';
 import 'search_index_service.dart';
 
 /// Thrown by [GenericDao.delete] when the row is still referenced by an
@@ -311,6 +314,31 @@ class GenericDao {
   /// [SchemaEditorService.createTable].
   Future<void> delete(int id) async {
     final crdt = await _crdt;
+
+    // Image field cleanup -- resolution to the storage design doc's
+    // originally-open "delete behavior" item. GenericListScreen's own
+    // delete confirmation already tells the user "This cannot be undone,"
+    // so eager file cleanup here matches what's already promised, not
+    // ahead of it. Best-effort/fire-and-forget (FileSyncService.delete's
+    // own doc comment): a cleanup failure must never block the actual
+    // record delete below. Direct fields on this table only -- a
+    // CASCADE-deleted child row's own image fields (see the cascade
+    // handling below) go through a raw bulk DELETE, not a recursive
+    // GenericDao.delete call, so this doesn't reach them. Narrow, known
+    // gap, not attempted here.
+    final imageFields = config.fields.where((f) => f.format == 'image');
+    if (imageFields.isNotEmpty) {
+      final rows = await crdt.query('SELECT * FROM "${config.tableName}" WHERE id = ?1', [id]);
+      if (rows.isNotEmpty) {
+        for (final field in imageFields) {
+          final value = rows.first[field.column] as String?;
+          if (value != null && value.isNotEmpty) {
+            unawaited(FileSyncService().deleteByRelativeKey(value));
+          }
+        }
+      }
+    }
+
     // Essentials v2 Phase 6 (Global Search) -- every cascaded child table
     // touched, collected inside the transaction below (where the cascade
     // itself happens) but only acted on after it commits, since

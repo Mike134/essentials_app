@@ -16,7 +16,10 @@
 // -- never chained with other schema-engine test files. See CLAUDE.md
 // "Essentials v2 Phase 1 -- Step 3"/the real-device verification session
 // for why.
+import 'dart:io';
+
 import 'package:essentials_app/db/database_helper.dart';
+import 'package:essentials_app/db/file_sync_service.dart';
 import 'package:essentials_app/db/generic_dao.dart';
 import 'package:essentials_app/db/schema_editor_service.dart';
 import 'package:essentials_app/db/schema_metadata_dao.dart';
@@ -82,5 +85,42 @@ void main() {
 
     final rows = await dao.getAll();
     expect(rows.single['photo'], isNull);
+  });
+
+  test('deleting a record with an image field removes the local file too', () async {
+    final tableName = await editor.createTable(displayName: 'Image Field Delete $runTag');
+    addTearDown(() => dropTestTable(editor, metadata, tableName));
+    await editor.addField(tableName: tableName, displayName: 'Photo', format: 'image');
+
+    final config = await registry.buildConfig(tableName);
+    final dao = GenericDao(config);
+    final fileSync = FileSyncService();
+
+    final id = await dao.insert({});
+    final relativeKey = '$tableName/$id/photo/image.jpg';
+    await dao.update(id, {'photo': relativeKey});
+
+    // Simulate the local write GenericFormScreen._ingestPickedImage does
+    // at capture time -- this test doesn't need a real image, just a real
+    // file at the exact path GenericDao.delete's cleanup step resolves to.
+    final localPath = await fileSync.localPathFor(
+      table: tableName,
+      recordId: id.toString(),
+      fieldName: 'photo',
+      filename: 'image.jpg',
+    );
+    await Directory(localPath.substring(0, localPath.lastIndexOf(Platform.pathSeparator))).create(
+      recursive: true,
+    );
+    await File(localPath).writeAsBytes([1, 2, 3]);
+    expect(await File(localPath).exists(), isTrue);
+
+    await dao.delete(id);
+
+    // The image-cleanup step fires an unawaited FileSyncService.delete --
+    // give its local-delete half (synchronous disk I/O, no network) a
+    // moment to actually run before asserting.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(await File(localPath).exists(), isFalse);
   });
 }

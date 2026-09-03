@@ -140,4 +140,77 @@ class FileSyncService {
       return null;
     }
   }
+
+  /// Deletes the file both locally and on the hub -- the resolution to
+  /// the storage design doc's originally-open "delete behavior" item.
+  /// Two callers: [GenericFormScreen]'s "Remove" button (an explicit,
+  /// immediate user action on one field) and [GenericDao.delete] (the
+  /// whole record going away -- [GenericListScreen]'s own delete
+  /// confirmation already tells the user "This cannot be undone," so
+  /// eager cleanup here matches what's already promised, not ahead of it).
+  ///
+  /// Local delete is awaited (cheap, and the caller's own UI state -- the
+  /// preview disappearing -- shouldn't wait on the network). The hub
+  /// DELETE is fire-and-forget from here, same no-retry-if-unreachable
+  /// posture as [upload] -- if the hub's unreachable at delete time, its
+  /// copy is orphaned rather than actually removed, no different in kind
+  /// from the concurrent-edit orphan case the storage design doc already
+  /// flagged as accepted, not solved.
+  ///
+  /// Silently succeeds if the file was already gone on either end --
+  /// deletion is idempotent by design here, not an error to alarm on.
+  Future<void> delete({
+    required String table,
+    required String recordId,
+    required String fieldName,
+    required String filename,
+  }) async {
+    final localPath = await localPathFor(
+      table: table,
+      recordId: recordId,
+      fieldName: fieldName,
+      filename: filename,
+    );
+    final localFile = File(localPath);
+    if (await localFile.exists()) {
+      try {
+        await localFile.delete();
+      } catch (e) {
+        // ignore: avoid_print
+        print('[FileSyncService] local delete failed for $localPath: $e');
+      }
+    }
+
+    try {
+      final crdt = await DatabaseHelper.instance.crdt;
+      final address = await SyncService.resolveServerAddress(crdt);
+      final client = HttpClient();
+      try {
+        final request = await client.deleteUrl(
+          Uri.parse('http://$address/files/$table/$recordId/$fieldName/$filename'),
+        );
+        final response = await request.close();
+        await response.drain<void>();
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('[FileSyncService] hub delete failed (no retry -- same posture as upload): $e');
+    }
+  }
+
+  /// Convenience wrapper -- parses a stored relative key
+  /// (`{table}/{record_id}/{field_name}/{filename}`) and calls [delete].
+  /// Used by both call sites described on [delete]'s own doc comment, so
+  /// the 4-segment parsing lives in exactly one place, not duplicated per
+  /// caller (mirrors [GenericFormScreen]'s own `_resolveImageFile`, which
+  /// parses the same shape for the opposite reason -- resolving to a
+  /// local file, not deleting one).
+  Future<void> deleteByRelativeKey(String relativeKey) async {
+    final segments = relativeKey.split('/');
+    if (segments.length != 4) return;
+    final [table, recordId, fieldName, filename] = segments;
+    await delete(table: table, recordId: recordId, fieldName: fieldName, filename: filename);
+  }
 }

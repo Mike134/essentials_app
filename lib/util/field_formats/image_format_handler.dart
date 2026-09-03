@@ -23,15 +23,27 @@ import 'field_format_handler.dart';
 /// special-cases `field.format == 'image'` before the generic handler
 /// dispatch ever reaches it.
 ///
-/// **Grid column deliberately blank, by design, not deferred.** Unlike
-/// `button` (whose grid affordance was left open for a future decision),
-/// this field is Form-view-only per the storage design doc's explicit
-/// "Preview" scope -- no grid/list thumbnail column exists in this
-/// design at all. [buildGridColumn] is a plain, always-blank read-only
-/// column, same shape `ButtonFormatHandler.buildGridColumn` already
-/// established, purely so this format has *some* grid column (every
-/// registered format needs one) without implying a thumbnail feature
-/// that isn't part of the design.
+/// **Grid column deliberately blank *visually*, by design, not
+/// deferred.** Unlike `button` (whose grid affordance was left open for a
+/// future decision), this field is Form-view-only per the storage design
+/// doc's explicit "Preview" scope -- no grid/list thumbnail column exists
+/// in this design at all. [buildGridColumn]'s `renderer` unconditionally
+/// returns an empty box, same shape `ButtonFormatHandler.buildGridColumn`
+/// already established, purely so this format has *some* grid column
+/// (every registered format needs one) without implying a thumbnail
+/// feature that isn't part of the design.
+///
+/// **[cellValueFor] still returns the real stored value, not `''`.**
+/// **Real bug, found live:** an earlier version returned `''`
+/// unconditionally here, on the reasoning that the column is blank
+/// anyway -- but CSV export (`GenericListScreen._exportCsv`) reads
+/// straight from the grid's own cell values, not the raw database row.
+/// That made an `image` field silently vanish from every CSV export,
+/// not even the relative key surviving -- a real, unexamined side effect
+/// of the "blank column" choice, not a deliberate one. The renderer's
+/// unconditional empty box already makes the *visual* blankness
+/// independent of the cell's actual value, so returning the real value
+/// here fixes CSV export with zero change to how the grid looks.
 class ImageFormatHandler implements FieldFormatHandler {
   const ImageFormatHandler();
 
@@ -50,7 +62,7 @@ class ImageFormatHandler implements FieldFormatHandler {
   }
 
   @override
-  Object? cellValueFor(FieldConfig field, Object? raw) => '';
+  Object? cellValueFor(FieldConfig field, Object? raw) => raw?.toString() ?? '';
 
   @override
   String? valueForSave(FieldConfig field, Object? gridValue) => null;
