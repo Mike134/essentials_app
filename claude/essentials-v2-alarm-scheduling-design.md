@@ -5,7 +5,8 @@
 > tooling reads. Keep both in sync, same convention as every other design doc
 > here (see CLAUDE.md "Repo move: CLAUDE.md/schema.sql").
 
-**Status: design only, not yet implemented.** Grew directly out of the
+**Status: build order steps 1-2 done and real-device verified; step 3
+(wiring the real fire path) not yet started.** Grew directly out of the
 2026-09-04 background-check memory-leak investigation (see CLAUDE.md's
 session write-up) — not a new phase number, a scoped fix for a problem that
 investigation found and fully diagnosed.
@@ -177,6 +178,29 @@ manually reopened would otherwise go quiet indefinitely). Needs:
   pattern — confirm the exact API during the spike above rather than
   assuming.
 
+**Confirmed by the step 2 spike, simpler than assumed above: no custom
+Dart-side boot-completed receiver is needed at all.** Read the plugin's
+own Java source directly (`AlarmService.java`/`RebootBroadcastReceiver
+.java`) rather than trusting the README summary alone:
+`oneShot(..., rescheduleOnReboot: true)` persists the full alarm request
+(delay, callback handle, params, every flag) into the plugin's own
+`SharedPreferences`, and natively flips its manifest-declared (initially
+`android:enabled="false"`) `RebootBroadcastReceiver` on via
+`PackageManager.setComponentEnabledSetting` — purely native code, no
+Flutter engine involved until the alarm actually re-fires. On
+`BOOT_COMPLETED`, that receiver calls `AlarmService
+.reschedulePersistentAlarms()` itself, which re-registers the exact same
+alarm from the persisted request. The only actual application-side work
+is the manifest wiring (permission + the three components from the
+README, verbatim) and passing `rescheduleOnReboot: true` when scheduling
+-- no receiver class, no `BOOT_COMPLETED` handling in Dart or Kotlin at
+all. Verified for real, not just read: rebooted MIKE-12R with a pending
+spike alarm registered, reconnected once it came back up, and confirmed
+the alarm had already fired *before* reconnection -- with the app process
+never manually relaunched (`dumpsys activity activities` showed no
+activity/task for the app at all afterward, confirming the only process
+that ran was the plugin's own background isolate, not `MainActivity`).
+
 ### Safety net — don't remove all periodic redundancy
 
 If the alarm-rescheduling chain ever silently breaks for any reason (a
@@ -247,6 +271,96 @@ the same pass.
    investigation to directly confirm the *frequency* of engine-boot
    cycles (and therefore the memory churn) actually dropped, not just
    assumed to have.
+
+## Build order steps 1-2, concluded
+
+**Step 1 — `nextDueTime()` calculator + unit tests: done.**
+`lib/util/scripting/next_due_time.dart` + `test/next_due_time_test.dart`
+(19 tests, all passing), committed as `ef9bbea`. Pure Dart, mirrors
+`BackgroundScheduleService`'s existing `_isDue`/`_pastConfiguredTime`/
+`_matchesConfiguredWeekday` semantics exactly, reframed as "when next"
+instead of "is it due now" -- same unconfigured-time/day-is-due-immediately
+fallback this doc proposed above, now actually implemented and tested
+rather than just proposed.
+
+**Step 2 — spike: done, real-device verified on MIKE-12R, both halves.**
+`android_alarm_manager_plus: ^5.1.1` added with zero dependency conflicts.
+Manifest wiring per the package's own README (`RECEIVE_BOOT_COMPLETED`/
+`WAKE_LOCK` permissions, the `AlarmService`/`AlarmBroadcastReceiver`/
+`RebootBroadcastReceiver` components) landed cleanly -- **no manifest/Gradle
+conflict with the existing `workmanager`/`flutter_js`/`mobile_scanner`
+stack**, confirmed by a clean `flutter build apk --debug`. Hit, and fixed,
+this project's own previously-documented XML-comment landmine again (a
+bare `--` inside an added manifest `<!-- -->` comment breaks Gradle's
+manifest merge) -- same failure mode as the `url_launcher`/`geolocator`
+manifest additions in earlier sessions, worth remembering as a recurring
+trap whenever writing prose-style comments into this file.
+
+**No `SCHEDULE_EXACT_ALARM` permission needed** -- confirmed by reading
+the plugin's own `oneShot` doc comment: that permission is only checked
+when `exact: true`. This app's design (inexact, `allowWhileIdle: true`)
+never needs it, exactly as this doc's "Exact vs. inexact alarm" section
+above predicted, now confirmed against the real API rather than assumed
+from the README's blanket "for apps targeting 31+" wording.
+
+**A real bug found and fixed live, worth remembering for step 3's real
+implementation:** `AndroidAlarmManager.initialize()` uses a
+`MethodChannel`, which needs `ServicesBinding.instance` to exist --
+calling it before `runApp()` (as the plugin's own README example does)
+throws `Binding has not yet been initialized` unless
+`WidgetsFlutterBinding.ensureInitialized()` is called first. The plugin's
+README does mention this ("Be sure to add this line if initialize() call
+happens before runApp()") but it's easy to skim past; hit it for real on
+the very first test run, full stack trace pointed straight at the
+omission. Idempotent, so calling it defensively costs nothing.
+
+**Reliability, confirmed with real timing data:** scheduled a 45-second
+`oneShot` (`exact: false`, `allowWhileIdle: true`, `wakeup: true`), then
+backgrounded the app (not force-stopped -- see the plugin's own FAQ:
+force-stopping an app makes Android refuse to fire its alarms at all,
+a real OS restriction, not a plugin bug). The alarm fired ~81 seconds
+after being scheduled, not 45 -- consistent with Android batching an
+inexact/`allowWhileIdle` alarm rather than firing it to the second,
+exactly the tradeoff this doc's "Exact vs. inexact" section already
+accepted. Confirmed by direct `device_settings` inspection (a temporary
+spike-only key, not a permanent addition -- see below), not by trusting
+logcat alone: `alarm_spike:fire_count`/`alarm_spike:last_fired_at`
+landed correctly in `essentials.db` while the app was backgrounded.
+
+**Reboot survival, confirmed for real, not just read from source** -- see
+the corrected "Reboot survival" section above for the mechanism finding
+(no custom receiver needed at all). Registered a fresh persistent alarm,
+confirmed it via `adb shell dumpsys alarm` immediately before rebooting,
+then ran a real `adb reboot` on MIKE-12R (with Mike's explicit go-ahead,
+since it's disruptive to the physical device -- he re-enabled Wireless
+debugging and supplied the fresh pairing IP/port to reconnect afterward,
+same one-time-pairing dance as every prior wireless-adb reconnect in this
+project). The alarm had already fired by the time adb reconnected, with
+no activity/task for the app ever created (`dumpsys activity activities`
+empty for the package) -- proof this ran purely through the plugin's own
+native reboot-rescheduling path, not because the app got relaunched some
+other way.
+
+**Spike code fully removed after verification**, per this project's own
+established convention for throwaway spikes (`tool/schema_engine_spike
+.dart`, `tool/csv_parse_spike.dart`, etc. -- though this one couldn't be a
+`dart run`/`flutter test` script the way those were, since it needed a
+real device to prove anything): deleted
+`lib/util/scripting/alarm_manager_spike.dart` and its temporary call site
+in `main.dart` (the `WidgetsFlutterBinding.ensureInitialized()` +
+`scheduleAlarmManagerSpike(...)` block, and the now-unused `dart:async`
+import). **Kept**: the `android_alarm_manager_plus` pubspec dependency and
+all of the `AndroidManifest.xml` wiring above -- step 3's real
+implementation needs the identical plugin and manifest setup, so there's
+no reason to rip it out and re-add it. `flutter analyze` clean, both
+`flutter build windows`/`apk --debug` clean after removal, debug APK
+reinstalled on MIKE-12R. The `alarm_spike:*` `device_settings` rows this
+testing left behind on MIKE-12R are harmless, inert cruft -- same
+"accumulated test residue, not worth chasing" posture this project has
+already established for schema-engine test tombstones elsewhere; a
+leftover persisted native alarm (id `990001`) may fire at most once more
+with nothing listening for it, since the Dart code that would re-arm it
+is gone.
 
 ## Open questions for Mike (judgment calls made above, worth confirming before/at build time)
 

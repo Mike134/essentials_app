@@ -8,6 +8,16 @@
          so these have to be declared here. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- android_alarm_manager_plus (alarm-based scheduling spike, see
+         claude/essentials-v2-alarm-scheduling-design.md). Its own
+         AndroidManifest.xml declares no components at all, so the
+         service/receivers below have to be declared here per the
+         package's own README. No SCHEDULE_EXACT_ALARM: every alarm this
+         app schedules uses exact=false (AlarmManagerCompat.setAndAllowWhileIdle),
+         a deliberate choice (see the design doc) that only needs that
+         permission when exact=true. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
         android:label="essentials_app"
         android:name="${applicationName}"
@@ -39,6 +49,28 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- android_alarm_manager_plus's own required components. See the
+             uses-permission comment above for why these are declared here
+             rather than in the plugin's own manifest. RebootBroadcastReceiver
+             starts disabled; the plugin itself flips it on/off natively
+             (PackageManager.setComponentEnabledSetting) whenever an alarm is
+             scheduled with rescheduleOnReboot=true, so no custom Dart-side
+             boot-completed handling is needed at all. -->
+        <service
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.AlarmService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false" />
+        <receiver
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.AlarmBroadcastReceiver"
+            android:exported="false" />
+        <receiver
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.RebootBroadcastReceiver"
+            android:enabled="false"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
