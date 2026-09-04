@@ -5,8 +5,10 @@
 > tooling reads. Keep both in sync, same convention as every other design doc
 > here (see CLAUDE.md "Repo move: CLAUDE.md/schema.sql").
 
-**Status: build order steps 1-2 done and real-device verified; step 3
-(wiring the real fire path) not yet started.** Grew directly out of the
+**Status: build order steps 1-3 built; step 3 is build-verified only (not
+yet wired into the app or real-device tested -- see its own write-up
+below for why that's deliberate). Steps 4-7 not yet started.** Grew
+directly out of the
 2026-09-04 background-check memory-leak investigation (see CLAUDE.md's
 session write-up) — not a new phase number, a scoped fix for a problem that
 investigation found and fully diagnosed.
@@ -361,6 +363,59 @@ already established for schema-engine test tombstones elsewhere; a
 leftover persisted native alarm (id `990001`) may fire at most once more
 with nothing listening for it, since the Dart code that would re-arm it
 is gone.
+
+## Build order step 3, built -- deliberately not yet wired in or real-device tested
+
+**New file, `lib/util/scripting/alarm_schedule_service.dart`** -- exactly
+the "wire the real fire path" scope build order step 3 asked for, no
+more: `rescheduleNextAlarm()` (reads this device's real `event_definitions`/
+`schedule_last_run:*` rows, calls `nextDueTime` from step 1, then arms or
+cancels exactly one `AndroidAlarmManager.oneShotAt` alarm) and
+`scheduledEventAlarmCallback()` (the top-level callback the alarm fires --
+runs the existing, completely unchanged `BackgroundScheduleService
+().runDueScheduledEvents()`, then reschedules the next alarm in a
+`finally` block so a single failed dispatch pass can't silently end the
+whole self-rescheduling chain). `computeNextDueTimeForDevice()` is
+factored out as the one part of this file that doesn't touch
+`AndroidAlarmManager` at all -- purely DB-to-`nextDueTime` plumbing --
+specifically so it has real, DB-backed test coverage
+(`test/alarm_schedule_service_test.dart`, 6 tests, all passing against
+the real `essentials.db`) without needing a device. Every assertion there
+is a before/after min-reduction invariant (adding a candidate binding can
+only pull the aggregate result earlier or leave it unchanged, never
+later) rather than an exact-value check, deliberately robust against
+whatever real scheduled bindings already exist in Mike's own live usage.
+
+**`AndroidAlarmManager.oneShotAt` used directly, not `oneShot`** -- `due`
+is already the absolute moment `nextDueTime` computed; converting it to a
+relative delay and back would be a pointless round trip. A due time
+already in the past (an overdue binding) is fine -- confirmed live during
+step 2's reboot test that `AlarmManager` fires an alarm requested for a
+past time as soon as possible, exactly the desired catch-up behavior.
+
+**Not wired into `HomeShell`/`ScheduledEventsScreen` yet, and not
+real-device tested -- both deliberate, matching step 4's own separate
+scope in this doc's build order.** `rescheduleNextAlarm()` is currently
+called from nowhere: nothing ever arms the very first alarm, since that's
+exactly what step 4 (`ScheduledEventsScreen`'s create/edit/delete/enable/
+disable actions, and app launch) exists to wire up. Verifying this step
+live before step 4 exists would mean hand-triggering `rescheduleNextAlarm()`
+through some other temporary harness -- not worth building just to
+re-verify mechanics the step 2 spike already proved live on real
+hardware (a `oneShotAt` alarm firing reliably while backgrounded, and
+surviving a real reboot with `rescheduleOnReboot: true`). Real end-to-end
+verification of this file's own logic -- the *right* alarm getting armed
+after a real dispatch pass, the chain continuing correctly hour after
+hour -- is what step 8's "real-device verification" is for, once steps
+4-7 give it something real to observe.
+
+`flutter analyze` clean project-wide (only the pre-existing, unrelated
+`avoid_print` lints on `tool/fix_books_rating.dart`). Both `flutter build
+windows` and `flutter build apk --debug` clean; debug APK reinstalled on
+MIKE-12R. Confirmed via direct query against the real, pulled
+`essentials.db`: `PRAGMA integrity_check: ok`, and every `alarm-`/`bg-`
+-tagged test row from this and prior sessions' test runs is correctly
+tombstoned (`is_deleted = 1`), none live.
 
 ## Open questions for Mike (judgment calls made above, worth confirming before/at build time)
 
