@@ -21,6 +21,14 @@ import 'migration_service.dart';
 
 const port = 1340;
 
+/// Timestamps every log line -- `server.log` had none before this, making
+/// it impossible to tell when a connect/disconnect cycle actually happened
+/// without cross-referencing file mtimes. Local time (not UTC), since this
+/// is a single-machine hub read by a human, not a distributed system log.
+void _log(String message) {
+  print('${DateTime.now().toIso8601String()} $message');
+}
+
 /// How often to re-check `migration_log` for entries `schema_admin` wrote
 /// directly into `hub.db` while this process was already running -- there's
 /// no push notification for that (schema_admin isn't a crdt_sync client,
@@ -310,8 +318,8 @@ Future<void> main() async {
 
   final crdt = await SqliteCrdt.open(dbPath, version: 1, onCreate: createSchema);
   await crdt.execute('PRAGMA foreign_keys = ON');
-  print('Hub replica open: $dbPath');
-  print('Hub node id: ${crdt.nodeId}');
+  _log('Hub replica open: $dbPath');
+  _log('Hub node id: ${crdt.nodeId}');
 
   // Applied before HttpServer.bind -- no client connection is accepted,
   // and so no other queued data sync is processed, until this device's own
@@ -334,7 +342,7 @@ Future<void> main() async {
     try {
       await migrations.applyPending();
     } catch (e) {
-      print('[migration check error] $e');
+      _log('[migration check error] $e');
     } finally {
       applyingMigrations = false;
     }
@@ -357,8 +365,8 @@ Future<void> main() async {
   }
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-  print('Listening on 0.0.0.0:$port (reachable at 10.0.0.134:$port)');
-  print('Press Ctrl+C to stop.');
+  _log('Listening on 0.0.0.0:$port (reachable at 10.0.0.134:$port)');
+  _log('Press Ctrl+C to stop.');
 
   await for (final request in server) {
     try {
@@ -404,9 +412,9 @@ Future<void> main() async {
               modifiedOn: modifiedOn,
             ),
         onConnect: (crdtSync, data) =>
-            print('[connect] peer ${crdtSync.peerId}'),
+            _log('[connect] peer ${crdtSync.peerId}'),
         onDisconnect: (peerId, code, reason) =>
-            print('[disconnect] peer $peerId (code=$code reason=$reason)'),
+            _log('[disconnect] peer $peerId (code=$code reason=$reason)'),
         // Real gap found live (CLAUDE.md "Real-device final verification
         // pass"): this used to be a plain print -- applying pending
         // migrations here relied entirely on the 5-minute periodic timer
@@ -424,7 +432,7 @@ Future<void> main() async {
         // same debounced-not-immediate handling via scheduleMigrationApply
         // above.
         onChangesetReceived: (nodeId, counts) {
-          print('[recv] from $nodeId: $counts');
+          _log('[recv] from $nodeId: $counts');
           if (counts.containsKey('table_definitions') ||
               counts.containsKey('field_definitions') ||
               counts.containsKey('migration_log')) {
@@ -432,10 +440,10 @@ Future<void> main() async {
           }
         },
         onChangesetSent: (nodeId, counts) =>
-            print('[send] to $nodeId: $counts'),
+            _log('[send] to $nodeId: $counts'),
       );
     } catch (e) {
-      print('[upgrade error] $e');
+      _log('[upgrade error] $e');
     }
   }
 }
@@ -524,7 +532,7 @@ Future<void> _handleFilesPut(HttpRequest request, String filePath) async {
     await File(tempPath).rename(filePath);
     request.response.statusCode = HttpStatus.ok;
   } catch (e) {
-    print('[files PUT error] $filePath: $e');
+    _log('[files PUT error] $filePath: $e');
     request.response.statusCode = HttpStatus.internalServerError;
   }
   await request.response.close();
@@ -562,7 +570,7 @@ Future<void> _handleFilesDelete(HttpRequest request, String filePath) async {
     final file = File(filePath);
     if (await file.exists()) await file.delete();
   } catch (e) {
-    print('[files DELETE error] $filePath: $e');
+    _log('[files DELETE error] $filePath: $e');
   }
   request.response.statusCode = HttpStatus.ok;
   await request.response.close();
