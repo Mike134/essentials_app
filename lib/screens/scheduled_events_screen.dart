@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../db/event_definitions_dao.dart';
 import '../db/script_definitions_dao.dart';
 import '../db/sync_service.dart';
+import '../util/scripting/alarm_schedule_service.dart';
 
 /// Essentials v2 Phase 5 build order step 5 -- the one *global* (not
 /// per-table) event binding screen, since `schedule_daily`/
@@ -60,7 +61,27 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
     _dataChangeDebounce?.cancel();
     _dataChangeDebounce = Timer(const Duration(milliseconds: 500), () {
       if (mounted) _reload();
+      // A binding created/edited/deleted on a *different* device syncs
+      // in here too -- this device's own armed alarm needs to reflect it
+      // just as much as a local edit does. Beyond the design doc's own
+      // literal step 4 list (which only names this screen's local
+      // actions plus app launch), but the hook already exists for the
+      // reload above and rescheduleNextAlarm() is cheap/idempotent to
+      // call redundantly -- cheaper than leaving this device's alarm
+      // stale until its next natural fire or app relaunch.
+      _afterScheduleChanged();
     });
+  }
+
+  /// Essentials v2 alarm-based scheduling, build order step 4 (see
+  /// claude/essentials-v2-alarm-scheduling-design.md) -- called after
+  /// every action on this screen that could change what this device's
+  /// own armed alarm should be (create/edit/delete/enable/disable),
+  /// alongside `HomeShell`'s own app-launch trigger. Android only, same
+  /// reasoning as every other `android_alarm_manager_plus` call site in
+  /// this app -- the plugin has no Windows implementation.
+  void _afterScheduleChanged() {
+    if (Platform.isAndroid) unawaited(rescheduleNextAlarm());
   }
 
   @override
@@ -126,6 +147,7 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
       scheduleConfig: result.scheduleConfig,
     );
     await _reload();
+    _afterScheduleChanged();
   }
 
   String _scriptNameFor(int scriptId) => _availableScripts
@@ -196,6 +218,7 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                         onChanged: (value) async {
                           await _events.setEnabled(binding.id, value);
                           await _reload();
+                          _afterScheduleChanged();
                         },
                       ),
                       trailing: IconButton(
@@ -203,6 +226,7 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                         onPressed: () async {
                           await _events.softDelete(binding.id);
                           await _reload();
+                          _afterScheduleChanged();
                         },
                       ),
                     ),

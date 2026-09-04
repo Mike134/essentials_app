@@ -47,6 +47,28 @@ import 'next_due_time.dart';
 /// at all.
 const _scheduledEventsAlarmId = 1;
 
+/// One-time cleanup for a real, if harmless, artifact of the now-deleted
+/// build order step 2 spike (`alarm_manager_spike.dart`) -- its alarm
+/// (id `990001`, `rescheduleOnReboot: true`) is still persisted natively
+/// in `android_alarm_manager_plus`'s own `SharedPreferences` on any
+/// device that ran that spike (MIKE-12R). Confirmed live: on this ROM
+/// (ColorOS), a `BOOT_COMPLETED`-equivalent broadcast is redelivered to
+/// the app's boot receiver not just on a genuine reboot but on *every*
+/// force-stop-then-relaunch cycle too, each time trying (and failing,
+/// harmlessly) to resolve the deleted spike file's callback handle --
+/// `Dart Error: Dart_LookupLibrary: ... alarm_manager_spike.dart not
+/// found`, logged but not fatal to anything. `AndroidAlarmManager.cancel`
+/// is exactly what the plugin's own API offers for clearing a persisted
+/// alarm (it doesn't need the original callback reference, just the
+/// numeric id), and is safe to call even when nothing is actually
+/// registered under this id (logs "broadcast receiver not found," a
+/// no-op). Called once per [rescheduleNextAlarm] invocation -- cheap, and
+/// guarantees this resolves itself the moment this build first runs on
+/// the affected device, without needing a dedicated one-off migration
+/// step. Safe to remove once confirmed clear on every real device (the
+/// call becomes a permanent, harmless no-op otherwise).
+Future<void> _cancelLeftoverSpikeAlarm() => AndroidAlarmManager.cancel(990001);
+
 /// Same `schedule_last_run:<id>` key format
 /// [BackgroundScheduleService]/`background_schedule_service_test.dart`
 /// already use -- duplicated here rather than shared, matching this
@@ -82,9 +104,9 @@ Future<DateTime?> computeNextDueTimeForDevice({
 /// e.g. every binding was just disabled or deleted) exactly one alarm for
 /// it. Called both from [scheduledEventAlarmCallback] itself (to arm the
 /// *next* alarm right after handling the current one) and -- build order
-/// step 4, not yet wired -- from every place a binding's schedule could
-/// have changed (`ScheduledEventsScreen`'s create/edit/delete/enable/
-/// disable actions, and app launch).
+/// step 4 -- from every place a binding's schedule could have changed
+/// (`ScheduledEventsScreen`'s create/edit/delete/enable/disable actions,
+/// its own remote-sync reload, and `HomeShell`'s app-launch bootstrap).
 ///
 /// Safe to call from either the foreground app or this plugin's own
 /// headless background isolate: `AndroidAlarmManager.initialize()` is
@@ -101,6 +123,7 @@ Future<void> rescheduleNextAlarm({EventDefinitionsDao? events, ThemeSettingsDao?
   final due = await computeNextDueTimeForDevice(events: eventsDao, settings: settingsDao);
 
   await AndroidAlarmManager.initialize();
+  await _cancelLeftoverSpikeAlarm();
   if (due == null) {
     await AndroidAlarmManager.cancel(_scheduledEventsAlarmId);
     return;

@@ -15,6 +15,7 @@ import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
+import '../util/scripting/alarm_schedule_service.dart';
 import '../util/scripting/background_schedule_service.dart';
 import 'calendar_screen.dart';
 import 'generic_list_screen.dart';
@@ -209,6 +210,19 @@ class _HomeShellState extends State<HomeShell> {
     // nav from rendering on this.
     if (Platform.isAndroid) {
       unawaited(registerBackgroundScheduleTask());
+    }
+
+    // Essentials v2 alarm-based scheduling, build order step 4 (see
+    // claude/essentials-v2-alarm-scheduling-design.md) -- app launch is
+    // one of the trigger points that (re)arms the exact-time alarm chain,
+    // alongside `ScheduledEventsScreen`'s own create/edit/delete/enable/
+    // disable actions. Deliberately left running *alongside* the
+    // 15-minute `workmanager` task above, not replacing it yet -- the old
+    // task's removal is build order steps 6-7 (a low-frequency safety net
+    // first), not this step. Android only, same reasoning as the call
+    // above (`android_alarm_manager_plus` has no Windows implementation).
+    if (Platform.isAndroid) {
+      unawaited(rescheduleNextAlarm());
     }
 
     return _loadGroups();

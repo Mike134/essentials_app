@@ -5,10 +5,11 @@
 > tooling reads. Keep both in sync, same convention as every other design doc
 > here (see CLAUDE.md "Repo move: CLAUDE.md/schema.sql").
 
-**Status: build order steps 1-3 built; step 3 is build-verified only (not
-yet wired into the app or real-device tested -- see its own write-up
-below for why that's deliberate). Steps 4-7 not yet started.** Grew
-directly out of the
+**Status: build order steps 1-4 done, step 4 real-device verified on
+MIKE-12R (including a real bug found and fixed along the way). Steps
+5-7 not yet started** -- though step 5 (boot-survival receiver) is
+already effectively done as a side effect of step 2's own finding, see
+that step's own write-up. Grew directly out of the
 2026-09-04 background-check memory-leak investigation (see CLAUDE.md's
 session write-up) — not a new phase number, a scoped fix for a problem that
 investigation found and fully diagnosed.
@@ -416,6 +417,82 @@ MIKE-12R. Confirmed via direct query against the real, pulled
 `essentials.db`: `PRAGMA integrity_check: ok`, and every `alarm-`/`bg-`
 -tagged test row from this and prior sessions' test runs is correctly
 tombstoned (`is_deleted = 1`), none live.
+
+## Build order step 4, done and real-device verified on MIKE-12R
+
+**Wired exactly where the design called for.** `HomeShell`'s bootstrap
+(`_bootstrapAndLoadGroups`, right alongside the existing `workmanager`
+registration call) now calls `rescheduleNextAlarm()` on every app launch,
+Android-only. `ScheduledEventsScreen` calls a new private
+`_afterScheduleChanged()` helper (`if (Platform.isAndroid)
+unawaited(rescheduleNextAlarm())`) after `_add`/the enable-disable
+`Switch`/the delete `IconButton` -- its own create/edit/delete/enable/
+disable actions, exactly as the build order lists. One addition beyond
+that literal list, made because the hook already existed and the cost is
+negligible: `_onDataChanged` (this screen's existing `SyncService
+.dataChanges` subscription, there to reload the list when another device
+edits a binding) now also calls `_afterScheduleChanged()` -- a schedule
+change made on a *different* device needs this device's own alarm
+recomputed too, not just its displayed list refreshed. Without this,
+correctness wouldn't be lost (the self-rescheduling chain in step 3
+already recomputes on every real fire, so a stale alarm eventually
+self-corrects), only responsiveness -- worth the one extra line rather
+than leaving a real device to wait out however long its current alarm
+still has left.
+
+**Real-device verification, MIKE-12R, confirmed by direct observation
+(`adb shell dumpsys alarm`, logcat), not just by reasoning about the
+code:** before any launch, no alarm registered for the app at all. After
+a fresh launch, `AlarmService started!` (confirms `AndroidAlarmManager
+.initialize()` succeeded from `rescheduleNextAlarm()`) followed
+immediately by `cancel: broadcast receiver not found` for alarm id `1` --
+the correct, expected outcome given Mike's real `event_definitions` on
+this device currently have no enabled hourly/daily/weekly binding (only
+`app_launch`-type ones, which never contribute to `nextDueTime`): nothing
+due, so `rescheduleNextAlarm()` correctly cancels (a safe no-op) rather
+than arming anything. Confirms the wiring runs cleanly end-to-end for the
+"nothing scheduled" case; the "a real binding gets armed and later fires
+through this exact path" case needs an actual hourly/daily/weekly binding
+to exist, which is Mike's own call to create through the real UI
+whenever he wants to exercise it -- per this project's standing working
+agreement, that's his interactive testing to do, not Code's to simulate.
+
+**A real bug found and fixed during this same verification pass, unrelated
+to step 4's own new code:** the very first post-fix launch logged a
+genuine `Dart Error: Dart_LookupLibrary: library
+'package:essentials_app/util/scripting/alarm_manager_spike.dart' not
+found`. Root cause, confirmed by reading `AlarmService.java`'s
+`reschedulePersistentAlarms`/`RebootBroadcastReceiver.java` directly, not
+guessed: the now-deleted step 2 spike's own alarm (id `990001`,
+`rescheduleOnReboot: true`) left a real entry persisted in the plugin's
+own native `SharedPreferences` on MIKE-12R, from before that file was
+ever deleted. This doc's own step 2 write-up assumed that leftover "may
+fire at most once more" -- **wrong, confirmed live**: on this ROM
+(ColorOS), a `BOOT_COMPLETED`-equivalent broadcast is redelivered to the
+app's boot receiver not just on a genuine reboot but on *every*
+force-stop-then-relaunch cycle, so the stale entry kept re-arming and
+re-failing (harmlessly, but noisily) on every single relaunch during this
+step's own testing, not just once. Fixed with a small, self-clearing
+one-time cleanup: `_cancelLeftoverSpikeAlarm()` calls
+`AndroidAlarmManager.cancel(990001)` (the plugin's own cancel API needs
+only the numeric id, not the original callback reference, so this works
+even with the callback's source file long gone) from inside
+`rescheduleNextAlarm()` itself -- cheap and safe to call unconditionally,
+including on a device that never ran the spike at all (the native side's
+own `cancel()` just logs "broadcast receiver not found" and returns).
+Verified fixed with two more relaunch cycles: the first cleared the
+stale entry (one last harmless native-side reschedule attempt, no more
+Dart error since our own cleanup call now races it and usually wins,
+confirmed by its absence in that run's logcat), and the second showed the
+entry gone for good -- `RebootBroadcastReceiver` disabling itself
+natively once the persisted-alarm set became empty, so `Rescheduling
+after boot!` stopped appearing at all. `PRAGMA integrity_check: ok`
+reconfirmed on the pulled db afterward.
+
+`flutter analyze` clean, both `flutter build windows`/`apk --debug`
+clean, debug APK reinstalled on MIKE-12R with the fix. All 6
+`alarm_schedule_service_test.dart` tests still pass (run individually,
+per the standing rule).
 
 ## Open questions for Mike (judgment calls made above, worth confirming before/at build time)
 
