@@ -9,26 +9,21 @@ import '../db/event_definitions_dao.dart';
 import '../db/script_definitions_dao.dart';
 import '../db/sync_service.dart';
 import '../util/scripting/alarm_schedule_service.dart';
+import '../util/scripting/recurrence.dart';
 
 /// Essentials v2 Phase 5 build order step 5 -- the one *global* (not
-/// per-table) event binding screen, since `schedule_daily`/
-/// `schedule_weekly`/`schedule_hourly`/`app_launch` events aren't attached
-/// to any one table's data (`event_definitions.table_name` is `NULL` for
-/// all four). See claude/essentials-v2-phase5-design.md's "Event binding
-/// UI".
+/// per-table) event binding screen, since `schedule_interval`/
+/// `app_launch` events aren't attached to any one table's data
+/// (`event_definitions.table_name` is `NULL` for both). See
+/// claude/essentials-v2-phase5-design.md's "Event binding UI".
 ///
-/// **`app_launch` fires from `HomeShell` itself (build order step 6); the
-/// other three now fire for real on both platforms too.** Android:
-/// a periodic `workmanager` task registered from `HomeShell` (build order
-/// step 7). Windows: a Scheduled Task (registered once, manually --
-/// `windows/register_background_schedule_task.ps1`) launches
-/// `essentials_app.exe --background-schedule-check`, which hides its own
-/// window immediately and exits once done (build order step 8 -- no
-/// headless Flutter engine exists on Windows the way Android's
-/// `workmanager` gives one, confirmed via a real spike; see
-/// claude/essentials-v2-phase5-design.md's step 8 write-up). Both
-/// platforms check at most every ~15 minutes, so "daily at 8:00am"
-/// genuinely means "the first check after 8:00am," not the exact minute.
+/// **`app_launch` fires from `HomeShell` itself; `schedule_interval` fires
+/// for real on both platforms via the exact-time alarm chain** (see
+/// claude/essentials-v2-alarm-scheduling-design.md) -- not a periodic
+/// poll, an alarm armed for the next real due time. `schedule_interval`
+/// replaced `schedule_hourly`/`schedule_daily`/`schedule_weekly`'s three
+/// fixed buckets with one generic `{interval, unit, anchor}` shape -- see
+/// claude/essentials-v2-recurring-schedule-design.md.
 class ScheduledEventsScreen extends StatefulWidget {
   const ScheduledEventsScreen({super.key});
 
@@ -158,18 +153,35 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
     switch (binding.eventType) {
       case 'app_launch':
         return 'Every app launch';
-      case 'schedule_hourly':
-        return 'Approximately every hour';
-      case 'schedule_daily':
-        final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        return 'Approximately daily at ${config?['time'] ?? '?'}';
-      case 'schedule_weekly':
-        final config = binding.scheduleConfig == null ? null : jsonDecode(binding.scheduleConfig!) as Map;
-        return 'Approximately weekly, ${config?['day'] ?? '?'} at ${config?['time'] ?? '?'}';
+      case 'schedule_interval':
+        final recurrence = parseRecurrenceConfig(binding.scheduleConfig);
+        if (recurrence == null) return 'Approximately every interval (unconfigured)';
+        final anchor = recurrence.anchor;
+        final everyText = 'Approximately every ${_describeDuration(recurrence.interval)}';
+        return anchor == null ? everyText : '$everyText, starting ${_describeAnchor(anchor)}';
       default:
         return binding.eventType;
     }
   }
+
+  /// Renders back the coarsest whole unit that evenly divides [interval]
+  /// (weeks, then days, then hours, then minutes) -- the same four units
+  /// `_NewScheduleDialog` offers, so a binding's own description always
+  /// reads back in the unit it was most naturally created in (e.g. "every
+  /// 2 days," not "every 48 hours").
+  String _describeDuration(Duration interval) {
+    final minutes = interval.inMinutes;
+    if (minutes % (60 * 24 * 7) == 0) return _plural(minutes ~/ (60 * 24 * 7), 'week');
+    if (minutes % (60 * 24) == 0) return _plural(minutes ~/ (60 * 24), 'day');
+    if (minutes % 60 == 0) return _plural(minutes ~/ 60, 'hour');
+    return _plural(minutes, 'minute');
+  }
+
+  String _plural(int count, String unit) => '$count $unit${count == 1 ? '' : 's'}';
+
+  String _describeAnchor(DateTime anchor) =>
+      '${anchor.year}-${anchor.month.toString().padLeft(2, '0')}-${anchor.day.toString().padLeft(2, '0')} '
+      '${anchor.hour.toString().padLeft(2, '0')}:${anchor.minute.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
@@ -184,8 +196,9 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                 const Text(
                   'Runs a script on a schedule, or once per app launch. Not tied '
                   'to any one table. "Every app launch" fires from the app itself; '
-                  'hourly/daily/weekly fire in the background on both platforms, '
-                  'checked approximately every 15 minutes.',
+                  'a recurring schedule fires in the background on both platforms, '
+                  'as close to on time as the OS allows (usually within a minute or '
+                  'two). 5 minutes is the shortest interval allowed.',
                 ),
                 if (Platform.isAndroid) ...[
                   const SizedBox(height: 12),
@@ -243,6 +256,16 @@ class _NewScheduleResult {
   final String? scheduleConfig;
 }
 
+/// Every unit this dialog offers, paired with its length in minutes --
+/// shared between the interval-count validation and building the actual
+/// `Duration` for the 5-minute-minimum check. Matches `recurrence.dart`'s
+/// own `_unitToDuration`, kept separate (this is UI-only bookkeeping, that
+/// one's the real parsed-config source of truth) same as this project's
+/// established convention for a small, stable format duplicated across a
+/// UI layer and its underlying model (e.g. `_lastRunKey`'s own doc
+/// comment on `alarm_schedule_service.dart`).
+const _unitMinutes = {'minutes': 1, 'hours': 60, 'days': 60 * 24, 'weeks': 60 * 24 * 7};
+
 class _NewScheduleDialog extends StatefulWidget {
   const _NewScheduleDialog({required this.scripts});
   final List<ScriptDefinition> scripts;
@@ -253,31 +276,52 @@ class _NewScheduleDialog extends StatefulWidget {
 
 class _NewScheduleDialogState extends State<_NewScheduleDialog> {
   String _eventType = 'app_launch';
-  TimeOfDay _time = const TimeOfDay(hour: 8, minute: 0);
-  String _day = 'mon';
+  final _intervalController = TextEditingController(text: '1');
+  String _unit = 'hours';
+  bool _useAnchor = false;
+  DateTime _anchorDate = DateTime.now();
+  TimeOfDay _anchorTime = TimeOfDay.now();
   int? _scriptId;
-
-  static const _days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
   @override
   void initState() {
     super.initState();
     _scriptId = widget.scripts.first.id;
+    _intervalController.addListener(() => setState(() {}));
   }
 
-  String get _timeString =>
-      '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}';
+  @override
+  void dispose() {
+    _intervalController.dispose();
+    super.dispose();
+  }
+
+  int? get _intervalValue => int.tryParse(_intervalController.text);
+
+  /// `null` means the current interval/unit combination is below the
+  /// 5-minute floor -- see `recurrence.dart`'s own `minRecurrenceInterval`
+  /// doc comment for why that's the real precision ceiling of the
+  /// underlying alarm mechanism, not an arbitrary restriction.
+  int? get _totalMinutes {
+    final interval = _intervalValue;
+    if (interval == null || interval <= 0) return null;
+    final minutes = interval * _unitMinutes[_unit]!;
+    return minutes < 5 ? null : minutes;
+  }
+
+  DateTime get _anchorDateTime =>
+      DateTime(_anchorDate.year, _anchorDate.month, _anchorDate.day, _anchorTime.hour, _anchorTime.minute);
 
   String? get _scheduleConfig {
-    switch (_eventType) {
-      case 'schedule_daily':
-        return jsonEncode({'time': _timeString});
-      case 'schedule_weekly':
-        return jsonEncode({'day': _day, 'time': _timeString});
-      default:
-        return null;
-    }
+    if (_eventType != 'schedule_interval') return null;
+    return jsonEncode({
+      'interval': _intervalValue,
+      'unit': _unit,
+      if (_useAnchor) 'anchor': _anchorDateTime.toIso8601String(),
+    });
   }
+
+  bool get _canSubmit => _scriptId != null && (_eventType != 'schedule_interval' || _totalMinutes != null);
 
   @override
   Widget build(BuildContext context) {
@@ -293,29 +337,90 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
               decoration: const InputDecoration(labelText: 'Schedule'),
               items: const [
                 DropdownMenuItem(value: 'app_launch', child: Text('Every app launch')),
-                DropdownMenuItem(value: 'schedule_hourly', child: Text('Hourly')),
-                DropdownMenuItem(value: 'schedule_daily', child: Text('Daily')),
-                DropdownMenuItem(value: 'schedule_weekly', child: Text('Weekly')),
+                DropdownMenuItem(value: 'schedule_interval', child: Text('Recurring')),
               ],
               onChanged: (value) => setState(() => _eventType = value ?? 'app_launch'),
             ),
-            if (_eventType == 'schedule_daily' || _eventType == 'schedule_weekly') ...[
+            if (_eventType == 'schedule_interval') ...[
               const SizedBox(height: 12),
-              if (_eventType == 'schedule_weekly')
-                DropdownButtonFormField<String>(
-                  initialValue: _day,
-                  decoration: const InputDecoration(labelText: 'Day'),
-                  items: [for (final d in _days) DropdownMenuItem(value: d, child: Text(d))],
-                  onChanged: (value) => setState(() => _day = value ?? 'mon'),
+              Row(
+                children: [
+                  const Text('Every'),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 70,
+                    child: TextField(
+                      controller: _intervalController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(isDense: true),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  DropdownButton<String>(
+                    value: _unit,
+                    items: const [
+                      DropdownMenuItem(value: 'minutes', child: Text('minutes')),
+                      DropdownMenuItem(value: 'hours', child: Text('hours')),
+                      DropdownMenuItem(value: 'days', child: Text('days')),
+                      DropdownMenuItem(value: 'weeks', child: Text('weeks')),
+                    ],
+                    onChanged: (value) => setState(() => _unit = value ?? 'hours'),
+                  ),
+                ],
+              ),
+              if (_totalMinutes == null)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Minimum is 5 minutes.',
+                    style: TextStyle(color: Colors.red, fontSize: 12),
+                  ),
                 ),
               const SizedBox(height: 12),
-              OutlinedButton(
-                onPressed: () async {
-                  final picked = await showTimePicker(context: context, initialTime: _time);
-                  if (picked != null) setState(() => _time = picked);
-                },
-                child: Text('Time: $_timeString'),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Starting at a specific time'),
+                subtitle: const Text('Off: runs relative to whenever it last ran.'),
+                value: _useAnchor,
+                onChanged: (value) => setState(() => _useAnchor = value),
               ),
+              if (_useAnchor) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: _anchorDate,
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime(2100),
+                          );
+                          if (picked != null) setState(() => _anchorDate = picked);
+                        },
+                        child: Text(
+                          '${_anchorDate.year}-${_anchorDate.month.toString().padLeft(2, '0')}-'
+                          '${_anchorDate.day.toString().padLeft(2, '0')}',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          final picked = await showTimePicker(context: context, initialTime: _anchorTime);
+                          if (picked != null) setState(() => _anchorTime = picked);
+                        },
+                        child: Text(
+                          '${_anchorTime.hour.toString().padLeft(2, '0')}:'
+                          '${_anchorTime.minute.toString().padLeft(2, '0')}',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
             const SizedBox(height: 12),
             DropdownButtonFormField<int>(
@@ -332,7 +437,7 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
         FilledButton(
-          onPressed: _scriptId == null
+          onPressed: !_canSubmit
               ? null
               : () => Navigator.pop(
                   context,

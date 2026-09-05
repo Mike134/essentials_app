@@ -1,9 +1,9 @@
-import 'dart:convert';
-
 import '../../db/event_definitions_dao.dart';
 import '../../db/event_dispatch_service.dart';
+import '../../db/script_definitions_dao.dart';
 import '../../db/theme_settings_dao.dart';
 import '../device_id.dart';
+import 'recurrence.dart';
 import 'script_notifications.dart';
 
 /// Essentials v2 Phase 5 build order step 7 originally wired this class up
@@ -31,10 +31,12 @@ class BackgroundScheduleService {
   BackgroundScheduleService({
     EventDefinitionsDao? events,
     EventDispatchService? dispatcher,
+    ScriptDefinitionsDao? scripts,
     ThemeSettingsDao? settings,
     Future<void> Function(String message)? notify,
   }) : _events = events ?? EventDefinitionsDao(),
        _dispatcher = dispatcher ?? EventDispatchService(),
+       _scripts = scripts ?? ScriptDefinitionsDao(),
        _settingsOverride = settings,
        // Injectable so tests can avoid touching the real
        // flutter_local_notifications platform channel -- that plugin has
@@ -49,6 +51,7 @@ class BackgroundScheduleService {
 
   final EventDefinitionsDao _events;
   final EventDispatchService _dispatcher;
+  final ScriptDefinitionsDao _scripts;
   final ThemeSettingsDao? _settingsOverride;
   final Future<void> Function(String message) _notify;
 
@@ -109,6 +112,8 @@ class BackgroundScheduleService {
         final lastRunText = await settings.loadDeviceSetting(_lastRunKey(binding.id));
         final lastRun = lastRunText == null ? null : DateTime.tryParse(lastRunText);
         if (!_isDue(binding, lastRun, now)) continue;
+
+        if (lastRun != null) await _notifyIfOccurrencesWereMissed(binding, lastRun, now);
 
         final results = await _dispatcher.dispatch(tableName: null, eventType: binding.eventType);
         await settings.setDeviceSetting(_lastRunKey(binding.id), now.toIso8601String());
@@ -173,75 +178,53 @@ class BackgroundScheduleService {
     }
   }
 
-  /// Due-checking logic, kept deliberately simple given WorkManager's own
-  /// ~15-minute batching floor -- "exact time" was never on the table
+  /// Due-checking logic, kept deliberately simple given the alarm chain's
+  /// own inexactness -- "exact time" was never on the table
   /// (`ScheduledEventsScreen`'s own copy already says "approximately").
-  /// `hourly` just needs 60 real minutes to have elapsed. `daily`/`weekly`
-  /// additionally honor the time-of-day (and, for weekly, the day of
-  /// week) already collected by `ScheduledEventsScreen`'s own dialog --
-  /// otherwise that config would sit stored and silently unused forever,
-  /// the exact gap this build step exists to close. A binding with no
-  /// `scheduleConfig` (created before this logic existed, or the
-  /// `schedule_hourly` type, which never has one) degrades to a plain
-  /// elapsed-time check.
+  /// Shares its actual recurrence math with [nextDueTime] via
+  /// `recurrence.dart` -- see claude/essentials-v2-recurring-schedule
+  /// -design.md for why `schedule_hourly`/`schedule_daily`/
+  /// `schedule_weekly`'s old three-way duplicated logic was retired for
+  /// one generic `schedule_interval` type. A binding with no/malformed
+  /// `scheduleConfig` is treated as due -- same permissive fallback every
+  /// schedule type here has always used for a bad config, rather than
+  /// silently never firing.
   bool _isDue(EventDefinition binding, DateTime? lastRun, DateTime now) {
-    switch (binding.eventType) {
-      case 'schedule_hourly':
-        return lastRun == null || now.difference(lastRun) >= const Duration(hours: 1);
-      case 'schedule_daily':
-        if (_alreadyRanToday(lastRun, now)) return false;
-        return _pastConfiguredTime(binding.scheduleConfig, now);
-      case 'schedule_weekly':
-        if (_alreadyRanThisWeek(lastRun, now)) return false;
-        if (!_matchesConfiguredWeekday(binding.scheduleConfig, now)) return false;
-        return _pastConfiguredTime(binding.scheduleConfig, now);
-      default:
-        return false;
+    if (binding.eventType != 'schedule_interval') return false;
+
+    final recurrence = parseRecurrenceConfig(binding.scheduleConfig);
+    if (recurrence == null) return true;
+
+    final anchor = recurrence.anchor;
+    if (anchor == null) {
+      return lastRun == null || now.difference(lastRun) >= recurrence.interval;
     }
+    if (now.isBefore(anchor)) return false;
+    final currentSlot = anchorAlignedSlotAtOrBefore(anchor, recurrence.interval, now);
+    return lastRun == null || lastRun.isBefore(currentSlot);
   }
 
-  bool _alreadyRanToday(DateTime? lastRun, DateTime now) =>
-      lastRun != null && lastRun.year == now.year && lastRun.month == now.month && lastRun.day == now.day;
+  /// If [binding] is anchored and fell behind by more than one occurrence
+  /// since [lastRun] -- e.g. the app was closed/force-stopped for a
+  /// while -- [_isDue] above already jumped straight to the current slot
+  /// rather than chain-firing through everything missed in between (see
+  /// `recurrence.dart`'s own doc comment on why). Mike's explicit ask:
+  /// that silent skip should never be silent -- post a real notification
+  /// naming the script and how many occurrences it missed, right before
+  /// running the one that's actually about to happen. Best-effort, same
+  /// as every other notification this class posts -- a failure here must
+  /// never block the real dispatch that follows.
+  Future<void> _notifyIfOccurrencesWereMissed(EventDefinition binding, DateTime lastRun, DateTime now) async {
+    if (binding.eventType != 'schedule_interval') return;
+    final recurrence = parseRecurrenceConfig(binding.scheduleConfig);
+    final anchor = recurrence?.anchor;
+    if (anchor == null) return; // unanchored schedules have no fixed slots to miss
 
-  bool _alreadyRanThisWeek(DateTime? lastRun, DateTime now) {
-    if (lastRun == null) return false;
-    final lastRunWeekStart = lastRun.subtract(Duration(days: lastRun.weekday - 1));
-    final nowWeekStart = now.subtract(Duration(days: now.weekday - 1));
-    return lastRunWeekStart.year == nowWeekStart.year &&
-        lastRunWeekStart.month == nowWeekStart.month &&
-        lastRunWeekStart.day == nowWeekStart.day;
-  }
+    final missed = missedOccurrenceCount(anchor, recurrence!.interval, lastRun, now);
+    if (missed <= 0) return;
 
-  static const _weekdayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-
-  bool _matchesConfiguredWeekday(String? scheduleConfig, DateTime now) {
-    final config = _decodeConfig(scheduleConfig);
-    final day = config?['day'] as String?;
-    if (day == null) return true; // unconfigured -- run whichever day it happens to first become due
-    final index = _weekdayKeys.indexOf(day);
-    if (index == -1) return true;
-    return now.weekday == index + 1; // DateTime.weekday is 1=Monday..7=Sunday, matching _weekdayKeys' order
-  }
-
-  bool _pastConfiguredTime(String? scheduleConfig, DateTime now) {
-    final config = _decodeConfig(scheduleConfig);
-    final timeText = config?['time'] as String?;
-    if (timeText == null) return true; // unconfigured -- any time of day is fine
-    final parts = timeText.split(':');
-    if (parts.length != 2) return true;
-    final hour = int.tryParse(parts[0]);
-    final minute = int.tryParse(parts[1]);
-    if (hour == null || minute == null) return true;
-    final target = DateTime(now.year, now.month, now.day, hour, minute);
-    return !now.isBefore(target);
-  }
-
-  Map<String, Object?>? _decodeConfig(String? scheduleConfig) {
-    if (scheduleConfig == null) return null;
-    try {
-      return jsonDecode(scheduleConfig) as Map<String, Object?>;
-    } catch (_) {
-      return null;
-    }
+    final scriptName = await _scripts.loadName(binding.scriptId) ?? 'a scheduled script';
+    final occurrenceWord = missed == 1 ? 'occurrence' : 'occurrences';
+    await _tryNotify('"$scriptName" fell behind schedule -- skipped $missed missed $occurrenceWord and caught up to now.');
   }
 }

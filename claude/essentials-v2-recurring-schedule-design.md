@@ -1,6 +1,11 @@
 # Generalized recurring schedules for scripted events — design (2026-09-05)
 
-**Status: design only, not yet built.** Grew out of a conversation while
+**Status: built, tests passing, build-verified. Real-device verification
+deferred** -- MIKE-12R was mid-experiment for the alarm-scheduling
+PSS/reboot re-verification session when this was built, and installing a
+new APK there would have force-stopped that process and contaminated the
+data. Will push and verify live once that concludes. Grew out of a
+conversation while
 babysitting the alarm-scheduling reboot/PSS re-verification session (see
 `claude/essentials-v2-alarm-scheduling-design.md`) — a natural place to
 revisit scheduling since that whole session was already in this code.
@@ -214,6 +219,79 @@ its conditional weekday/time pickers gets replaced with:
    correct next slot and lands on it; deleting/editing a
    `schedule_interval` binding reschedules correctly (already-proven
    mechanism, just needs re-confirming against the new config shape).
+
+## Missed-occurrence notifications — added mid-build, per Mike's explicit ask
+
+Not in the original sketch -- Mike asked for this directly: whenever the
+"jump to current slot instead of chain-firing" behavior above actually
+happens, that should never be silent. `recurrence.dart` gained
+`missedOccurrenceCount(anchor, interval, lastRun, now)`, computing exactly
+how many whole slots were skipped (via the same `anchorAlignedSlotAtOrBefore`
+primitive, applied to both `lastRun` and `now`). `BackgroundScheduleService
+.runDueScheduledEvents()` calls it right before dispatching a due,
+previously-run, anchored binding -- if the count is positive, it posts a
+real OS notification (`_tryNotify`, the same mechanism a script's own
+`notify()` call and the existing timeout/error notices already use) naming
+the script and the count: `'"<script name>" fell behind schedule --
+skipped N missed occurrence(s) and caught up to now.'` Only meaningful for
+anchored schedules -- an unanchored one has no fixed slots to miss, so
+there's nothing to report there. This notice always lands *before* the
+real dispatch's own effects/timeout/error notices for that pass, not
+instead of them.
+
+## Build order, concluded
+
+All six steps built in one pass:
+
+1. `lib/util/scripting/recurrence.dart` -- `RecurrenceConfig`, the 5-minute
+   clamp, `anchorAlignedSlotAtOrBefore`, and `missedOccurrenceCount`. 26
+   unit tests (`test/recurrence_test.dart`).
+2. `lib/util/scripting/next_due_time.dart` -- rewritten for one
+   `schedule_interval` branch built on `recurrence.dart`. Test file
+   rewritten (`test/next_due_time_test.dart`, 17 tests) covering
+   unanchored minute/hour/day/week intervals, the 5-minute clamp, and
+   every anchored case from this doc's own worked examples (future
+   anchor, past-anchor-never-run, current-slot-already-serviced, the
+   badly-overdue jump, an anchored daily-equivalent).
+3. `lib/db/event_definitions_dao.dart` -- `scheduledEventTypes` is now
+   `['schedule_interval', 'app_launch']`.
+4. `lib/util/scripting/background_schedule_service.dart` -- `_isDue`
+   rewritten onto the same `recurrence.dart` primitive; the
+   missed-occurrence notification added (see above). `ScriptDefinitionsDao`
+   gained `loadName(id)` for the notification's script-name lookup.
+   `test/background_schedule_service_test.dart` rewritten against the real
+   `essentials.db` -- 11 tests, including one confirming the
+   missed-occurrence notice fires with the right script name and count on
+   a badly-overdue anchored binding, and one confirming it does *not* fire
+   for normal on-schedule progression.
+5. `lib/screens/scheduled_events_screen.dart` -- the dialog replaced with
+   "Every [N] [minutes/hours/days/weeks]" + an optional "Starting at"
+   date+time picker, live 5-minute-minimum validation, and a rewritten
+   `_describe()` (e.g. `"Approximately every 4 hours, starting 2026-09-05
+   10:20"`).
+6. `test/alarm_schedule_service_test.dart` also updated (5 tests) --
+   `computeNextDueTimeForDevice` exercised against real `schedule_interval`
+   bindings instead of the retired types.
+
+`flutter analyze` clean project-wide (only the pre-existing, unrelated
+`avoid_print` lints on `tool/fix_books_rating.dart`). All four touched
+test files pass individually (60 tests total: 13 + 17 + 11 + 5, plus the
+untouched `test/next_due_time_test.dart`'s companion counts already
+folded into that 17). Both `flutter build windows` and `flutter build apk
+--debug` clean (the pre-existing, documented KGP plugin warning aside).
+
+**Not yet done: real-device verification.** MIKE-12R was mid-experiment
+for the alarm-scheduling session's own PSS/reboot re-verification when
+this was built -- pushing a new APK there would have force-stopped that
+process and broken the very thing being measured. Once that concludes:
+create a real short unanchored interval (e.g. every 5-10 minutes) and
+confirm it fires close to on schedule; create a real anchored multi-hour
+interval and confirm it lands on the correct slot; and -- the one thing
+that can't be verified through unit tests alone -- manually force a
+missed-occurrence scenario (set a `schedule_last_run` far enough in the
+past relative to a short anchored interval) and confirm a real OS
+notification actually appears on-device, not just in a captured test
+callback.
 
 ## Open items, not yet settled
 

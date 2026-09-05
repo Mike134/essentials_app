@@ -44,6 +44,16 @@ class ScriptDefinitionsDao {
     return [for (final row in rows) ScriptDefinition.fromRow(row)];
   }
 
+  /// A script's own display name, for a friendly notification message --
+  /// `null` if it's been deleted since (a binding can outlive the script
+  /// it once pointed at is deleted the same way `_scriptNameFor` in
+  /// `ScheduledEventsScreen` already handles this).
+  Future<String?> loadName(int id) async {
+    final db = await _db;
+    final rows = await db.query('SELECT name FROM script_definitions WHERE id = ?1 AND is_deleted = 0', [id]);
+    return rows.isEmpty ? null : rows.first['name'] as String?;
+  }
+
   /// `id`'s own SQL `DEFAULT` expression needs explicit injection, same
   /// "omitting it from the INSERT silently bypasses it" gotcha as every
   /// other timestamp+random-id table in this app --

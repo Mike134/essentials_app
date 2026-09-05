@@ -61,18 +61,22 @@ void main() {
     expect(await due(), anyOf(isNull, isA<DateTime>()));
   });
 
-  test('a never-run hourly binding pulls the result to at most now', () async {
+  test('a never-run unanchored interval binding pulls the result to at most now', () async {
     final scriptId = await createScript("notify('hourly $runTag');");
-    await bindSchedule(scriptId, 'schedule_hourly');
+    await bindSchedule(scriptId, 'schedule_interval', scheduleConfig: '{"interval": 1, "unit": "hours"}');
 
     final result = await due();
     expect(result, isNotNull);
     expect(result!.isAfter(now), isFalse);
   });
 
-  test('a daily binding configured for later today pulls the result to at most that time', () async {
+  test('an anchored binding configured for later today pulls the result to at most that time', () async {
     final scriptId = await createScript("notify('daily $runTag');");
-    await bindSchedule(scriptId, 'schedule_daily', scheduleConfig: '{"time": "14:30"}');
+    await bindSchedule(
+      scriptId,
+      'schedule_interval',
+      scheduleConfig: '{"interval": 1, "unit": "days", "anchor": "2026-09-01T14:30:00"}',
+    );
 
     final result = await due();
     expect(result, isNotNull);
@@ -91,7 +95,7 @@ void main() {
   test('a disabled binding never contributes -- result is unchanged', () async {
     final before = await due();
     final scriptId = await createScript("notify('disabled $runTag');");
-    final eventId = await bindSchedule(scriptId, 'schedule_hourly');
+    final eventId = await bindSchedule(scriptId, 'schedule_interval', scheduleConfig: '{"interval": 1, "unit": "hours"}');
     await events.setEnabled(eventId, false);
     final after = await due();
 
@@ -100,7 +104,7 @@ void main() {
 
   test('reads a stored last-run time back and computes lastRun + 1h, not "never run"', () async {
     final scriptId = await createScript("notify('lastrun $runTag');");
-    final eventId = await bindSchedule(scriptId, 'schedule_hourly');
+    final eventId = await bindSchedule(scriptId, 'schedule_interval', scheduleConfig: '{"interval": 1, "unit": "hours"}');
     final lastRun = now.subtract(const Duration(minutes: 20));
     await settings.setDeviceSetting('schedule_last_run:$eventId', lastRun.toIso8601String());
 

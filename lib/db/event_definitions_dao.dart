@@ -10,7 +10,15 @@ import 'database_helper.dart';
 const dataEventTypes = ['record_created', 'record_saved', 'record_updated', 'record_deleted'];
 const uiEventTypes = ['form_opened', 'form_closed', 'button_clicked'];
 const fieldScopedEventTypes = ['field_changed', 'button_clicked'];
-const scheduledEventTypes = ['schedule_daily', 'schedule_weekly', 'schedule_hourly', 'app_launch'];
+
+/// `schedule_hourly`/`schedule_daily`/`schedule_weekly` were retired for
+/// `schedule_interval` -- see
+/// claude/essentials-v2-recurring-schedule-design.md. One generic type
+/// (`{"interval": N, "unit": "minutes"|"hours"|"days"|"weeks", "anchor":
+/// "an ISO8601 string"}` in `schedule_config`, `anchor` optional)
+/// subsumes all three -- no dual-format support needed, since zero real
+/// bindings existed at the time of the change.
+const scheduledEventTypes = ['schedule_interval', 'app_launch'];
 
 /// One `event_definitions` row.
 class EventDefinition {

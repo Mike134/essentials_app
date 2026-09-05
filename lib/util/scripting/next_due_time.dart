@@ -1,6 +1,5 @@
-import 'dart:convert';
-
 import '../../db/event_definitions_dao.dart';
+import 'recurrence.dart';
 
 /// Essentials v2 alarm-based scheduling design (see
 /// claude/essentials-v2-alarm-scheduling-design.md, "New pure function:
@@ -10,14 +9,18 @@ import '../../db/event_definitions_dao.dart';
 /// polling every 15 minutes regardless of whether anything is due.
 ///
 /// Deliberately the same logic [BackgroundScheduleService]'s private
-/// `_isDue`/`_pastConfiguredTime`/`_matchesConfiguredWeekday` already
-/// encode, just reframed from "is it due *right now*" to "when will it
-/// next be due" -- kept as its own pure, zero-platform-dependency
-/// function (not folded into that class) specifically so it's directly
-/// unit-testable with fabricated bindings/timestamps, no device or
-/// plugin involved, matching this project's own established pattern for
-/// every other pure calculator (`FormulaService`, `LinkedFieldService`,
-/// etc.).
+/// `_isDue` already encodes, just reframed from "is it due *right now*"
+/// to "when will it next be due" -- kept as its own pure, zero-platform
+/// -dependency function (not folded into that class) specifically so
+/// it's directly unit-testable with fabricated bindings/timestamps, no
+/// device or plugin involved, matching this project's own established
+/// pattern for every other pure calculator (`FormulaService`,
+/// `LinkedFieldService`, etc.). Both this function and `_isDue` share
+/// their actual recurrence math via `recurrence.dart` now -- see
+/// claude/essentials-v2-recurring-schedule-design.md for why
+/// `schedule_hourly`/`schedule_daily`/`schedule_weekly`'s old duplicated
+/// three-way logic was retired in favor of one generic
+/// `schedule_interval` type.
 ///
 /// [lastRunTimes] mirrors the `schedule_last_run:<id>` `device_settings`
 /// values [BackgroundScheduleService] itself reads, keyed by
@@ -33,12 +36,8 @@ DateTime? nextDueTime(List<EventDefinition> bindings, Map<int, DateTime?> lastRu
 
     final DateTime? candidate;
     switch (binding.eventType) {
-      case 'schedule_hourly':
-        candidate = _nextHourlyTime(lastRunTimes[binding.id], now);
-      case 'schedule_daily':
-        candidate = _nextDailyTime(binding.scheduleConfig, now);
-      case 'schedule_weekly':
-        candidate = _nextWeeklyTime(binding.scheduleConfig, now);
+      case 'schedule_interval':
+        candidate = _nextIntervalTime(lastRunTimes[binding.id], binding.scheduleConfig, now);
       default:
         candidate = null; // unrecognized event_type -- never contributes
     }
@@ -48,83 +47,34 @@ DateTime? nextDueTime(List<EventDefinition> bindings, Map<int, DateTime?> lastRu
   return earliest;
 }
 
-/// `lastRun + 1h`, or `now` if it's never run -- matches
-/// `BackgroundScheduleService._isDue`'s own hourly check exactly (due once
-/// an hour has genuinely elapsed since the last run). Deliberately not
-/// clamped to `now` when the result lands in the past (e.g. a missed
-/// alarm) -- a past due time just means "already due," which an alarm
-/// scheduler naturally fires immediately for anyway.
-DateTime _nextHourlyTime(DateTime? lastRun, DateTime now) =>
-    lastRun == null ? now : lastRun.add(const Duration(hours: 1));
+/// Unconfigured/unparseable `schedule_config` falls back to `now` (due
+/// immediately) -- the same permissive default every schedule type in
+/// this app has always applied for a missing/bad config, so a binding
+/// never gets silently stuck because of a malformed value.
+DateTime _nextIntervalTime(DateTime? lastRun, String? scheduleConfig, DateTime now) {
+  final recurrence = parseRecurrenceConfig(scheduleConfig);
+  if (recurrence == null) return now;
 
-/// Today at the configured time if that hasn't passed yet, else tomorrow
-/// at that time. An unconfigured/unparseable time falls back to `now`
-/// (due immediately) -- the same permissive default
-/// `_pastConfiguredTime` already applies for "is it due right now".
-DateTime _nextDailyTime(String? scheduleConfig, DateTime now) {
-  final timeOfDay = _configuredTimeOfDay(scheduleConfig);
-  if (timeOfDay == null) return now;
-  var candidate = DateTime(now.year, now.month, now.day, timeOfDay.$1, timeOfDay.$2);
-  if (candidate.isBefore(now)) candidate = candidate.add(const Duration(days: 1));
-  return candidate;
-}
-
-/// The next occurrence of the configured weekday + time, never earlier
-/// than `now`. An unconfigured/unparseable day *or* time falls back to
-/// `now` (due immediately) -- same reasoning as [_nextDailyTime], applied
-/// to both halves of the weekly config since `_matchesConfiguredWeekday`/
-/// `_pastConfiguredTime` are each independently permissive when their own
-/// half is missing.
-DateTime _nextWeeklyTime(String? scheduleConfig, DateTime now) {
-  final config = _decodeConfig(scheduleConfig);
-  final dayKey = config?['day'] as String?;
-  final timeOfDay = _configuredTimeOfDay(scheduleConfig);
-  if (dayKey == null || timeOfDay == null) return now;
-
-  final dayIndex = _weekdayKeys.indexOf(dayKey);
-  if (dayIndex == -1) return now;
-  final targetWeekday = dayIndex + 1; // DateTime.weekday is 1=Monday..7=Sunday, matching _weekdayKeys' order
-
-  final daysUntil = (targetWeekday - now.weekday) % 7;
-  var candidate = DateTime(
-    now.year,
-    now.month,
-    now.day,
-    timeOfDay.$1,
-    timeOfDay.$2,
-  ).add(Duration(days: daysUntil));
-  // daysUntil > 0 always lands on a later calendar day, so it's already
-  // after `now` regardless of the configured time-of-day -- only the
-  // "today is the target weekday" case can still need pushing a full
-  // week out, when that time has already passed today.
-  if (daysUntil == 0 && candidate.isBefore(now)) {
-    candidate = candidate.add(const Duration(days: 7));
+  final anchor = recurrence.anchor;
+  if (anchor == null) {
+    // Unanchored -- pure elapsed-time-since-last-run, generalizing the
+    // old schedule_hourly behavior to any interval. Deliberately not
+    // clamped to `now` when the result lands in the past (e.g. a missed
+    // alarm) -- a past due time just means "already due," which an alarm
+    // scheduler naturally fires immediately for anyway.
+    return lastRun == null ? now : lastRun.add(recurrence.interval);
   }
-  return candidate;
-}
 
-const _weekdayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  if (now.isBefore(anchor)) return anchor; // hasn't started yet
 
-/// Parses `scheduleConfig`'s `"time": "HH:MM"` entry into `(hour,
-/// minute)`, or `null` if unconfigured/unparseable -- shared by
-/// [_nextDailyTime]/[_nextWeeklyTime] so both fall back identically.
-(int, int)? _configuredTimeOfDay(String? scheduleConfig) {
-  final config = _decodeConfig(scheduleConfig);
-  final timeText = config?['time'] as String?;
-  if (timeText == null) return null;
-  final parts = timeText.split(':');
-  if (parts.length != 2) return null;
-  final hour = int.tryParse(parts[0]);
-  final minute = int.tryParse(parts[1]);
-  if (hour == null || minute == null) return null;
-  return (hour, minute);
-}
-
-Map<String, Object?>? _decodeConfig(String? scheduleConfig) {
-  if (scheduleConfig == null) return null;
-  try {
-    return jsonDecode(scheduleConfig) as Map<String, Object?>;
-  } catch (_) {
-    return null;
+  final currentSlot = anchorAlignedSlotAtOrBefore(anchor, recurrence.interval, now);
+  if (lastRun != null && !lastRun.isBefore(currentSlot)) {
+    // The current slot's already been serviced -- next due is the
+    // following one, not this one again.
+    return currentSlot.add(recurrence.interval);
   }
+  // The current slot hasn't been serviced yet -- already due (possibly
+  // slightly overdue, which is fine; see this file's own "past due" note
+  // above).
+  return currentSlot;
 }

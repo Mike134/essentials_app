@@ -1,12 +1,16 @@
 // Essentials v2 Phase 5 build order step 7 -- BackgroundScheduleService
 // against the real essentials.db. Covers the "is this binding due"
 // decision (pure logic, exercised through the real class) and a full
-// run confirming a due hourly binding actually executes its script and
-// records a last-run timestamp, while a just-run one is correctly
-// skipped on a second call. Run this file on its own, never chained with
-// another SchemaEditorService.createTable-using test file in the same
-// `flutter test` invocation, same standing rule as every schema-engine
-// test file since the Phase 1 Step 3 incident.
+// run confirming a due binding actually executes its script and records
+// a last-run timestamp, while a just-run one is correctly skipped on a
+// second call. Rewritten for the generic schedule_interval type -- see
+// claude/essentials-v2-recurring-schedule-design.md -- which replaced
+// schedule_hourly/schedule_daily/schedule_weekly. Run this file on its
+// own, never chained with another SchemaEditorService.createTable-using
+// test file in the same `flutter test` invocation, same standing rule as
+// every schema-engine test file since the Phase 1 Step 3 incident.
+import 'dart:convert';
+
 import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/event_definitions_dao.dart';
 import 'package:essentials_app/db/event_dispatch_service.dart';
@@ -39,10 +43,10 @@ void main() {
     return id;
   }
 
-  Future<int> bindSchedule(int scriptId, String eventType, {String? scheduleConfig}) async {
+  Future<int> bindSchedule(int scriptId, {String? scheduleConfig}) async {
     final id = await events.create(
       scriptId: scriptId,
-      eventType: eventType,
+      eventType: 'schedule_interval',
       tableName: null,
       scheduleConfig: scheduleConfig,
     );
@@ -51,9 +55,13 @@ void main() {
     return id;
   }
 
-  test('a due hourly binding runs and records a last-run timestamp', () async {
+  String hourlyConfig() => jsonEncode({'interval': 1, 'unit': 'hours'});
+  String anchoredConfig(DateTime anchor, {int interval = 1, String unit = 'days'}) =>
+      jsonEncode({'interval': interval, 'unit': unit, 'anchor': anchor.toIso8601String()});
+
+  test('a due hourly-equivalent binding runs and records a last-run timestamp', () async {
     final scriptId = await createScript("notify('hourly ran $runTag');");
-    final eventId = await bindSchedule(scriptId, 'schedule_hourly');
+    final eventId = await bindSchedule(scriptId, scheduleConfig: hourlyConfig());
 
     // Never run before -- lastRun is null, which _isDue treats as due.
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
@@ -63,9 +71,9 @@ void main() {
     expect(DateTime.tryParse(lastRun!), isNotNull);
   });
 
-  test('an hourly binding just run is not run again a second time', () async {
+  test('an hourly-equivalent binding just run is not run again a second time', () async {
     final scriptId = await createScript("notify('hourly again $runTag');");
-    final eventId = await bindSchedule(scriptId, 'schedule_hourly');
+    final eventId = await bindSchedule(scriptId, scheduleConfig: hourlyConfig());
 
     await settings.setDeviceSetting('schedule_last_run:$eventId', DateTime.now().toIso8601String());
 
@@ -84,7 +92,7 @@ void main() {
 
   test('a disabled binding is never due', () async {
     final scriptId = await createScript("notify('should not run $runTag');");
-    final eventId = await bindSchedule(scriptId, 'schedule_hourly');
+    final eventId = await bindSchedule(scriptId, scheduleConfig: hourlyConfig());
     await events.setEnabled(eventId, false);
 
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
@@ -95,24 +103,20 @@ void main() {
 
   test('app_launch bindings are never fired by the background service', () async {
     final scriptId = await createScript("notify('app launch $runTag');");
-    final eventId = await bindSchedule(scriptId, 'app_launch');
+    final id = await events.create(scriptId: scriptId, eventType: 'app_launch', tableName: null);
+    addTearDown(() => events.softDelete(id));
+    addTearDown(() => settings.setDeviceSetting('schedule_last_run:$id', null));
 
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
 
-    final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
+    final lastRun = await settings.loadDeviceSetting('schedule_last_run:$id');
     expect(lastRun, isNull);
   });
 
-  test('a daily binding configured for a future time today is not yet due', () async {
-    final scriptId = await createScript("notify('daily future $runTag');");
+  test('an anchored binding configured for a future time is not yet due', () async {
+    final scriptId = await createScript("notify('anchored future $runTag');");
     final future = DateTime.now().add(const Duration(hours: 2));
-    final timeText =
-        '${future.hour.toString().padLeft(2, '0')}:${future.minute.toString().padLeft(2, '0')}';
-    final eventId = await bindSchedule(
-      scriptId,
-      'schedule_daily',
-      scheduleConfig: '{"time": "$timeText"}',
-    );
+    final eventId = await bindSchedule(scriptId, scheduleConfig: anchoredConfig(future));
 
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
 
@@ -120,15 +124,10 @@ void main() {
     expect(lastRun, isNull);
   });
 
-  test('a daily binding configured for a past time today is due', () async {
-    final scriptId = await createScript("notify('daily past $runTag');");
+  test('an anchored binding configured for a past time is due', () async {
+    final scriptId = await createScript("notify('anchored past $runTag');");
     final past = DateTime.now().subtract(const Duration(minutes: 1));
-    final timeText = '${past.hour.toString().padLeft(2, '0')}:${past.minute.toString().padLeft(2, '0')}';
-    final eventId = await bindSchedule(
-      scriptId,
-      'schedule_daily',
-      scheduleConfig: '{"time": "$timeText"}',
-    );
+    final eventId = await bindSchedule(scriptId, scheduleConfig: anchoredConfig(past, interval: 1, unit: 'days'));
 
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
 
@@ -136,58 +135,81 @@ void main() {
     expect(lastRun, isNotNull);
   });
 
-  test('a daily binding already run today is not due again the same day', () async {
-    final scriptId = await createScript("notify('daily twice $runTag');");
-    final past = DateTime.now().subtract(const Duration(minutes: 1));
-    final timeText = '${past.hour.toString().padLeft(2, '0')}:${past.minute.toString().padLeft(2, '0')}';
-    final eventId = await bindSchedule(
-      scriptId,
-      'schedule_daily',
-      scheduleConfig: '{"time": "$timeText"}',
-    );
+  test('an anchored binding already run within the current slot is not due again', () async {
+    final scriptId = await createScript("notify('anchored twice $runTag');");
+    final anchor = DateTime.now().subtract(const Duration(hours: 1));
+    final eventId = await bindSchedule(scriptId, scheduleConfig: anchoredConfig(anchor, interval: 1, unit: 'days'));
     await settings.setDeviceSetting('schedule_last_run:$eventId', DateTime.now().toIso8601String());
 
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
 
-    // Unchanged from the pre-seeded value's own second granularity would
-    // be flaky to assert on directly -- confirm indirectly instead: the
-    // script's own notification never landed in script_definitions being
-    // re-read is implicit; what we can assert directly is that a second
-    // distinct write did happen (the same timestamp, not a newer one) --
-    // covered adequately by the "already run today" earlier assertion
-    // plus this test's own presence in the suite documenting the intent.
+    // Unchanged from the pre-seeded value -- same "presence, not exact
+    // second-granularity equality" reasoning the original hourly version
+    // of this test used.
     final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
     expect(lastRun, isNotNull);
   });
 
-  test('a weekly binding configured for a different weekday is not due', () async {
-    final scriptId = await createScript("notify('weekly wrong day $runTag');");
-    final wrongDay = _weekdayKeyFor(DateTime.now().add(const Duration(days: 3)));
-    final eventId = await bindSchedule(
-      scriptId,
-      'schedule_weekly',
-      scheduleConfig: '{"day": "$wrongDay", "time": "00:00"}',
+  test(
+    'a badly-overdue anchored binding notifies about missed occurrences and jumps to the current slot',
+    () async {
+      final scriptId = await createScript("notify('script effect $runTag');");
+      // Anchor far enough in the past, with a short interval, that several
+      // whole slots have definitely been missed since lastRun.
+      final anchor = DateTime.now().subtract(const Duration(hours: 1));
+      final eventId = await bindSchedule(
+        scriptId,
+        scheduleConfig: anchoredConfig(anchor, interval: 5, unit: 'minutes'),
+      );
+      // lastRun serviced the very first slot (the anchor itself) -- long
+      // enough ago that many 5-minute slots have passed since.
+      await settings.setDeviceSetting('schedule_last_run:$eventId', anchor.toIso8601String());
+
+      final notifications = <String>[];
+      await BackgroundScheduleService(
+        settings: settings,
+        notify: (message) async {
+          notifications.add(message);
+        },
+      ).runDueScheduledEvents();
+
+      // Whether the script's own notify('script effect ...') call actually
+      // fires here depends on flutter_js's native quickjs_c_bridge.dll
+      // being available -- it isn't, under a bare `flutter test` host (see
+      // BackgroundScheduleService's own constructor doc comment) -- so
+      // this only asserts on the missed-occurrence notice itself, not the
+      // script's own effect.
+      final missedNotice = notifications.firstWhere((m) => m.contains('fell behind schedule'));
+      expect(missedNotice, contains('bg-$runTag'));
+      expect(missedNotice, matches(RegExp(r'skipped \d+ missed occurrences?')));
+
+      final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
+      expect(lastRun, isNotNull);
+    },
+  );
+
+  test('an anchored binding that is on schedule (no gap) does not post a missed-occurrence notice', () async {
+    final scriptId = await createScript("notify('on schedule $runTag');");
+    // Anchor two days ago, daily interval -- a real slot sequence
+    // (anchor, anchor+1d, anchor+2d=~now) with lastRun having serviced
+    // exactly the immediately-preceding slot. Normal progression, nothing
+    // missed.
+    final anchor = DateTime.now().subtract(const Duration(days: 2));
+    final eventId = await bindSchedule(scriptId, scheduleConfig: anchoredConfig(anchor, interval: 1, unit: 'days'));
+    await settings.setDeviceSetting(
+      'schedule_last_run:$eventId',
+      anchor.add(const Duration(days: 1)).toIso8601String(),
     );
 
-    await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
+    final notifications = <String>[];
+    await BackgroundScheduleService(
+      settings: settings,
+      notify: (message) async {
+        notifications.add(message);
+      },
+    ).runDueScheduledEvents();
 
-    final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
-    expect(lastRun, isNull);
-  });
-
-  test('a weekly binding configured for today past the configured time is due', () async {
-    final scriptId = await createScript("notify('weekly today $runTag');");
-    final today = _weekdayKeyFor(DateTime.now());
-    final eventId = await bindSchedule(
-      scriptId,
-      'schedule_weekly',
-      scheduleConfig: '{"day": "$today", "time": "00:00"}',
-    );
-
-    await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
-
-    final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
-    expect(lastRun, isNotNull);
+    expect(notifications.any((m) => m.contains('fell behind schedule')), isFalse);
   });
 
   // The `bg_check:*` device_settings keys BackgroundProcessesScreen and the
@@ -238,7 +260,7 @@ void main() {
 
       // Needs a real due binding to reach the dispatcher at all.
       final scriptId = await createScript("notify('never runs $runTag');");
-      await bindSchedule(scriptId, 'schedule_hourly');
+      await bindSchedule(scriptId, scheduleConfig: hourlyConfig());
 
       await expectLater(service.runDueScheduledEvents(), throwsA(isA<StateError>()));
 
@@ -251,10 +273,6 @@ void main() {
     });
   });
 }
-
-const _weekdayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-
-String _weekdayKeyFor(DateTime date) => _weekdayKeys[(date.weekday - 1) % 7];
 
 /// Fake for the one failing-pass test above -- throws instead of running
 /// any script, to reach runDueScheduledEvents' catch/rethrow path without
