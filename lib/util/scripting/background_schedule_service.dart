@@ -1,83 +1,32 @@
 import 'dart:convert';
 
-import 'package:workmanager/workmanager.dart';
-
 import '../../db/event_definitions_dao.dart';
 import '../../db/event_dispatch_service.dart';
 import '../../db/theme_settings_dao.dart';
 import '../device_id.dart';
 import 'script_notifications.dart';
 
-/// Essentials v2 Phase 5 build order step 7 -- Android background firing
-/// for `schedule_hourly`/`schedule_daily`/`schedule_weekly` bindings. See
-/// claude/essentials-v2-phase5-design.md's own step 7 write-up for the
-/// full design rationale; this file's doc comments cover the mechanics.
+/// Essentials v2 Phase 5 build order step 7 originally wired this class up
+/// to a 15-minute `workmanager` periodic task -- see
+/// claude/essentials-v2-phase5-design.md's own step 7 write-up for that
+/// history. **That periodic-polling registration has since been replaced**
+/// by the exact-time alarm chain in `alarm_schedule_service.dart` (see
+/// claude/essentials-v2-alarm-scheduling-design.md) -- this class's own
+/// due-check/dispatch logic is unchanged and still the thing that actually
+/// runs, on both platforms, just triggered differently now:
+/// [scheduledEventAlarmCallback] (Android, via `android_alarm_manager_plus`)
+/// and [runWindowsBackgroundScheduleCheck] (Windows, via a Scheduled Task)
+/// both call [runDueScheduledEvents] directly. `registerAlarmSafetyNetTask`/
+/// `alarmSafetyNetDispatcherCallback` in `alarm_schedule_service.dart` are
+/// the low-frequency `workmanager` task's new home -- it never calls this
+/// class at all, only recomputes/re-arms the alarm (see that file's own
+/// doc comment for why).
 ///
-/// `app_launch` is deliberately excluded here -- it already fires for
-/// real from `HomeShell._bootstrapAndLoadGroups` (step 6) every time the
-/// app actually opens, which is a strictly better signal than a periodic
-/// background poll could ever give it.
-const _uniqueWorkName = 'essentials_scheduled_events';
-const _taskName = 'run_due_scheduled_events';
-
-/// The `callbackDispatcher` `Workmanager().initialize()` requires -- a
-/// **top-level** function (not a method, not a closure), annotated
-/// `@pragma('vm:entry-point')` so AOT compilation doesn't tree-shake it
-/// away (it's never referenced from `main()`'s own call graph -- Android
-/// invokes it directly by name from native code). Confirmed via reading
-/// `workmanager`'s own source (`workmanager_impl.dart`) that this runs
-/// inside a genuine headless `FlutterEngine`, not a bare `Isolate.spawn`
-/// -- the package imports `package:flutter/widgets.dart` and its own
-/// `executeTask` doc comment says outright "You can perfectly call other
-/// Flutter plugins inside this callback." That's exactly why this
-/// callback is free to use `DatabaseHelper`/`EventDispatchService`
-/// directly, unlike `ScriptApiRuntime`'s worker isolate (a bare
-/// `Isolate.spawn`, no plugin channel at all -- see that class's own doc
-/// comment for why it had to route around `sqlite_crdt`/`permission_handler`
-/// entirely).
-@pragma('vm:entry-point')
-void backgroundDispatcherCallback() {
-  Workmanager().executeTask((taskName, inputData) async {
-    try {
-      await BackgroundScheduleService().runDueScheduledEvents();
-      return true;
-    } catch (_) {
-      // WorkManager retries a task that returns false (subject to its
-      // own backoff policy) -- worth doing for a transient failure (e.g.
-      // the db genuinely locked by a concurrent foreground write), same
-      // "transient errors should retry, not permanently fail" posture
-      // MigrationService's own lock-retry logic already established
-      // elsewhere in this app.
-      return false;
-    }
-  });
-}
-
-/// Registers (or re-registers, idempotently) the one periodic WorkManager
-/// task this app ever needs -- a single task checks every scheduled
-/// binding on each fire, rather than one task per binding, since
-/// bindings are created/edited/deleted freely through
-/// [ScheduledEventsScreen] long after this registration ever runs.
-/// Android enforces a 15-minute floor on `frequency` regardless of what's
-/// requested here (confirmed via `workmanager`'s own doc comment: "a
-/// frequency has a minimum of 15 min") -- passing exactly 15 minutes is
-/// honest about that floor rather than requesting something finer that
-/// would just get silently clamped.
-Future<void> registerBackgroundScheduleTask() async {
-  await Workmanager().initialize(backgroundDispatcherCallback);
-  await Workmanager().registerPeriodicTask(
-    _uniqueWorkName,
-    _taskName,
-    frequency: const Duration(minutes: 15),
-    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
-  );
-}
-
-/// The actual "what's due, run it" logic -- factored out of
-/// [backgroundDispatcherCallback] so it's directly unit-testable against
-/// the real `essentials.db` without needing a real WorkManager fire (this
-/// project's own established discipline for anything DB-backed -- see
-/// every `*_service_test.dart` file since Phase 1).
+/// The actual "what's due, run it" logic -- kept as its own class so it's
+/// directly unit-testable against the real `essentials.db` without needing
+/// a real alarm/WorkManager fire (this project's own established
+/// discipline for anything DB-backed -- see every `*_service_test.dart`
+/// file since Phase 1).
 class BackgroundScheduleService {
   BackgroundScheduleService({
     EventDefinitionsDao? events,

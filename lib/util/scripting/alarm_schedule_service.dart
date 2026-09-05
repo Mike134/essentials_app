@@ -1,4 +1,5 @@
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:workmanager/workmanager.dart';
 
 import '../../db/event_definitions_dao.dart';
 import '../../db/theme_settings_dao.dart';
@@ -187,4 +188,79 @@ void scheduledEventAlarmCallback() {
       await rescheduleNextAlarm();
     }
   });
+}
+
+/// Build order step 6 -- the low-frequency `workmanager` safety net this
+/// design's own "Safety net" section calls for. If the alarm-rescheduling
+/// chain above ever silently breaks (a bug in the reschedule-on-fire step,
+/// a missed reboot re-registration edge case, an aggressive OEM background
+/// restriction eating the alarm broadcast -- MIKE-12R's ColorOS has
+/// already fought this app's background execution more than once, per
+/// CLAUDE.md's own history), there would be no periodic check left at all
+/// to notice and recover. This task exists purely as that backstop.
+///
+/// **This is the replacement for [BackgroundScheduleService]'s old
+/// 15-minute `workmanager` registration**, not a second, additional
+/// periodic task -- [registerAlarmSafetyNetTask] cancels that old
+/// registration by its unique name before registering this one, so the
+/// two mechanisms never run side-by-side (the design doc's own
+/// "Migration / coexistence" section, folded into this step rather than
+/// left as a separate one: leaving the old chatty task running alongside
+/// this one would defeat the entire point of building it -- reducing how
+/// often Android boots a full `FlutterEngine` just to check for due work).
+const _safetyNetUniqueWorkName = 'essentials_alarm_safety_net';
+const _safetyNetTaskName = 'check_alarm_safety_net';
+
+/// The unique name the now-retired 15-minute `BackgroundScheduleService`
+/// task was registered under (see that file's own history) -- kept here,
+/// not there, since this is the one place still doing anything with
+/// `workmanager`'s unique-name bookkeeping. Cancelling by name is safe to
+/// call even on a device that never had it registered (a device installed
+/// fresh after this change) -- `workmanager`'s own `cancelByUniqueName` is
+/// documented as a no-op when nothing matches.
+const _legacyPollingUniqueWorkName = 'essentials_scheduled_events';
+
+/// Deliberately does **not** run [BackgroundScheduleService
+/// .runDueScheduledEvents] -- the design doc's own "Safety net" section is
+/// explicit that this task's engine-boot cost must stay both minimal and
+/// rare, and the real due-check/dispatch work already happens through the
+/// alarm chain above. All this does is recompute the next due time and
+/// re-arm (or cancel) exactly one alarm -- [rescheduleNextAlarm] is safe
+/// and cheap to call unconditionally regardless of whether an alarm is
+/// already correctly armed (recomputing an already-correct answer is a
+/// harmless no-op), which is simpler than first checking whether one is
+/// currently scheduled and only recomputing if not, for the same
+/// end result.
+@pragma('vm:entry-point')
+void alarmSafetyNetDispatcherCallback() {
+  Workmanager().executeTask((taskName, inputData) async {
+    try {
+      await rescheduleNextAlarm();
+      return true;
+    } catch (_) {
+      // Same retry-on-failure posture as the old dispatch task -- a
+      // transient failure (e.g. the db momentarily locked by a concurrent
+      // foreground write) should retry, not permanently give up.
+      return false;
+    }
+  });
+}
+
+/// Registers (or re-registers, idempotently) the low-frequency safety-net
+/// task, and cancels the old 15-minute polling task if it's still
+/// registered on this device (build order step 7, folded into this call
+/// rather than a separate one -- see [_safetyNetUniqueWorkName]'s own doc
+/// comment for why). 12 hours is this design doc's own proposed frequency
+/// -- "6-24 hours, open to adjustment" -- picked as a reasonable middle
+/// ground; Android enforces a 15-minute floor on `frequency` regardless,
+/// so nothing here is anywhere near being silently clamped.
+Future<void> registerAlarmSafetyNetTask() async {
+  await Workmanager().initialize(alarmSafetyNetDispatcherCallback);
+  await Workmanager().cancelByUniqueName(_legacyPollingUniqueWorkName);
+  await Workmanager().registerPeriodicTask(
+    _safetyNetUniqueWorkName,
+    _safetyNetTaskName,
+    frequency: const Duration(hours: 12),
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+  );
 }

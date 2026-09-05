@@ -5,11 +5,10 @@
 > tooling reads. Keep both in sync, same convention as every other design doc
 > here (see CLAUDE.md "Repo move: CLAUDE.md/schema.sql").
 
-**Status: build order steps 1-4 done, step 4 real-device verified on
-MIKE-12R (including a real bug found and fixed along the way). Steps
-5-7 not yet started** -- though step 5 (boot-survival receiver) is
-already effectively done as a side effect of step 2's own finding, see
-that step's own write-up. Grew directly out of the
+**Status: build order steps 1-6 done (step 6 folding in step 7), step 4
+real-device verified on MIKE-12R. Steps 5-7 build-verified only, not yet
+separately real-device verified -- step 8 (the full real-device
+verification pass) is next.** Grew directly out of the
 2026-09-04 background-check memory-leak investigation (see CLAUDE.md's
 session write-up) — not a new phase number, a scoped fix for a problem that
 investigation found and fully diagnosed.
@@ -493,6 +492,95 @@ reconfirmed on the pulled db afterward.
 clean, debug APK reinstalled on MIKE-12R with the fix. All 6
 `alarm_schedule_service_test.dart` tests still pass (run individually,
 per the standing rule).
+
+## Build order step 5, confirmed done -- no new code needed
+
+As already flagged in step 2's own write-up above: reboot survival was a
+side effect of `rescheduleOnReboot: true` (passed to `oneShotAt` in step
+3's `rescheduleNextAlarm()`) plus the manifest wiring step 2 already
+landed (`RECEIVE_BOOT_COMPLETED` permission, the plugin's own
+`AlarmService`/`AlarmBroadcastReceiver`/`RebootBroadcastReceiver`
+components). No custom Dart-side boot-completed receiver was ever needed
+-- confirmed live during step 2's own spike (a real `adb reboot` on
+MIKE-12R, alarm fired before adb even reconnected, no app process ever
+created). Nothing in steps 3-4's real implementation changed any of that
+-- `rescheduleNextAlarm()` still passes `rescheduleOnReboot: true` on
+every call. Marked done here purely so the build order's own step
+numbering has a clean record; step 8's real-device verification pass will
+re-confirm reboot survival against the *real* implementation (not just
+the step 2 spike) as one of its checks.
+
+## Build order step 6, done (folding in step 7)
+
+**The low-frequency safety net now exists, and the old 15-minute
+`workmanager` polling task is cancelled wherever this code runs on a real
+device -- built as one change, not two, since leaving the old task
+running alongside the new one even briefly would defeat the entire point
+of building it.** See `_safetyNetUniqueWorkName`'s own doc comment in
+`alarm_schedule_service.dart` for why steps 6-7 were folded together
+rather than landing as separate commits/checkpoints.
+
+- **`background_schedule_service.dart`** lost its `workmanager` import and
+  every symbol that existed purely to wire `BackgroundScheduleService`
+  into a periodic WorkManager task (`_uniqueWorkName`, `_taskName`,
+  `backgroundDispatcherCallback`, `registerBackgroundScheduleTask`).
+  `BackgroundScheduleService` itself -- the actual due-check/dispatch
+  class -- is completely untouched; it's still called directly by
+  [`scheduledEventAlarmCallback`] (Android, via the alarm chain) and
+  [`runWindowsBackgroundScheduleCheck`] (Windows, via its own Scheduled
+  Task, unaffected by any of this -- see the design doc's own "Windows"
+  section for why that side was always out of scope here).
+- **`alarm_schedule_service.dart`** gained the new task:
+  `alarmSafetyNetDispatcherCallback` (the `workmanager` entry point --
+  deliberately does *not* call `BackgroundScheduleService
+  .runDueScheduledEvents()`, only `rescheduleNextAlarm()`, per this
+  design doc's own "Safety net" section: keep this task's engine-boot
+  cost both minimal and rare) and `registerAlarmSafetyNetTask()` (called
+  from `HomeShell`'s bootstrap in place of the old
+  `registerBackgroundScheduleTask()` call -- `alarm_schedule_service.dart`
+  was already imported there for `rescheduleNextAlarm()`, so no new
+  import was needed). `registerAlarmSafetyNetTask()` cancels the old
+  task by its unique name (`Workmanager().cancelByUniqueName(
+  'essentials_scheduled_events')`) before registering the new one --
+  safe to call even on a device that never had the old task registered,
+  since `workmanager`'s own `cancelByUniqueName` is documented as a no-op
+  when nothing matches. This is what makes it safe to call unconditionally
+  on every app launch, exactly like the old registration call always was.
+- **Frequency: 12 hours** -- the design doc's own "proposed 6-24 hours,
+  open to adjustment" range, picked as a reasonable middle ground rather
+  than left for a separate decision. Easy to change later (a single
+  `Duration` literal) if Mike wants it tighter or looser once step 8's
+  real-device monitoring shows how it behaves in practice.
+- **No explicit "is an alarm currently scheduled?" check** -- the design
+  doc's own sketch proposed checking first and only recomputing if
+  nothing was found armed. Implemented more simply: the safety-net task
+  just calls `rescheduleNextAlarm()` unconditionally every time it fires.
+  `rescheduleNextAlarm()` is already cheap (a handful of SQL reads, one
+  `AndroidAlarmManager` call) and idempotent -- recomputing an
+  already-correct answer and re-arming the identical alarm is a harmless
+  no-op, so there was no real benefit to adding a separate "check first"
+  step, only extra code. Functionally equivalent to the doc's own
+  proposal, simpler to implement and reason about.
+
+**Verification:** `flutter analyze` clean project-wide (only the
+pre-existing, unrelated `avoid_print` lints on `tool/fix_books_rating.dart`).
+`flutter build windows` and `flutter build apk --debug` both clean (the
+pre-existing, documented KGP plugin warning aside). All 6
+`alarm_schedule_service_test.dart` tests, all 11
+`background_schedule_service_test.dart` tests, and all 20
+`next_due_time_test.dart` tests pass unchanged -- none of this step's
+changes touched any DB-backed or pure logic those tests cover, only the
+`workmanager` registration wiring around them (which has no test coverage
+of its own, same as every other `AndroidAlarmManager`/`workmanager`
+plugin-integration point in this file -- see this file's own top-of-file
+doc comment for why). Debug APK rebuilt and reinstalled on MIKE-12R.
+
+**Not yet real-device verified** -- confirming the old task is actually
+gone from `dumpsys jobscheduler`/`adb shell dumpsys alarm` on MIKE-12R
+after a real launch, and that the new 12-hour task is registered in its
+place, is part of step 8's own real-device verification pass, not done
+here (this project's standing working agreement: Code builds and
+verifies, Mike drives interactive/device verification).
 
 ## Open questions for Mike (judgment calls made above, worth confirming before/at build time)
 

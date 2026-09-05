@@ -16,7 +16,6 @@ import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
 import '../util/scripting/alarm_schedule_service.dart';
-import '../util/scripting/background_schedule_service.dart';
 import 'calendar_screen.dart';
 import 'generic_list_screen.dart';
 import 'kanban_view_screen.dart';
@@ -199,28 +198,27 @@ class _HomeShellState extends State<HomeShell> {
       EventDispatchService().dispatchAndApplyEffects(context, tableName: null, eventType: 'app_launch');
     }
 
-    // Essentials v2 Phase 5 build order step 7 -- registers the one
-    // periodic WorkManager task hourly/daily/weekly scheduled bindings
-    // fire through, if it isn't already registered (idempotent --
-    // `ExistingPeriodicWorkPolicy.keep` inside `registerBackgroundScheduleTask`
-    // means a call on every launch is cheap and safe, not just tolerated).
-    // Android only -- Windows background firing is a separate mechanism,
-    // still pending its own build order step 8. Fire-and-forget, same
-    // reasoning as every other bootstrap call here: nothing blocks the
-    // nav from rendering on this.
+    // Essentials v2 alarm-based scheduling, build order step 6 (see
+    // claude/essentials-v2-alarm-scheduling-design.md) -- registers the
+    // low-frequency `workmanager` safety-net task and cancels the old
+    // 15-minute polling task if it's still registered on this device, so
+    // the two mechanisms never run side-by-side. Idempotent
+    // (`ExistingPeriodicWorkPolicy.keep`), so a call on every launch is
+    // cheap and safe, not just tolerated. Android only -- Windows
+    // background firing is a separate mechanism (its own build order
+    // step 8, already done). Fire-and-forget, same reasoning as every
+    // other bootstrap call here: nothing blocks the nav from rendering on
+    // this.
     if (Platform.isAndroid) {
-      unawaited(registerBackgroundScheduleTask());
+      unawaited(registerAlarmSafetyNetTask());
     }
 
     // Essentials v2 alarm-based scheduling, build order step 4 (see
     // claude/essentials-v2-alarm-scheduling-design.md) -- app launch is
     // one of the trigger points that (re)arms the exact-time alarm chain,
     // alongside `ScheduledEventsScreen`'s own create/edit/delete/enable/
-    // disable actions. Deliberately left running *alongside* the
-    // 15-minute `workmanager` task above, not replacing it yet -- the old
-    // task's removal is build order steps 6-7 (a low-frequency safety net
-    // first), not this step. Android only, same reasoning as the call
-    // above (`android_alarm_manager_plus` has no Windows implementation).
+    // disable actions. Android only, same reasoning as the call above
+    // (`android_alarm_manager_plus` has no Windows implementation).
     if (Platform.isAndroid) {
       unawaited(rescheduleNextAlarm());
     }
