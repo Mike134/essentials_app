@@ -52,7 +52,9 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
   }
 
   void _onDataChanged(Set<String> tables) {
-    if (!tables.contains('event_definitions') && !tables.contains('script_definitions')) return;
+    if (!tables.contains('event_definitions') &&
+        !tables.contains('script_definitions'))
+      return;
     _dataChangeDebounce?.cancel();
     _dataChangeDebounce = Timer(const Duration(milliseconds: 500), () {
       if (mounted) _reload();
@@ -146,7 +148,15 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
   }
 
   String _scriptNameFor(int scriptId) => _availableScripts
-      .firstWhere((s) => s.id == scriptId, orElse: () => ScriptDefinition(id: scriptId, name: '(deleted script)', code: '', description: null))
+      .firstWhere(
+        (s) => s.id == scriptId,
+        orElse: () => ScriptDefinition(
+          id: scriptId,
+          name: '(deleted script)',
+          code: '',
+          description: null,
+        ),
+      )
       .name;
 
   String _describe(EventDefinition binding) {
@@ -155,10 +165,14 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
         return 'Every app launch';
       case 'schedule_interval':
         final recurrence = parseRecurrenceConfig(binding.scheduleConfig);
-        if (recurrence == null) return 'Approximately every interval (unconfigured)';
+        if (recurrence == null)
+          return 'Approximately every interval (unconfigured)';
         final anchor = recurrence.anchor;
-        final everyText = 'Approximately every ${_describeDuration(recurrence.interval)}';
-        return anchor == null ? everyText : '$everyText, starting ${_describeAnchor(anchor)}';
+        final everyText =
+            'Approximately every ${_describeDuration(recurrence.interval)}';
+        return anchor == null
+            ? everyText
+            : '$everyText, starting ${_describeAnchor(anchor)}';
       default:
         return binding.eventType;
     }
@@ -171,13 +185,15 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
   /// 2 days," not "every 48 hours").
   String _describeDuration(Duration interval) {
     final minutes = interval.inMinutes;
-    if (minutes % (60 * 24 * 7) == 0) return _plural(minutes ~/ (60 * 24 * 7), 'week');
+    if (minutes % (60 * 24 * 7) == 0)
+      return _plural(minutes ~/ (60 * 24 * 7), 'week');
     if (minutes % (60 * 24) == 0) return _plural(minutes ~/ (60 * 24), 'day');
     if (minutes % 60 == 0) return _plural(minutes ~/ 60, 'hour');
     return _plural(minutes, 'minute');
   }
 
-  String _plural(int count, String unit) => '$count $unit${count == 1 ? '' : 's'}';
+  String _plural(int count, String unit) =>
+      '$count $unit${count == 1 ? '' : 's'}';
 
   String _describeAnchor(DateTime anchor) =>
       '${anchor.year}-${anchor.month.toString().padLeft(2, '0')}-${anchor.day.toString().padLeft(2, '0')} '
@@ -187,11 +203,19 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Scheduled Events')),
-      floatingActionButton: FloatingActionButton(onPressed: _add, child: const Icon(Icons.add)),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _add,
+        child: const Icon(Icons.add),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
+              padding: EdgeInsets.fromLTRB(
+                16,
+                16,
+                16,
+                16 + MediaQuery.paddingOf(context).bottom,
+              ),
               children: [
                 const Text(
                   'Runs a script on a schedule, or once per app launch. Not tied '
@@ -218,14 +242,21 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                 ],
                 const SizedBox(height: 12),
                 if (_availableScripts.isEmpty)
-                  const Text('No scripts exist yet -- create one first, from Scripts in the nav.'),
+                  const Text(
+                    'No scripts exist yet -- create one first, from Scripts in the nav.',
+                  ),
                 if (_bindings.isEmpty)
-                  const Padding(padding: EdgeInsets.only(top: 8), child: Text('No scheduled events yet.'))
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('No scheduled events yet.'),
+                  )
                 else
                   for (final binding in _bindings)
                     ListTile(
                       title: Text(_describe(binding)),
-                      subtitle: Text('Runs "${_scriptNameFor(binding.scriptId)}"'),
+                      subtitle: Text(
+                        'Runs "${_scriptNameFor(binding.scriptId)}"',
+                      ),
                       leading: Switch(
                         value: binding.enabled,
                         onChanged: (value) async {
@@ -250,7 +281,11 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
 }
 
 class _NewScheduleResult {
-  const _NewScheduleResult({required this.eventType, required this.scriptId, this.scheduleConfig});
+  const _NewScheduleResult({
+    required this.eventType,
+    required this.scriptId,
+    this.scheduleConfig,
+  });
   final String eventType;
   final int scriptId;
   final String? scheduleConfig;
@@ -264,7 +299,12 @@ class _NewScheduleResult {
 /// established convention for a small, stable format duplicated across a
 /// UI layer and its underlying model (e.g. `_lastRunKey`'s own doc
 /// comment on `alarm_schedule_service.dart`).
-const _unitMinutes = {'minutes': 1, 'hours': 60, 'days': 60 * 24, 'weeks': 60 * 24 * 7};
+const _unitMinutes = {
+  'minutes': 1,
+  'hours': 60,
+  'days': 60 * 24,
+  'weeks': 60 * 24 * 7,
+};
 
 class _NewScheduleDialog extends StatefulWidget {
   const _NewScheduleDialog({required this.scripts});
@@ -309,8 +349,13 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
     return minutes < 5 ? null : minutes;
   }
 
-  DateTime get _anchorDateTime =>
-      DateTime(_anchorDate.year, _anchorDate.month, _anchorDate.day, _anchorTime.hour, _anchorTime.minute);
+  DateTime get _anchorDateTime => DateTime(
+    _anchorDate.year,
+    _anchorDate.month,
+    _anchorDate.day,
+    _anchorTime.hour,
+    _anchorTime.minute,
+  );
 
   String? get _scheduleConfig {
     if (_eventType != 'schedule_interval') return null;
@@ -321,7 +366,9 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
     });
   }
 
-  bool get _canSubmit => _scriptId != null && (_eventType != 'schedule_interval' || _totalMinutes != null);
+  bool get _canSubmit =>
+      _scriptId != null &&
+      (_eventType != 'schedule_interval' || _totalMinutes != null);
 
   @override
   Widget build(BuildContext context) {
@@ -329,119 +376,165 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
       title: const Text('New scheduled event'),
       content: SizedBox(
         width: 360,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            DropdownButtonFormField<String>(
-              initialValue: _eventType,
-              decoration: const InputDecoration(labelText: 'Schedule'),
-              items: const [
-                DropdownMenuItem(value: 'app_launch', child: Text('Every app launch')),
-                DropdownMenuItem(value: 'schedule_interval', child: Text('Recurring')),
-              ],
-              onChanged: (value) => setState(() => _eventType = value ?? 'app_launch'),
-            ),
-            if (_eventType == 'schedule_interval') ...[
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Text('Every'),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 70,
-                    child: TextField(
-                      controller: _intervalController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(isDense: true),
+        // The anchor date/time row pushed this dialog's content past a
+        // plain fixed-height AlertDialog on a phone -- especially with the
+        // on-screen keyboard open for the interval field, which halves the
+        // available vertical space. A ConstrainedBox capping height to 80%
+        // of the screen plus a scroll view is the standard fix for a
+        // dialog whose content can outgrow the viewport, rather than
+        // trying to guess a height that always fits.
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: _eventType,
+                  decoration: const InputDecoration(labelText: 'Schedule'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'app_launch',
+                      child: Text('Every app launch'),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  DropdownButton<String>(
-                    value: _unit,
-                    items: const [
-                      DropdownMenuItem(value: 'minutes', child: Text('minutes')),
-                      DropdownMenuItem(value: 'hours', child: Text('hours')),
-                      DropdownMenuItem(value: 'days', child: Text('days')),
-                      DropdownMenuItem(value: 'weeks', child: Text('weeks')),
-                    ],
-                    onChanged: (value) => setState(() => _unit = value ?? 'hours'),
-                  ),
-                ],
-              ),
-              if (_totalMinutes == null)
-                const Padding(
-                  padding: EdgeInsets.only(top: 4),
-                  child: Text(
-                    'Minimum is 5 minutes.',
-                    style: TextStyle(color: Colors.red, fontSize: 12),
-                  ),
-                ),
-              const SizedBox(height: 12),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Starting at a specific time'),
-                subtitle: const Text('Off: runs relative to whenever it last ran.'),
-                value: _useAnchor,
-                onChanged: (value) => setState(() => _useAnchor = value),
-              ),
-              if (_useAnchor) ...[
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _anchorDate,
-                            firstDate: DateTime(2020),
-                            lastDate: DateTime(2100),
-                          );
-                          if (picked != null) setState(() => _anchorDate = picked);
-                        },
-                        child: Text(
-                          '${_anchorDate.year}-${_anchorDate.month.toString().padLeft(2, '0')}-'
-                          '${_anchorDate.day.toString().padLeft(2, '0')}',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () async {
-                          final picked = await showTimePicker(context: context, initialTime: _anchorTime);
-                          if (picked != null) setState(() => _anchorTime = picked);
-                        },
-                        child: Text(
-                          '${_anchorTime.hour.toString().padLeft(2, '0')}:'
-                          '${_anchorTime.minute.toString().padLeft(2, '0')}',
-                        ),
-                      ),
+                    DropdownMenuItem(
+                      value: 'schedule_interval',
+                      child: Text('Recurring'),
                     ),
                   ],
+                  onChanged: (value) =>
+                      setState(() => _eventType = value ?? 'app_launch'),
+                ),
+                if (_eventType == 'schedule_interval') ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Text('Every'),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 70,
+                        child: TextField(
+                          controller: _intervalController,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(isDense: true),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      DropdownButton<String>(
+                        value: _unit,
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'minutes',
+                            child: Text('minutes'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'hours',
+                            child: Text('hours'),
+                          ),
+                          DropdownMenuItem(value: 'days', child: Text('days')),
+                          DropdownMenuItem(
+                            value: 'weeks',
+                            child: Text('weeks'),
+                          ),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => _unit = value ?? 'hours'),
+                      ),
+                    ],
+                  ),
+                  if (_totalMinutes == null)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Minimum is 5 minutes.',
+                        style: TextStyle(color: Colors.red, fontSize: 12),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Starting at a specific time'),
+                    subtitle: const Text(
+                      'Off: runs relative to whenever it last ran.',
+                    ),
+                    value: _useAnchor,
+                    onChanged: (value) => setState(() => _useAnchor = value),
+                  ),
+                  if (_useAnchor) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final picked = await showDatePicker(
+                                context: context,
+                                initialDate: _anchorDate,
+                                firstDate: DateTime(2020),
+                                lastDate: DateTime(2100),
+                              );
+                              if (picked != null)
+                                setState(() => _anchorDate = picked);
+                            },
+                            child: Text(
+                              '${_anchorDate.year}-${_anchorDate.month.toString().padLeft(2, '0')}-'
+                              '${_anchorDate.day.toString().padLeft(2, '0')}',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final picked = await showTimePicker(
+                                context: context,
+                                initialTime: _anchorTime,
+                              );
+                              if (picked != null)
+                                setState(() => _anchorTime = picked);
+                            },
+                            child: Text(
+                              '${_anchorTime.hour.toString().padLeft(2, '0')}:'
+                              '${_anchorTime.minute.toString().padLeft(2, '0')}',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int>(
+                  initialValue: _scriptId,
+                  decoration: const InputDecoration(labelText: 'Script'),
+                  items: [
+                    for (final s in widget.scripts)
+                      DropdownMenuItem(value: s.id, child: Text(s.name)),
+                  ],
+                  onChanged: (value) => setState(() => _scriptId = value),
                 ),
               ],
-            ],
-            const SizedBox(height: 12),
-            DropdownButtonFormField<int>(
-              initialValue: _scriptId,
-              decoration: const InputDecoration(labelText: 'Script'),
-              items: [
-                for (final s in widget.scripts) DropdownMenuItem(value: s.id, child: Text(s.name)),
-              ],
-              onChanged: (value) => setState(() => _scriptId = value),
             ),
-          ],
+          ),
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
           onPressed: !_canSubmit
               ? null
               : () => Navigator.pop(
                   context,
-                  _NewScheduleResult(eventType: _eventType, scriptId: _scriptId!, scheduleConfig: _scheduleConfig),
+                  _NewScheduleResult(
+                    eventType: _eventType,
+                    scriptId: _scriptId!,
+                    scheduleConfig: _scheduleConfig,
+                  ),
                 ),
           child: const Text('Add'),
         ),

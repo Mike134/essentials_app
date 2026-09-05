@@ -1,11 +1,13 @@
 # Generalized recurring schedules for scripted events — design (2026-09-05)
 
-**Status: built, tests passing, build-verified. Real-device verification
-deferred** -- MIKE-12R was mid-experiment for the alarm-scheduling
-PSS/reboot re-verification session when this was built, and installing a
-new APK there would have force-stopped that process and contaminated the
-data. Will push and verify live once that concludes. Grew out of a
-conversation while
+**Status: built, tested, and real-device verified on MIKE-12R.** A real
+UI-created anchored binding (every 20 minutes, starting at a specific
+time, Mike's own test) fired on schedule and rescheduled correctly to the
+next slot, confirmed via `dumpsys alarm`. The missed-occurrence
+notification was also confirmed live -- a deliberately backdated test
+binding (`tool/create_missed_occurrence_test.dart`, ~18 missed 5-minute
+slots) produced a real notification Mike saw on the device itself, not
+just in a test's captured callback. Grew out of a conversation while
 babysitting the alarm-scheduling reboot/PSS re-verification session (see
 `claude/essentials-v2-alarm-scheduling-design.md`) — a natural place to
 revisit scheduling since that whole session was already in this code.
@@ -280,25 +282,48 @@ untouched `test/next_due_time_test.dart`'s companion counts already
 folded into that 17). Both `flutter build windows` and `flutter build apk
 --debug` clean (the pre-existing, documented KGP plugin warning aside).
 
-**Not yet done: real-device verification.** MIKE-12R was mid-experiment
-for the alarm-scheduling session's own PSS/reboot re-verification when
-this was built -- pushing a new APK there would have force-stopped that
-process and broken the very thing being measured. Once that concludes:
-create a real short unanchored interval (e.g. every 5-10 minutes) and
-confirm it fires close to on schedule; create a real anchored multi-hour
-interval and confirm it lands on the correct slot; and -- the one thing
-that can't be verified through unit tests alone -- manually force a
-missed-occurrence scenario (set a `schedule_last_run` far enough in the
-past relative to a short anchored interval) and confirm a real OS
-notification actually appears on-device, not just in a captured test
-callback.
+## Real-device verification, concluded
 
-## Open items, not yet settled
+Two real end-to-end passes on MIKE-12R, both confirmed via `dumpsys
+alarm`/logcat and (for the notification) Mike's own direct observation on
+the device, not just reasoning about the code:
 
-- **Event type name** — `schedule_interval` is a placeholder, easy to
-  rename before anything ships.
-- **Anchor date/time picker UX** — whether "Starting at" defaults to
-  "now" (pre-filled, one tap to accept) or forces an explicit pick.
-  Minor, worth deciding at implementation time rather than here.
-- Nothing else is blocking — the algorithm, minimum, and schema shape are
-  all settled per this conversation.
+1. **Mike's own real anchored binding** -- created through the actual
+   `ScheduledEventsScreen` UI (not a tool script): every 20 minutes,
+   starting at a specific time, bound to a throwaway leftover test script.
+   Armed correctly for the exact configured anchor, fired ~2 minutes after
+   the target (consistent with `android_alarm_manager_plus`'s own
+   inexact/`allowWhileIdle` batching, already documented in the alarm
+   -scheduling design), and rescheduled to exactly the next 20-minute slot
+   -- confirmed by reading the alarm's own `origWhen` before and after.
+2. **Missed-occurrence notification** -- `tool/create_missed_occurrence_test.dart`
+   (paired with `tool/remove_missed_occurrence_test.dart`, same convention
+   as every other throwaway-test-data pair in this project) created a real
+   `schedule_interval` binding anchored 90 minutes in the past at a
+   5-minute interval, then deliberately backdated MIKE-12R's own
+   `schedule_last_run` for it to the anchor itself (~18 slots behind) via
+   the real `ThemeSettingsDao` API, never raw SQL. Relaunching MIKE-12R
+   picked it up, found it drastically overdue, dispatched it once (jumping
+   to the current slot, not chain-firing through all 18), and posted the
+   missed-occurrence notification -- which Mike confirmed seeing on the
+   device itself. Both tool scripts' test data cleaned up (soft-deleted)
+   afterward.
+
+A UI bug was also found and fixed during this pass: the "New scheduled
+event" dialog's content was a plain fixed-size `Column`, no scrolling --
+once the anchor date/time row is showing, plus the on-screen keyboard for
+the interval field halving available height, it overflowed on a phone
+(`BOTTOM OVERFLOWED BY 119 PIXELS`, screenshotted by Mike). Fixed with a
+height-capped `ConstrainedBox` + `SingleChildScrollView` around the
+dialog's content -- the standard fix for a dialog whose content can
+outgrow the viewport, rather than trying to guess a height that always
+fits.
+
+## Open items -- resolved during the build
+
+- **Event type name** — kept as `schedule_interval`; never revisited.
+- **Anchor date/time picker UX** — defaults to "now" (pre-filled from
+  `DateTime.now()`/`TimeOfDay.now()` when the toggle is switched on), one
+  tap to accept or adjust.
+- Nothing else outstanding -- the algorithm, minimum, schema shape, and
+  UI are all built and real-device verified (see above).
