@@ -49,6 +49,12 @@ void main() {
       eventType: 'schedule_interval',
       tableName: null,
       scheduleConfig: scheduleConfig,
+      // Targeted at this test's own device -- see
+      // claude/essentials-v2-recurring-schedule-design.md's "Per-device
+      // targeting" section: an empty list is real but dormant, never due
+      // anywhere, which would make every test below vacuously pass for
+      // the wrong reason.
+      targetDevices: [settings.deviceId],
     );
     addTearDown(() => events.softDelete(id));
     addTearDown(() => settings.setDeviceSetting('schedule_last_run:$id', null));
@@ -98,6 +104,44 @@ void main() {
     await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
 
     final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
+    expect(lastRun, isNull);
+  });
+
+  test('a binding not targeting this device is never due, even though it is enabled and overdue', () async {
+    final scriptId = await createScript("notify('wrong device $runTag');");
+    final id = await events.create(
+      scriptId: scriptId,
+      eventType: 'schedule_interval',
+      tableName: null,
+      scheduleConfig: hourlyConfig(),
+      targetDevices: const ['some-other-device'],
+    );
+    addTearDown(() => events.softDelete(id));
+    addTearDown(() => settings.setDeviceSetting('schedule_last_run:$id', null));
+
+    await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
+
+    final lastRun = await settings.loadDeviceSetting('schedule_last_run:$id');
+    expect(lastRun, isNull);
+  });
+
+  test('a binding with no device selected is dormant -- never fires anywhere', () async {
+    final scriptId = await createScript("notify('no devices $runTag');");
+    final id = await events.create(
+      scriptId: scriptId,
+      eventType: 'schedule_interval',
+      tableName: null,
+      scheduleConfig: hourlyConfig(),
+      // targetDevices deliberately omitted -- defaults to empty, which per
+      // claude/essentials-v2-recurring-schedule-design.md must mean "won't
+      // run," not "runs everywhere."
+    );
+    addTearDown(() => events.softDelete(id));
+    addTearDown(() => settings.setDeviceSetting('schedule_last_run:$id', null));
+
+    await BackgroundScheduleService(settings: settings, notify: (_) async {}).runDueScheduledEvents();
+
+    final lastRun = await settings.loadDeviceSetting('schedule_last_run:$id');
     expect(lastRun, isNull);
   });
 

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import 'database_helper.dart';
@@ -7,7 +9,12 @@ import 'database_helper.dart';
 /// list of strings, not a Dart `enum`, since `EventDispatchService`
 /// already matches purely by string and there's no behavior difference
 /// between values beyond which UI section offers them.
-const dataEventTypes = ['record_created', 'record_saved', 'record_updated', 'record_deleted'];
+const dataEventTypes = [
+  'record_created',
+  'record_saved',
+  'record_updated',
+  'record_deleted',
+];
 const uiEventTypes = ['form_opened', 'form_closed', 'button_clicked'];
 const fieldScopedEventTypes = ['field_changed', 'button_clicked'];
 
@@ -30,6 +37,7 @@ class EventDefinition {
     required this.fieldName,
     required this.scheduleConfig,
     required this.enabled,
+    this.targetDevices = const [],
   });
 
   factory EventDefinition.fromRow(Map<String, Object?> row) => EventDefinition(
@@ -40,6 +48,7 @@ class EventDefinition {
     fieldName: row['field_name'] as String?,
     scheduleConfig: row['schedule_config'] as String?,
     enabled: (row['enabled'] as int) == 1,
+    targetDevices: _parseTargetDevices(row['target_devices'] as String?),
   );
 
   final int id;
@@ -49,6 +58,28 @@ class EventDefinition {
   final String? fieldName;
   final String? scheduleConfig;
   final bool enabled;
+
+  /// Which device(s) this binding runs on -- see
+  /// claude/essentials-v2-recurring-schedule-design.md's "Per-device
+  /// targeting" section. Empty means the binding is real but dormant --
+  /// never fires anywhere, on any device, until at least one is picked.
+  /// Deliberately fails closed, unlike every other nullable/unconfigured
+  /// field in this schema.
+  final List<String> targetDevices;
+}
+
+List<String> _parseTargetDevices(String? raw) {
+  if (raw == null) return const [];
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return const [];
+    return [
+      for (final v in decoded)
+        if (v is String) v,
+    ];
+  } catch (_) {
+    return const [];
+  }
 }
 
 /// CRUD for `event_definitions` -- same shape/conventions as
@@ -88,20 +119,29 @@ class EventDefinitionsDao {
     String? fieldName,
     String? scheduleConfig,
     bool enabled = true,
+    List<String> targetDevices = const [],
   }) async {
     final db = await _db;
     final idDefault = await _idDefaultExpression(db);
     late final int id;
     await db.transaction((txn) async {
       final columnList = idDefault == null
-          ? 'script_id, event_type, table_name, field_name, schedule_config, enabled'
-          : 'id, script_id, event_type, table_name, field_name, schedule_config, enabled';
+          ? 'script_id, event_type, table_name, field_name, schedule_config, enabled, target_devices'
+          : 'id, script_id, event_type, table_name, field_name, schedule_config, enabled, target_devices';
       final valuesSql = idDefault == null
-          ? '?1, ?2, ?3, ?4, ?5, ?6'
-          : '($idDefault), ?1, ?2, ?3, ?4, ?5, ?6';
+          ? '?1, ?2, ?3, ?4, ?5, ?6, ?7'
+          : '($idDefault), ?1, ?2, ?3, ?4, ?5, ?6, ?7';
       await txn.execute(
         'INSERT INTO event_definitions ($columnList) VALUES ($valuesSql)',
-        [scriptId, eventType, tableName, fieldName, scheduleConfig, enabled ? 1 : 0],
+        [
+          scriptId,
+          eventType,
+          tableName,
+          fieldName,
+          scheduleConfig,
+          enabled ? 1 : 0,
+          jsonEncode(targetDevices),
+        ],
       );
       final result = await txn.query('SELECT last_insert_rowid() AS id');
       id = result.first['id'] as int;
@@ -111,12 +151,30 @@ class EventDefinitionsDao {
 
   Future<void> setEnabled(int id, bool enabled) async {
     final db = await _db;
-    await db.execute('UPDATE event_definitions SET enabled = ?1 WHERE id = ?2', [enabled ? 1 : 0, id]);
+    await db.execute(
+      'UPDATE event_definitions SET enabled = ?1 WHERE id = ?2',
+      [enabled ? 1 : 0, id],
+    );
+  }
+
+  /// Whole-set replace of which device(s) [id] runs on -- same "submit the
+  /// complete new state" pattern as `SchemaMetadataDao.updateField`, not a
+  /// per-device toggle, since the picker UI always presents/edits the full
+  /// set at once.
+  Future<void> setTargetDevices(int id, List<String> targetDevices) async {
+    final db = await _db;
+    await db.execute(
+      'UPDATE event_definitions SET target_devices = ?1 WHERE id = ?2',
+      [jsonEncode(targetDevices), id],
+    );
   }
 
   Future<void> softDelete(int id) async {
     final db = await _db;
-    await db.execute('UPDATE event_definitions SET is_deleted = 1 WHERE id = ?1', [id]);
+    await db.execute(
+      'UPDATE event_definitions SET is_deleted = 1 WHERE id = ?1',
+      [id],
+    );
   }
 
   Future<String?> _idDefaultExpression(SqliteCrdt db) async {

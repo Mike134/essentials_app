@@ -270,7 +270,8 @@ const schemaStatements = <String>[
       "table_name"      TEXT,
       "field_name"      TEXT,
       "schedule_config" TEXT,
-      "enabled"         INTEGER NOT NULL DEFAULT 1
+      "enabled"         INTEGER NOT NULL DEFAULT 1,
+      "target_devices"  TEXT
     )
   ''',
 

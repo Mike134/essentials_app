@@ -79,7 +79,8 @@ Future<void> _cancelLeftoverSpikeAlarm() => AndroidAlarmManager.cancel(990001);
 /// exact same `device_settings` rows, so the format has to stay in sync,
 /// but it's simple and stable enough that a shared constant would be more
 /// ceremony than the duplication it avoids.
-String _lastRunKey(int eventDefinitionId) => 'schedule_last_run:$eventDefinitionId';
+String _lastRunKey(int eventDefinitionId) =>
+    'schedule_last_run:$eventDefinitionId';
 
 /// Reads this device's real scheduled bindings and their last-run times,
 /// and returns the next moment any of them will next be due -- the pure
@@ -91,7 +92,13 @@ Future<DateTime?> computeNextDueTimeForDevice({
   required ThemeSettingsDao settings,
   DateTime? now,
 }) async {
-  final bindings = await events.loadScheduled();
+  // A binding this device isn't targeted at should never arm an alarm
+  // here -- same device-targeting rule `BackgroundScheduleService
+  // .runDueScheduledEvents` enforces at dispatch time, applied one layer
+  // earlier so this device doesn't even wake up for it.
+  final bindings = (await events.loadScheduled())
+      .where((b) => b.targetDevices.contains(settings.deviceId))
+      .toList();
   final lastRunTimes = <int, DateTime?>{};
   for (final binding in bindings) {
     final text = await settings.loadDeviceSetting(_lastRunKey(binding.id));
@@ -117,11 +124,18 @@ Future<DateTime?> computeNextDueTimeForDevice({
 /// bootstrap (`HomeShell`) is guaranteed to run before any background
 /// alarm chain could exist in the first place, since scheduled events are
 /// themselves created through the app's own UI.
-Future<void> rescheduleNextAlarm({EventDefinitionsDao? events, ThemeSettingsDao? settings}) async {
+Future<void> rescheduleNextAlarm({
+  EventDefinitionsDao? events,
+  ThemeSettingsDao? settings,
+}) async {
   final eventsDao = events ?? EventDefinitionsDao();
-  final settingsDao = settings ?? ThemeSettingsDao(deviceId: await DeviceId.resolve());
+  final settingsDao =
+      settings ?? ThemeSettingsDao(deviceId: await DeviceId.resolve());
 
-  final due = await computeNextDueTimeForDevice(events: eventsDao, settings: settingsDao);
+  final due = await computeNextDueTimeForDevice(
+    events: eventsDao,
+    settings: settingsDao,
+  );
 
   await AndroidAlarmManager.initialize();
   await _cancelLeftoverSpikeAlarm();

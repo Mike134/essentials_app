@@ -61,7 +61,8 @@ class BackgroundScheduleService {
     return ThemeSettingsDao(deviceId: await DeviceId.resolve());
   }
 
-  static String _lastRunKey(int eventDefinitionId) => 'schedule_last_run:$eventDefinitionId';
+  static String _lastRunKey(int eventDefinitionId) =>
+      'schedule_last_run:$eventDefinitionId';
 
   /// `device_settings` keys ([ThemeSettingsDao.loadDeviceSetting]/
   /// [ThemeSettingsDao.setDeviceSetting]) this class records every pass
@@ -108,15 +109,33 @@ class BackgroundScheduleService {
       for (final binding in bindings) {
         if (!binding.enabled) continue;
         if (binding.eventType == 'app_launch') continue;
+        // A binding with no device selected is real but dormant -- never
+        // fires anywhere, on any device -- and one with a real list only
+        // fires on the device(s) actually in it. See
+        // claude/essentials-v2-recurring-schedule-design.md's "Per-device
+        // targeting" section for why: without this, a script's side
+        // effects would silently multiply once per connected device.
+        if (!binding.targetDevices.contains(settings.deviceId)) continue;
 
-        final lastRunText = await settings.loadDeviceSetting(_lastRunKey(binding.id));
-        final lastRun = lastRunText == null ? null : DateTime.tryParse(lastRunText);
+        final lastRunText = await settings.loadDeviceSetting(
+          _lastRunKey(binding.id),
+        );
+        final lastRun = lastRunText == null
+            ? null
+            : DateTime.tryParse(lastRunText);
         if (!_isDue(binding, lastRun, now)) continue;
 
-        if (lastRun != null) await _notifyIfOccurrencesWereMissed(binding, lastRun, now);
+        if (lastRun != null)
+          await _notifyIfOccurrencesWereMissed(binding, lastRun, now);
 
-        final results = await _dispatcher.dispatch(tableName: null, eventType: binding.eventType);
-        await settings.setDeviceSetting(_lastRunKey(binding.id), now.toIso8601String());
+        final results = await _dispatcher.dispatch(
+          tableName: null,
+          eventType: binding.eventType,
+        );
+        await settings.setDeviceSetting(
+          _lastRunKey(binding.id),
+          now.toIso8601String(),
+        );
         appliedCount++;
 
         for (final result in results) {
@@ -139,7 +158,12 @@ class BackgroundScheduleService {
         statusLastAppliedCountKey: '$appliedCount',
       });
     } catch (e) {
-      final priorFailures = int.tryParse(await settings.loadDeviceSetting(statusConsecutiveFailuresKey) ?? '0') ?? 0;
+      final priorFailures =
+          int.tryParse(
+            await settings.loadDeviceSetting(statusConsecutiveFailuresKey) ??
+                '0',
+          ) ??
+          0;
       await _tryRecordStatus(settings, {
         statusLastResultKey: 'error',
         statusLastErrorKey: e.toString(),
@@ -153,7 +177,10 @@ class BackgroundScheduleService {
   /// doc comment. A `null` value deletes that key
   /// ([ThemeSettingsDao.setDeviceSetting]'s own convention), used here for
   /// [statusLastErrorKey] on a successful pass.
-  Future<void> _tryRecordStatus(ThemeSettingsDao settings, Map<String, String?> values) async {
+  Future<void> _tryRecordStatus(
+    ThemeSettingsDao settings,
+    Map<String, String?> values,
+  ) async {
     try {
       for (final entry in values.entries) {
         await settings.setDeviceSetting(entry.key, entry.value);
@@ -200,7 +227,11 @@ class BackgroundScheduleService {
       return lastRun == null || now.difference(lastRun) >= recurrence.interval;
     }
     if (now.isBefore(anchor)) return false;
-    final currentSlot = anchorAlignedSlotAtOrBefore(anchor, recurrence.interval, now);
+    final currentSlot = anchorAlignedSlotAtOrBefore(
+      anchor,
+      recurrence.interval,
+      now,
+    );
     return lastRun == null || lastRun.isBefore(currentSlot);
   }
 
@@ -214,17 +245,30 @@ class BackgroundScheduleService {
   /// running the one that's actually about to happen. Best-effort, same
   /// as every other notification this class posts -- a failure here must
   /// never block the real dispatch that follows.
-  Future<void> _notifyIfOccurrencesWereMissed(EventDefinition binding, DateTime lastRun, DateTime now) async {
+  Future<void> _notifyIfOccurrencesWereMissed(
+    EventDefinition binding,
+    DateTime lastRun,
+    DateTime now,
+  ) async {
     if (binding.eventType != 'schedule_interval') return;
     final recurrence = parseRecurrenceConfig(binding.scheduleConfig);
     final anchor = recurrence?.anchor;
-    if (anchor == null) return; // unanchored schedules have no fixed slots to miss
+    if (anchor == null)
+      return; // unanchored schedules have no fixed slots to miss
 
-    final missed = missedOccurrenceCount(anchor, recurrence!.interval, lastRun, now);
+    final missed = missedOccurrenceCount(
+      anchor,
+      recurrence!.interval,
+      lastRun,
+      now,
+    );
     if (missed <= 0) return;
 
-    final scriptName = await _scripts.loadName(binding.scriptId) ?? 'a scheduled script';
+    final scriptName =
+        await _scripts.loadName(binding.scriptId) ?? 'a scheduled script';
     final occurrenceWord = missed == 1 ? 'occurrence' : 'occurrences';
-    await _tryNotify('"$scriptName" fell behind schedule -- skipped $missed missed $occurrenceWord and caught up to now.');
+    await _tryNotify(
+      '"$scriptName" fell behind schedule -- skipped $missed missed $occurrenceWord and caught up to now.',
+    );
   }
 }

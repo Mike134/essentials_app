@@ -24,9 +24,12 @@ class ThemeSettingsDao {
 
   Future<Map<String, String>> loadAppSettings() async {
     final db = await _db;
-    final rows = await db.query('SELECT * FROM app_settings WHERE is_deleted = 0');
+    final rows = await db.query(
+      'SELECT * FROM app_settings WHERE is_deleted = 0',
+    );
     return {
-      for (final row in rows) row['setting_key'] as String: row['value'] as String? ?? '',
+      for (final row in rows)
+        row['setting_key'] as String: row['value'] as String? ?? '',
     };
   }
 
@@ -46,7 +49,10 @@ class ThemeSettingsDao {
   Future<void> setDeviceSetting(String key, String? value) async {
     final db = await _db;
     if (value == null) {
-      await db.deleteWhere('device_settings', {'device_id': deviceId, 'setting_key': key});
+      await db.deleteWhere('device_settings', {
+        'device_id': deviceId,
+        'setting_key': key,
+      });
     } else {
       await db.upsert('device_settings', {
         'device_id': deviceId,
@@ -71,5 +77,20 @@ class ThemeSettingsDao {
 
   Future<String?> loadDeviceFontSize() => loadDeviceSetting(fontSizeKey);
 
-  Future<void> setDeviceFontSize(String? value) => setDeviceSetting(fontSizeKey, value);
+  Future<void> setDeviceFontSize(String? value) =>
+      setDeviceSetting(fontSizeKey, value);
+
+  /// Every device name that has ever written a `device_settings` row --
+  /// the real, live "who's actually out there" signal used by the
+  /// scheduled-event device-targeting picker (see
+  /// claude/essentials-v2-recurring-schedule-design.md), rather than a
+  /// separate device-registry table. A device that's never opened this
+  /// app at least once won't appear here yet -- expected, not a bug.
+  Future<List<String>> loadKnownDeviceIds() async {
+    final db = await _db;
+    final rows = await db.query(
+      'SELECT DISTINCT device_id FROM device_settings WHERE is_deleted = 0 ORDER BY device_id',
+    );
+    return [for (final row in rows) row['device_id'] as String];
+  }
 }

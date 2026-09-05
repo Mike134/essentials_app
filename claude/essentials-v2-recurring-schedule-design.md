@@ -1,5 +1,78 @@
 # Generalized recurring schedules for scripted events — design (2026-09-05)
 
+## Addendum: per-device targeting — built, real-device verified
+
+Added the same day, after Mike flagged a real correctness gap discovered
+while discussing the design above: since every device with the app open
+independently evaluates and fires the *same* synced `event_definitions`
+row, a script bound to a schedule would run once per connected device,
+not once total -- fine for a bare `notify()` but a real problem for any
+script that writes data (a duplicate insert per active device).
+
+**Schema:** `event_definitions.target_devices` -- a JSON array of device
+names (e.g. `["MIKE-CU","MIKE-12R"]`), bootstrapped via `tool
+/add_target_devices_column.dart` (same `--device-id`-required-unless
+-default-path template as `add_calendar_field_column.dart`). Applied
+directly to MIKE-CU's `essentials.db`, the server's `hub.db`, and
+MIKE-12R's own copy synced in via a relaunch -- confirmed present on all
+three, `event_definitions` row count and `PRAGMA integrity_check` both
+clean throughout.
+
+**Semantics, corrected from an earlier draft per Mike's explicit
+instruction -- fails closed, not permissive:**
+- Empty/no devices selected -- the binding is real but **dormant**,
+  never fires anywhere, on any device. This is the default for every
+  pre-existing row (they predate the column, so they read back as an
+  empty list) -- confirmed directly against MIKE-12R's real db after the
+  migration landed.
+- "All," in the UI, is purely a convenience button that checks every
+  currently-known device's box -- **not** a stored sentinel meaning
+  "unrestricted." A device that joins later is never silently included
+  in an already-saved "All" pick.
+- The known-device list is derived live from `device_settings`' own
+  distinct device names (`ThemeSettingsDao.loadKnownDeviceIds`) -- every
+  device that's ever actually run the app already has rows there, so no
+  separate device-registry table was needed.
+
+**Enforcement, at both places a device could act on a binding:**
+- `BackgroundScheduleService.runDueScheduledEvents()` skips any binding
+  where `!binding.targetDevices.contains(settings.deviceId)`, right
+  alongside the existing `enabled`/`app_launch` checks.
+- `alarm_schedule_service.dart`'s `computeNextDueTimeForDevice` filters
+  the same way *before* calling `nextDueTime`, so a device that isn't
+  targeted never even arms an alarm for a binding it wouldn't run anyway.
+
+**UI:** `ScheduledEventsScreen`'s create dialog gained a `_DeviceChecklist`
+(shared with a new standalone `_DeviceChecklistDialog` for editing an
+*existing* binding's devices after creation -- the only field on a
+binding this screen lets you change post-creation, reached via a new
+"Devices" icon next to Delete on each row). The binding list's subtitle
+now shows `Runs on: MIKE-CU, MIKE-12R` or `Runs on: none selected --
+won't fire`.
+
+**Tests:** two new cases each in `background_schedule_service_test.dart`
+and `alarm_schedule_service_test.dart` -- a binding targeting a different
+device is never due/never contributes, and a binding with no devices
+selected is dormant. All existing tests' `bindSchedule` helpers updated
+to target their own test device explicitly (an empty default would have
+made every prior assertion vacuously true for the wrong reason).
+
+**Real-device verification:** pushing the schema migration to MIKE-12R
+surfaced a real operational gotcha, not a code bug -- the tray-hosted
+server's own long-lived connection to `hub.db` didn't notice the direct
+file edit `tool/add_target_devices_column.dart --path hub.db` made while
+it was still running (same class of issue this project has hit before
+with direct `hub.db` edits -- see CLAUDE.md's "Schema Admin" session for
+the precedent). Fixed by restarting the full tray-host process tree
+(killing both `tray_host.ps1` and its `server.exe` child, not just one),
+after which MIKE-12R's own relaunch correctly picked up the migration.
+Confirmed via a real `adb pull`: the column exists, every pre-existing
+binding (including Mike's own live test one) correctly reads back with
+no target devices and is therefore dormant -- `dumpsys alarm` showed no
+alarm armed for the app afterward, exactly the expected safe-by-default
+outcome. `flutter analyze` clean, both `flutter build windows`/`apk
+--debug` clean throughout.
+
 **Status: built, tested, and real-device verified on MIKE-12R.** A real
 UI-created anchored binding (every 20 minutes, starting at a specific
 time, Mike's own test) fired on schedule and rescheduled correctly to the

@@ -8,6 +8,8 @@ import 'package:permission_handler/permission_handler.dart';
 import '../db/event_definitions_dao.dart';
 import '../db/script_definitions_dao.dart';
 import '../db/sync_service.dart';
+import '../db/theme_settings_dao.dart';
+import '../util/device_id.dart';
 import '../util/scripting/alarm_schedule_service.dart';
 import '../util/scripting/recurrence.dart';
 
@@ -36,6 +38,7 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
   final _scripts = ScriptDefinitionsDao();
   List<EventDefinition> _bindings = const [];
   List<ScriptDefinition> _availableScripts = const [];
+  List<String> _knownDeviceIds = const [];
   bool _loading = true;
 
   /// Live-refresh subscription -- see `ScriptEditorScreen`'s own doc
@@ -92,10 +95,14 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
     setState(() => _loading = true);
     final bindings = await _events.loadScheduled();
     final scripts = await _scripts.loadAll();
+    final knownDeviceIds = await ThemeSettingsDao(
+      deviceId: await DeviceId.resolve(),
+    ).loadKnownDeviceIds();
     if (!mounted) return;
     setState(() {
       _bindings = bindings;
       _availableScripts = scripts;
+      _knownDeviceIds = knownDeviceIds;
       _loading = false;
     });
   }
@@ -135,17 +142,45 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
     if (_availableScripts.isEmpty) return;
     final result = await showDialog<_NewScheduleResult>(
       context: context,
-      builder: (context) => _NewScheduleDialog(scripts: _availableScripts),
+      builder: (context) => _NewScheduleDialog(
+        scripts: _availableScripts,
+        knownDeviceIds: _knownDeviceIds,
+      ),
     );
     if (result == null) return;
     await _events.create(
       scriptId: result.scriptId,
       eventType: result.eventType,
       scheduleConfig: result.scheduleConfig,
+      targetDevices: result.targetDevices,
     );
     await _reload();
     _afterScheduleChanged();
   }
+
+  /// Edits which device(s) an *existing* binding runs on -- separate from
+  /// the create dialog's own picker since this is the only field on a
+  /// binding this screen ever lets you change after creation (everything
+  /// else is delete-and-recreate). See claude/essentials-v2-recurring
+  /// -schedule-design.md's "Per-device targeting" section.
+  Future<void> _editDevices(EventDefinition binding) async {
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (context) => _DeviceChecklistDialog(
+        knownDeviceIds: _knownDeviceIds,
+        initiallySelected: binding.targetDevices,
+      ),
+    );
+    if (result == null) return;
+    await _events.setTargetDevices(binding.id, result);
+    await _reload();
+    _afterScheduleChanged();
+  }
+
+  String _describeTargetDevices(List<String> targetDevices) =>
+      targetDevices.isEmpty
+      ? 'Runs on: none selected -- won\'t fire'
+      : 'Runs on: ${targetDevices.join(', ')}';
 
   String _scriptNameFor(int scriptId) => _availableScripts
       .firstWhere(
@@ -255,7 +290,8 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                     ListTile(
                       title: Text(_describe(binding)),
                       subtitle: Text(
-                        'Runs "${_scriptNameFor(binding.scriptId)}"',
+                        'Runs "${_scriptNameFor(binding.scriptId)}" -- '
+                        '${_describeTargetDevices(binding.targetDevices)}',
                       ),
                       leading: Switch(
                         value: binding.enabled,
@@ -265,13 +301,23 @@ class _ScheduledEventsScreenState extends State<ScheduledEventsScreen> {
                           _afterScheduleChanged();
                         },
                       ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: () async {
-                          await _events.softDelete(binding.id);
-                          await _reload();
-                          _afterScheduleChanged();
-                        },
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.devices_outlined),
+                            tooltip: 'Which device(s) this runs on',
+                            onPressed: () => _editDevices(binding),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () async {
+                              await _events.softDelete(binding.id);
+                              await _reload();
+                              _afterScheduleChanged();
+                            },
+                          ),
+                        ],
                       ),
                     ),
               ],
@@ -285,10 +331,131 @@ class _NewScheduleResult {
     required this.eventType,
     required this.scriptId,
     this.scheduleConfig,
+    this.targetDevices = const [],
   });
   final String eventType;
   final int scriptId;
   final String? scheduleConfig;
+  final List<String> targetDevices;
+}
+
+/// Shared checklist body for picking which device(s) a binding runs on --
+/// used both inline in `_NewScheduleDialog` (create) and standalone in
+/// `_DeviceChecklistDialog` (edit an existing binding). "All" is
+/// deliberately just a convenience action that checks every currently
+/// -known device -- not a stored sentinel meaning "unrestricted" -- per
+/// Mike's own explicit correction: a device added later is never silently
+/// included in an already-saved "All" pick, and picking nothing is a real,
+/// legal, dormant state, not an error. See
+/// claude/essentials-v2-recurring-schedule-design.md's "Per-device
+/// targeting" section.
+class _DeviceChecklist extends StatelessWidget {
+  const _DeviceChecklist({
+    required this.knownDeviceIds,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final List<String> knownDeviceIds;
+  final Set<String> selected;
+  final ValueChanged<Set<String>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Runs on',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: knownDeviceIds.isEmpty
+                  ? null
+                  : () => onChanged(knownDeviceIds.toSet()),
+              child: const Text('All'),
+            ),
+            TextButton(
+              onPressed: selected.isEmpty ? null : () => onChanged(const {}),
+              child: const Text('None'),
+            ),
+          ],
+        ),
+        if (knownDeviceIds.isEmpty)
+          const Text('No devices have connected yet.')
+        else
+          for (final deviceId in knownDeviceIds)
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: Text(deviceId),
+              value: selected.contains(deviceId),
+              onChanged: (checked) {
+                final next = Set<String>.from(selected);
+                if (checked ?? false) {
+                  next.add(deviceId);
+                } else {
+                  next.remove(deviceId);
+                }
+                onChanged(next);
+              },
+            ),
+        if (selected.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'No device selected -- this binding will exist but never fire.',
+              style: TextStyle(color: Colors.orange, fontSize: 12),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _DeviceChecklistDialog extends StatefulWidget {
+  const _DeviceChecklistDialog({
+    required this.knownDeviceIds,
+    required this.initiallySelected,
+  });
+  final List<String> knownDeviceIds;
+  final List<String> initiallySelected;
+
+  @override
+  State<_DeviceChecklistDialog> createState() => _DeviceChecklistDialogState();
+}
+
+class _DeviceChecklistDialogState extends State<_DeviceChecklistDialog> {
+  late Set<String> _selected = widget.initiallySelected.toSet();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Runs on'),
+      content: SizedBox(
+        width: 360,
+        child: _DeviceChecklist(
+          knownDeviceIds: widget.knownDeviceIds,
+          selected: _selected,
+          onChanged: (next) => setState(() => _selected = next),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _selected.toList()),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }
 
 /// Every unit this dialog offers, paired with its length in minutes --
@@ -307,8 +474,12 @@ const _unitMinutes = {
 };
 
 class _NewScheduleDialog extends StatefulWidget {
-  const _NewScheduleDialog({required this.scripts});
+  const _NewScheduleDialog({
+    required this.scripts,
+    required this.knownDeviceIds,
+  });
   final List<ScriptDefinition> scripts;
+  final List<String> knownDeviceIds;
 
   @override
   State<_NewScheduleDialog> createState() => _NewScheduleDialogState();
@@ -322,6 +493,7 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
   DateTime _anchorDate = DateTime.now();
   TimeOfDay _anchorTime = TimeOfDay.now();
   int? _scriptId;
+  Set<String> _selectedDevices = {};
 
   @override
   void initState() {
@@ -515,6 +687,12 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
                   ],
                   onChanged: (value) => setState(() => _scriptId = value),
                 ),
+                const SizedBox(height: 12),
+                _DeviceChecklist(
+                  knownDeviceIds: widget.knownDeviceIds,
+                  selected: _selectedDevices,
+                  onChanged: (next) => setState(() => _selectedDevices = next),
+                ),
               ],
             ),
           ),
@@ -534,6 +712,7 @@ class _NewScheduleDialogState extends State<_NewScheduleDialog> {
                     eventType: _eventType,
                     scriptId: _scriptId!,
                     scheduleConfig: _scheduleConfig,
+                    targetDevices: _selectedDevices.toList(),
                   ),
                 ),
           child: const Text('Add'),

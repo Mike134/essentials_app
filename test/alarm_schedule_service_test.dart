@@ -49,6 +49,12 @@ void main() {
       eventType: eventType,
       tableName: null,
       scheduleConfig: scheduleConfig,
+      // Targeted at this test's own device -- computeNextDueTimeForDevice
+      // now filters by target_devices too (see
+      // claude/essentials-v2-recurring-schedule-design.md's "Per-device
+      // targeting" section), and an empty list would make this binding
+      // vacuously never contribute, for the wrong reason.
+      targetDevices: [settings.deviceId],
     );
     addTearDown(() => events.softDelete(id));
     addTearDown(() => settings.setDeviceSetting('schedule_last_run:$id', null));
@@ -97,6 +103,23 @@ void main() {
     final scriptId = await createScript("notify('disabled $runTag');");
     final eventId = await bindSchedule(scriptId, 'schedule_interval', scheduleConfig: '{"interval": 1, "unit": "hours"}');
     await events.setEnabled(eventId, false);
+    final after = await due();
+
+    expect(after, before);
+  });
+
+  test('a binding not targeting this device never contributes -- result is unchanged', () async {
+    final before = await due();
+    final scriptId = await createScript("notify('wrong device $runTag');");
+    final id = await events.create(
+      scriptId: scriptId,
+      eventType: 'schedule_interval',
+      tableName: null,
+      scheduleConfig: '{"interval": 1, "unit": "hours"}',
+      targetDevices: const ['some-other-device'],
+    );
+    addTearDown(() => events.softDelete(id));
+    addTearDown(() => settings.setDeviceSetting('schedule_last_run:$id', null));
     final after = await due();
 
     expect(after, before);

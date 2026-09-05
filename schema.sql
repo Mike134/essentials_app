@@ -355,7 +355,15 @@ CREATE TABLE "event_definitions" (
     "table_name"      TEXT,
     "field_name"      TEXT,
     "schedule_config" TEXT,
-    "enabled"         INTEGER NOT NULL DEFAULT 1
+    "enabled"         INTEGER NOT NULL DEFAULT 1,
+    -- JSON array of device-name strings this binding runs on, e.g.
+    -- '["MIKE-CU","MIKE-12R"]'. NULL/empty means the binding is real but
+    -- dormant -- never fires anywhere. Deliberately fails CLOSED, unlike
+    -- every other unconfigured/nullable field in this schema (which fail
+    -- permissive) -- see claude/essentials-v2-recurring-schedule-design.md's
+    -- "Per-device targeting" section for why: without this, a script's
+    -- side effects silently multiply once per connected device.
+    "target_devices"  TEXT
 );
 
 -- ===================== SCHEMA MIGRATION SYSTEM =====================
