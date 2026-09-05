@@ -8770,4 +8770,28 @@ Confirmed end-to-end on MIKE-CU again after the rename/extension
 bridge correctly); 12 unit tests total now (`test/read_file_test.dart`).
 `flutter analyze` clean, `USER_GUIDE.md` updated with the final names.
 
+**`writeFile(path, text)` added same day, after a real discussion about
+input shape.** Mike's first sketch (`writeFile(path, array)`) turned out
+to mean an opaque blob of content, not a genuinely dimensioned array --
+settled on a plain string instead, written verbatim as UTF-8, no
+encoding opinion ("It is in a text variable but it could represent
+ascii, hex, binary whatever [the] function doesn't care" -- his words).
+Same conventions as the read functions: no path restriction, always
+overwrites in one shot (no append -- read the lines, push new ones on,
+write the whole thing back if you need to add to a file), `null` on
+success (crosses the bridge as JS `undefined`, same as every other
+void-returning bridge function here -- check with `== null`, not
+`=== null`), the real exception wrapped in `<<...>>` verbatim on
+failure. `lib/util/scripting/read_file.dart` renamed again to
+`file_io.dart` (now houses all three functions). 18 unit tests total
+(`test/file_io_test.dart`). Confirmed end-to-end on MIKE-CU: a real file
+created and written with the exact given content (verified by reading
+it back outside the app entirely), the write-then-read round trip
+through the script API matched, a bad path returned the real
+`PathNotFoundException` verbatim. `flutter analyze` clean, `USER_GUIDE
+.md` updated. **Mike asked to confirm `readFileLines` on MIKE-12R
+himself the next time he actually uses it** -- not yet done, flagged
+here so it isn't forgotten; both MIKE-CU and MIKE-12R are already on
+builds carrying all three functions.
+
 **Next session:** not yet decided.

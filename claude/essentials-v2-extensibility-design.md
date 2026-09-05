@@ -337,3 +337,55 @@ bridge. 6 new unit tests added to `test/read_file_test.dart` (now 12
 total across both functions, including the `n <= 0`/more-lines-than-exist/
 empty-file/error cases for `readFileLinesOf`) — all pass. `flutter
 analyze` clean. `USER_GUIDE.md` updated with both final names.
+
+## `writeFile(path, text)` — added same day, after a real discussion about the shape of the input
+
+Mike's own first sketch used `writeFile(path, array)`, expecting a real
+JS array -- discussed and settled on a plain string instead once it came
+out he was picturing the second argument as more of an opaque "blob" of
+content than a genuinely dimensioned array. Every design point mirrors
+`readFileFirstLine`/`readFileLines`'s own already-settled reasoning,
+confirmed by Mike explicitly rather than assumed:
+
+- **No path restriction** -- same "let the file system decide" posture.
+- **Always overwrites, one shot** -- never appends, never partial-writes.
+  If a script wants to add to a file's existing content, the pattern is
+  `readFileLines` the whole thing, push new lines onto the array, then
+  `writeFile` it all back -- no separate append function needed.
+- **`text` is a plain string, written verbatim as UTF-8.** The function
+  makes no interpretation of content beyond that -- if a script wants to
+  represent hex, base64, or otherwise-binary data, it's responsible for
+  choosing a text-safe encoding itself; `writeFile` is purely the pipe
+  that gets a string onto disk, not an encoder. Mike's own framing:
+  "It is in a text variable but it could represent ascii, hex, binary
+  whatever [the] function doesn't care."
+- **No directory auto-creation** -- a missing parent folder fails with
+  the real OS error, same as every other failure mode here.
+- **Return value matches the read functions' own convention exactly:**
+  `null` on success (nothing meaningful to hand back -- the write either
+  happened or it didn't, same shape as `record.save()`), the real
+  exception wrapped in `<<...>>` verbatim on failure. **Confirmed via the
+  real bridge, worth knowing precisely:** a Dart `null` return crosses
+  this bridge as JS `undefined`, not literal `null` -- the same behavior
+  every other void-returning bridge function here already has
+  (`record.save()`/`record.delete()`/`notify()` all return Dart `null`
+  through the identical mechanism). `undefined == null` is `true` in JS,
+  so a script checking success with loose equality or plain falsiness
+  works correctly; a strict `=== null` check would not.
+
+`lib/util/scripting/read_file.dart` renamed again, to `file_io.dart`
+(now houses all three functions -- closely related enough to share one
+file, same reasoning as the first rename). `writeFileOf` added
+alongside the two read functions; `test/read_file_test.dart` renamed to
+`test/file_io_test.dart`, 6 new tests added (18 total across all three
+functions: verbatim write, overwrite-not-append, embedded newlines,
+empty string is a valid write, missing parent directory, directory
+path). Confirmed end-to-end through the real QuickJS bridge on
+MIKE-CU: a real file was created and written with the exact given
+content (verified by reading it back outside the app entirely, not just
+through `readFileFirstLine`), the write-then-read round trip through the
+script API matched, and a bad path correctly returned the real
+`PathNotFoundException` verbatim. `flutter analyze` clean, `USER_GUIDE
+.md` updated. Android confirmation deferred to Mike's own next real use
+of the function (per his own request), not re-attempted here given the
+earlier sync-noise detour documented above.

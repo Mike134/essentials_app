@@ -9,7 +9,7 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 import '../date_format.dart';
 import '../sql_identifiers.dart';
 import 'js_engine.dart';
-import 'read_file.dart';
+import 'file_io.dart';
 
 /// Which record (if any) a script run is bound to -- see
 /// claude/essentials-v2-phase5-design.md's Script API section: `record`
@@ -375,10 +375,11 @@ void _installBridge(
   // claude/essentials-v2-extensibility-design.md -- the first capability
   // that genuinely leaves the sandbox (real filesystem I/O on this
   // device), proving the same additive pattern as deviceId()/localTime()
-  // above. See read_file.dart's own doc comment for the no-
+  // above. See file_io.dart's own doc comment for the no-
   // path-restriction/verbatim-error-sentinel reasoning.
   install('__bridge_read_file_first_line', readFileFirstLineOf);
   install('__bridge_read_file_lines', readFileLinesOf);
+  install('__bridge_write_file', writeFileOf);
   install('__bridge_navigate_to', (String table) {
     final resolved = _resolveTableName(readDb, table);
     navigations.add(NavigateRequest.toTable(resolved));
@@ -421,6 +422,7 @@ void _installBridge(
       var raw = __bridge_read_file_lines(path, n === undefined ? 0 : n);
       return raw.indexOf('<<') === 0 ? raw : JSON.parse(raw);
     }
+    function writeFile(path, text) { return __bridge_write_file(path, text); }
     var navigate = {
       to: function(tableName) { return __bridge_navigate_to(tableName); },
       toRecord: function(rec) {
