@@ -5,10 +5,14 @@
 > tooling reads. Keep both in sync, same convention as every other design doc
 > here (see CLAUDE.md "Repo move: CLAUDE.md/schema.sql").
 
-**Status: build order steps 1-6 done (step 6 folding in step 7), step 4
-real-device verified on MIKE-12R. Steps 5-7 build-verified only, not yet
-separately real-device verified -- step 8 (the full real-device
-verification pass) is next.** Grew directly out of the
+**Status: build order steps 1-6 done (step 6 folding in step 7), and the
+core of step 8 now real-device verified on MIKE-12R** -- a real
+`schedule_hourly` binding was confirmed live, on real hardware, to arm on
+sync, fire, dispatch, and correctly reschedule itself an hour later; and
+deleting it was confirmed to correctly cancel the alarm rather than
+leaving it armed. Two step 8 checklist items remain open by choice, not
+oversight -- see that section's own "Not done this pass" note. Grew
+directly out of the
 2026-09-04 background-check memory-leak investigation (see CLAUDE.md's
 session write-up) — not a new phase number, a scoped fix for a problem that
 investigation found and fully diagnosed.
@@ -581,6 +585,83 @@ after a real launch, and that the new 12-hour task is registered in its
 place, is part of step 8's own real-device verification pass, not done
 here (this project's standing working agreement: Code builds and
 verifies, Mike drives interactive/device verification).
+
+## Build order step 8, core mechanics confirmed live on MIKE-12R
+
+**Confirmed directly via `adb`/`dumpsys`/`logcat` and by pulling and
+querying the real, on-device `essentials.db` -- not assumed from the code
+alone.** Two new paired tool scripts,
+`tool/create_alarm_step8_test_binding.dart`/
+`tool/remove_alarm_step8_test_binding.dart` (same convention as every
+other throwaway-test-data pair in this project -- kept in the repo as a
+historical record, not deleted after use), create/tombstone a real
+`schedule_hourly` binding through the actual `ScriptDefinitionsDao`/
+`EventDefinitionsDao` API (never raw SQL against these `sqlite_crdt`
+-managed tables -- see CLAUDE.md "Letos/DBeaver workflow going forward").
+
+**Sequence run for real, both directions:**
+1. Created the test binding against the real Windows `essentials.db`,
+   confirmed it landed on `hub.db` after briefly launching the real
+   Windows exe (its `SyncService` connect does a full catch-up push on
+   every connect -- see `safeChangesetBuilder`'s own doc comment).
+2. Relaunched MIKE-12R. `dumpsys jobscheduler`/`logcat` confirmed the
+   safety-net task registration from step 6 ran cleanly on this same
+   launch (see that section for the full write-up); the new binding
+   synced in, and -- since it had no recorded `schedule_last_run:*`,
+   `nextDueTime` correctly evaluates that as due immediately -- a real
+   one-shot alarm was armed for essentially "now"
+   (`AlarmBroadcastReceiver`, confirmed in `logcat`) and fired within
+   seconds.
+3. Pulled MIKE-12R's real `essentials.db` (+`-wal`, checkpointed locally)
+   and confirmed directly: `device_settings` gained a real
+   `MIKE-12R / schedule_last_run:<eventId>` row timestamped to the exact
+   fire moment, and `bg_check:last_result` = `ok` /
+   `bg_check:last_applied_count` = `1` for `MIKE-12R` -- the dispatch
+   genuinely ran, not just the alarm firing into a no-op.
+4. `dumpsys alarm` confirmed a **new** one-shot alarm was re-armed for
+   almost exactly one hour after the fire (`origWhen` values ~3,605,690ms
+   apart, i.e. ~60.1 minutes) -- `scheduledEventAlarmCallback`'s `finally`
+   block correctly recomputed and rescheduled after a real dispatch pass,
+   not just in the "nothing due" case step 4 already covered.
+5. Soft-deleted the test binding, pushed the tombstone the same way, and
+   relaunched MIKE-12R again: `logcat`/`dumpsys alarm` confirmed the
+   previously-armed +1h alarm was explicitly cancelled
+   (`Reason=alarm_cancelled`) rather than left to fire uselessly, and no
+   alarm remains armed for the app afterward -- editing/deleting a
+   binding correctly reschedules (here, correctly un-schedules), matching
+   the exact code path `ScheduledEventsScreen`'s own actions use.
+
+This is the first real confirmation of the *fire-and-reschedule* half of
+the design -- step 4's own real-device pass could only confirm the
+"nothing due, correctly cancel" case, since no real binding existed on
+the device at the time.
+
+**Not done this pass, deliberately, not overlooked:**
+- **A real reboot test.** The underlying mechanism
+  (`rescheduleOnReboot: true`) is completely unchanged since step 2's own
+  live reboot test (a real `adb reboot`, confirmed the alarm fired before
+  reconnection with no app process ever created) -- nothing in steps 3-6
+  touched that code path. Re-running a full reboot test is disruptive to
+  the physical device (needs a fresh wireless-adb pairing dance
+  afterward, per this project's own documented recovery steps) and adds
+  little new information given the mechanism is provably unchanged; worth
+  doing if Mike wants extra confidence, not done unilaterally here.
+- **Multi-hour PSS re-monitoring** to directly re-measure the
+  engine-boot-cycle frequency drop the whole design exists to achieve.
+  Given steps 6-7's own direct confirmation that the old 15-minute
+  `workmanager` task is gone and replaced by a 12-hour safety net, plus
+  this section's confirmation that the alarm chain only ever arms when
+  something is genuinely due, the frequency drop is true by construction
+  now, not just hoped for -- but a fresh multi-hour PSS trace (matching
+  the original 2026-09-04 investigation's methodology) would be the most
+  direct possible confirmation and hasn't been re-run. Best done as
+  passive observation over normal usage (the `BackgroundProcessesScreen`
+  already surfaces `bg_check:*` timestamps for exactly this kind of
+  spot-check) rather than a dedicated multi-hour session here.
+
+`flutter analyze` clean project-wide throughout this pass. No app code
+changed for step 8 itself -- this was pure verification against the
+already-built steps 1-6.
 
 ## Open questions for Mike (judgment calls made above, worth confirming before/at build time)
 
