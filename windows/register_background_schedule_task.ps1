@@ -11,9 +11,22 @@
 # same "idempotent to call again" property registerBackgroundScheduleTask
 # has on the Android side.
 #
-# Every 15 minutes, matching Android's own WorkManager floor -- picked
-# for consistency between platforms, not because Windows itself imposes
-# the same limit. Launches the real, already-built exe with the one flag
+# Every 1 minute -- Windows Task Scheduler's own floor for a repeating
+# trigger (1-minute repetition intervals are supported; anything shorter
+# is silently clamped up to 1 minute, confirmed against Task Scheduler's
+# own documented limits). Originally every 15 minutes, matching Android's
+# WorkManager floor for consistency between platforms -- tightened after
+# real-device testing (see claude/essentials-v2-alarm-scheduling-design.md,
+# "Switched to exact alarms") showed a 15-minute Windows polling cadence
+# produced multi-minute drift on a schedule_interval binding shorter than
+# 15 minutes, once Android's own side was tightened to alarmClock's
+# to-the-second firing. Mike's own call, made knowingly: he doesn't plan
+# to leave a short-duration scheduled event running unattended for long
+# stretches, so the extra background-check frequency this costs (each
+# check still launches the real exe briefly -- see
+# windows_background_entrypoint.dart's own doc comment for the cost) is
+# an acceptable trade for tighter timing while one actually is running.
+# Launches the real, already-built exe with the one flag
 # main.dart checks for (see windows_background_entrypoint.dart) -- the
 # exe hides its own window immediately (windows/runner/main.cpp) and
 # exits itself when done (via WidgetsBinding.exitApplication, not a bare
@@ -41,12 +54,12 @@ if (-not (Test-Path $exePath)) {
 $taskName = 'EssentialsAppBackgroundScheduleCheck'
 
 $action = New-ScheduledTaskAction -Execute $exePath -Argument '--background-schedule-check'
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days (365 * 20))
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days (365 * 20))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Essentials app: runs due hourly/daily/weekly scheduled scripts in the background.' -Force | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Essentials app: runs due scheduled scripts in the background.' -Force | Out-Null
 
-Write-Host "Registered scheduled task '$taskName', running every 15 minutes, targeting:"
+Write-Host "Registered scheduled task '$taskName', running every 1 minute, targeting:"
 Write-Host "  $exePath"
 Write-Host 'Note: this points at the exe currently at that path. Re-run this script after any'
 Write-Host 'future `flutter build windows` if the task ever seems to stop picking up new builds --'

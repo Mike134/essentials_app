@@ -8,14 +8,28 @@
          so these have to be declared here. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- android_alarm_manager_plus (alarm-based scheduling spike, see
+    <!-- android_alarm_manager_plus (alarm-based scheduling, see
          claude/essentials-v2-alarm-scheduling-design.md). Its own
          AndroidManifest.xml declares no components at all, so the
          service/receivers below have to be declared here per the
-         package's own README. No SCHEDULE_EXACT_ALARM: every alarm this
-         app schedules uses exact=false (AlarmManagerCompat.setAndAllowWhileIdle),
-         a deliberate choice (see the design doc) that only needs that
-         permission when exact=true. -->
+         package's own README.
+         SCHEDULE_EXACT_ALARM: needed for both exact=true and
+         alarmClock=true (AlarmManagerCompat.setAlarmClock, the app's
+         current mode; see alarm_schedule_service.dart's own doc
+         comment for why plain exact=true wasn't enough: even a real
+         exact alarm is throttled by Android's own anti-abuse policy to
+         roughly once every 9 minutes, a real problem once
+         schedule_interval allows intervals as short as 5). Not
+         auto-granted on Android 13+ (target SDK here is well above
+         that); the user grants it once via a system Settings screen,
+         requested through permission_handler's
+         Permission.scheduleExactAlarm from HomeShell's own bootstrap,
+         same one-time pattern as the existing MANAGE_EXTERNAL_STORAGE
+         gate. alarm_schedule_service.dart checks the real granted status
+         before every arm and falls back to the old plain inexact
+         behavior if it's ever not granted, so a revoked/never-granted
+         permission degrades gracefully. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application

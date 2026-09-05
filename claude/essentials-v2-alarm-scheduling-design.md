@@ -711,14 +711,187 @@ already-built steps 1-6.
 
 ## Open questions for Mike (judgment calls made above, worth confirming before/at build time)
 
-- **Exact vs. inexact alarm precision** — recommended inexact (no extra
-  permission, "close enough" timing), given hourly/daily/weekly
-  granularity. Confirm this is acceptable, or flag if to-the-minute
-  precision actually matters for some future use case.
+- ~~**Exact vs. inexact alarm precision**~~ — **superseded, switched to
+  exact.** See "Switched to exact alarms" below.
 - **Safety-net check frequency** — proposed 6–24 hours, arbitrary,
   genuinely open to adjustment.
-- **Windows follow-up** — confirm it's fine to defer, given it was never
-  shown to have the same problem.
+- ~~**Windows follow-up**~~ — **it did turn out to have the same problem,
+  once short intervals were actually tested.** See "Windows tightened to
+  1-minute polling" below.
 - **Unconfigured time/day "next due" semantics** — proposed "due
   immediately," matching the current permissive fallback; flag if a
   different default is wanted.
+
+## Switched to exact alarms (2026-09-05) — real drift found live, once schedule_interval allowed short intervals
+
+The inexact-alarm recommendation above was made when the shortest real
+schedule was hourly/daily/weekly, where "close enough" batching genuinely
+doesn't matter. `claude/essentials-v2-recurring-schedule-design.md`'s
+`schedule_interval` redesign later allowed intervals as short as 5
+minutes -- and live testing on MIKE-12R (two real `schedule_interval`
+bindings, 11 and 13 minutes, running against the alarm chain built here)
+found ColorOS batching an inexact (`setAndAllowWhileIdle`) alarm by a
+full **8 minutes** past its scheduled slot (`dumpsys alarm` confirmed the
+alarm was correctly armed for the right moment with an 8m4s window, and
+the fire landed at the very end of that window, to the second) -- nearly
+doubling the effective period of an 11-minute binding. Fine for
+hourly+, a real problem at 5-20 minute granularity.
+
+**Fix:** `rescheduleNextAlarm()` (`alarm_schedule_service.dart`) now
+checks `Permission.scheduleExactAlarm.isGranted` (real, live status, not
+assumed) and passes that as `exact:` to `AndroidAlarmManager.oneShotAt` --
+`exact: true` when granted, falling back to the old `exact: false`
+behavior when it isn't, so a device that hasn't granted the permission
+(or ever revokes it) degrades gracefully instead of the plugin throwing
+(confirmed via the plugin's own doc comment: it throws outright if
+`exact: true` is requested without the permission actually granted).
+`ensureExactAlarmPermission()` (same file) is the one-time request,
+called fire-and-forget from `HomeShell`'s Android bootstrap alongside the
+other alarm-chain calls -- a no-op once already granted, and when it
+isn't, `Permission.scheduleExactAlarm.request()` doesn't show a normal
+runtime Allow/Deny dialog (Android's own design for this permission, not
+a `permission_handler` quirk) -- it takes the user straight to the system
+"Alarms & reminders" special-app-access settings screen, a persistent
+device setting exactly like the existing `MANAGE_EXTERNAL_STORAGE` grant.
+`SCHEDULE_EXACT_ALARM` added to `AndroidManifest.xml`, replacing the old
+comment explaining why it *wasn't* needed.
+
+**Real-device check, same session: the permission screen never appeared
+at all.** `dumpsys package com.example.essentials_app` showed
+`SCHEDULE_EXACT_ALARM` already granted on MIKE-12R at install time --
+this device/build combination apparently auto-grants it for a
+sideloaded/debug app rather than gating it behind the settings screen
+`ensureExactAlarmPermission()` was built to show. `Permission
+.scheduleExactAlarm.request()` correctly no-ops when already granted, so
+nothing was broken -- there was just nothing to ask for on this device.
+Not something to design around further; the request call stays in place
+for any device where it genuinely isn't pre-granted.
+
+**Escalated to `alarmClock`, same session -- exact=true alone wasn't
+enough.** A temporary debug print confirmed `exact: true` really was
+being requested with the permission genuinely granted, yet MIKE-12R's
+11-minute `schedule_interval` binding still drifted several minutes past
+its slot. Root cause: even a genuinely exact alarm
+(`AlarmManagerCompat.setExactAndAllowWhileIdle`) is subject to Android's
+own OS-level anti-abuse throttle -- undocumented in
+`android_alarm_manager_plus` itself, but real, per `AlarmManager`'s own
+platform docs: no more than once every ~9 minutes per app, with OEM skins
+like ColorOS often layering their own standby-bucket restrictions on top.
+Confirmed by reading the plugin's native `AlarmService.java`: `exact:
+true` + `allowWhileIdle: true` maps directly to `setExactAndAllowWhileIdle`,
+exactly the throttled call.
+
+`AlarmManagerCompat.setAlarmClock` (the plugin's `alarmClock: true`
+parameter) is the one alarm type Android fully exempts from Doze/
+standby-bucket throttling -- genuinely to-the-second, no OS-imposed
+minimum gap -- gated behind the same `SCHEDULE_EXACT_ALARM` permission
+(confirmed by reading the native code: `canScheduleExactAlarms()` is
+checked for `alarmClock` too, not just plain `exact`). Real, accepted
+tradeoff, Mike's own explicit call: a small, permanent status-bar "alarm"
+icon while one is armed, and somewhat higher battery cost than the other
+two options -- accepted given short (<30 minute) schedules are expected
+to be rare and short-lived, not a permanent fixture.
+
+`rescheduleNextAlarm()` now passes `alarmClock: canScheduleExact` (same
+live permission check as before) alongside `exact: canScheduleExact` as
+a fallback signal if `alarmClock` is ever false -- a device that hasn't
+granted the permission (or revokes it) degrades to the old plain inexact
+behavior, confirmed by reading the native code: a missing permission
+there just logs an error and returns, it does not throw back to Dart
+despite this plugin's own Dart-side doc comment claiming it does.
+
+**Real-device check, same session: `alarmClock` mode confirmed working,
+to-the-second, no drift.** `dumpsys alarm` showed the currently-armed
+alarm with `windowLength 0` and a real `Alarm clock:` block (`showIntent`
+set) -- the genuine `setAlarmClock` signature, not the batched
+`window=+Nm` shape every earlier exact/inexact arm showed. Two real
+fires confirmed exactly on their anchor second (`2026-09-05T11:26:00
+.486220` and `2026-09-05T11:37:00.079319` against an 11-minute interval
+anchored at `10:20:00`) -- both land at `:00` on the dot, zero drift,
+across two consecutive cycles.
+
+**Status-bar icon: confirmed absent, not a bug.** Mike checked both the
+status bar and notification drawer on MIKE-12R -- no alarm-clock icon
+visible at either fire, despite `dumpsys alarm`'s own `Alarm clock:`
+block proving the OS-level mechanism is genuinely active. ColorOS is
+known to suppress several of Android's stock status-bar system icons
+(this one included) -- a ROM-level UI choice with no app-facing knob to
+override it, not something to chase further. Purely cosmetic; the actual
+functional goal (zero-drift firing) is independently confirmed via the
+two exact-second fires above.
+
+## Windows tightened to 1-minute polling (2026-09-05) -- the "Windows follow-up" open question, resolved by testing it
+
+The original "confirm it's fine to defer" framing assumed Windows would
+keep being used only for hourly+ schedules, where a 15-minute polling
+task (`register_background_schedule_task.ps1`) never mattered much.
+Once Mike ran the same short (11/13-minute) `schedule_interval` test on
+both platforms side by side, Windows showed exactly the drift problem
+Android's `alarmClock` escalation just solved -- confirmed live via the
+same drift-monitoring approach: a 13-minute MIKE-CU binding fired 543s
+and 663s late across two consecutive cycles, consistent with "whichever
+15-minute poll happens to land after the target," not a fluke.
+
+Windows has no equivalent to Android's `AlarmManager`/`alarmClock` --
+the only lever available is the Scheduled Task's own polling frequency.
+Mike's explicit call, made knowingly: tightened
+`register_background_schedule_task.ps1`'s `RepetitionInterval` from 15
+minutes to 1 minute (Task Scheduler's own documented floor for a
+repeating trigger), accepting the extra background-check frequency this
+costs in exchange for tighter timing, given he doesn't plan to leave a
+short-duration scheduled event running unattended for long stretches.
+Re-registered live on MIKE-CU (`Get-ScheduledTask` confirms `PT1M`) --
+**confirmed via the hour-long drift-monitoring pass**: every MIKE-CU
+cycle after the retightening landed within ~33-34s of its target slot,
+down from 543-663s under the old 15-minute cadence.
+
+## Reboot survival re-confirmed under `alarmClock` mode, and a real double-dispatch bug found and fixed the same session (2026-09-05)
+
+Both devices rebooted, at Mike's request, specifically to confirm the
+scheduled events would resume with zero manual intervention under the
+new `alarmClock`/1-minute-polling configuration -- not assumed from the
+earlier (pre-`alarmClock`) reboot test above. Confirmed directly on both
+platforms: Windows' Scheduled Task fired automatically post-reboot with
+the app never opened (`bg_check:ok` recorded from that run, no manual
+launch); MIKE-12R's alarm chain re-armed itself via `rescheduleOnReboot:
+true` and kept firing on its own 11-minute cadence with the app closed
+the entire time, confirmed via `dumpsys alarm` showing a live `Alarm
+clock:` block and the device's own local `schedule_last_run` advancing
+past the reboot with zero drift each cycle.
+
+**Real bug found and fixed the same session, discovered because this was
+the first time two real per-device bindings sharing one script were
+tested together:** `EventDispatchService.dispatch()` matches every
+enabled `event_definitions` row sharing an `(event_type, table_name,
+field_name)` tuple, not just the one specific binding a caller has
+already determined is due -- since every `schedule_interval` binding
+always has `table_name`/`field_name` both `NULL`, two bindings sharing a
+script (Mike's "Generic Script Fired," bound once per device) both
+matched on every fire, running the shared script twice on whichever
+device was actually due. Fixed with a new, narrowly-scoped
+`EventDispatchService.runScript(scriptId)` that `BackgroundScheduleService
+.runDueScheduledEvents()` now calls instead of the broad `dispatch()` for
+every due binding -- see CLAUDE.md's "Recurring-schedule real-device
+testing session" for the full write-up, including the QuickJS `Date`/
+timezone bug found in the same pass and the resulting `deviceId()`/
+`localTime()` script API additions.
+
+A real, separate, well-understood non-issue also surfaced during this
+pass: MIKE-CU's synced copy of MIKE-12R's `schedule_last_run` looked
+"stuck" pre-reboot because MIKE-12R's sync connection had dropped (code
+1006) and never reconnected -- while the alarm/script-firing mechanism
+itself kept working perfectly the whole time. Confirmed as expected,
+architectural behavior, not a bug: none of the background-firing code
+paths (`scheduledEventAlarmCallback`, the safety-net task, Windows'
+background entrypoint) ever call `SyncService.connect()`, by design, to
+keep background engine-boot cost minimal. A scheduled script fires
+reliably with the app fully closed regardless of sync state; only
+*other* devices' visibility into that activity depends on the app
+actually being opened.
+
+Both throwaway test bindings deleted by Mike through the app's own UI
+once each had fired at least once more under this final configuration,
+confirming the whole chain end to end one last time first. **Build order
+steps 1-8 plus this session's two escalations (exact alarms, then
+`alarmClock`) and the double-dispatch fix are now all real-device
+verified on both platforms.**

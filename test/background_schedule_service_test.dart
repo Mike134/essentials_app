@@ -17,6 +17,7 @@ import 'package:essentials_app/db/event_dispatch_service.dart';
 import 'package:essentials_app/db/script_definitions_dao.dart';
 import 'package:essentials_app/db/theme_settings_dao.dart';
 import 'package:essentials_app/util/scripting/background_schedule_service.dart';
+import 'package:essentials_app/util/scripting/js_engine.dart';
 import 'package:essentials_app/util/scripting/script_api_runtime.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -95,6 +96,42 @@ void main() {
     final after = await settings.loadDeviceSetting('schedule_last_run:$eventId');
     expect(after, before);
   });
+
+  test(
+    'a due binding runs its script exactly once, via runScript, never the broad dispatch() -- '
+    'regression for a real double-notification bug found live',
+    () async {
+      // Real script execution needs flutter_js's native QuickJS bridge,
+      // which (like every other test file touching ScriptApiRuntime in
+      // this project) has no working implementation under a bare
+      // `flutter test` host -- so this fakes EventDispatchService instead
+      // of exercising real JS. The fake's dispatch() throws by design: if
+      // runDueScheduledEvents ever regresses back to calling the broad,
+      // event_type/table_name/field_name-matching dispatch() for a
+      // scheduled binding (the actual live bug -- see
+      // EventDispatchService.runScript's own doc comment for the full
+      // story: two schedule_interval bindings sharing one script each
+      // produced two notifications on their own device for a single due
+      // fire, since dispatch() matched both event_definitions rows
+      // regardless of which one was actually due or which device it
+      // targeted), this test fails loudly on that throw rather than
+      // silently passing for the wrong reason.
+      final scriptId = await createScript("notify('should not actually run $runTag');");
+      final eventId = await bindSchedule(scriptId, scheduleConfig: hourlyConfig());
+
+      final dispatcher = _CountingDispatcher();
+      await BackgroundScheduleService(
+        settings: settings,
+        dispatcher: dispatcher,
+        notify: (_) async {},
+      ).runDueScheduledEvents();
+
+      expect(dispatcher.runScriptCalls, [scriptId]);
+
+      final lastRun = await settings.loadDeviceSetting('schedule_last_run:$eventId');
+      expect(lastRun, isNotNull);
+    },
+  );
 
   test('a disabled binding is never due', () async {
     final scriptId = await createScript("notify('should not run $runTag');");
@@ -318,6 +355,43 @@ void main() {
   });
 }
 
+/// Fake used to prove runDueScheduledEvents calls [EventDispatchService
+/// .runScript] -- once per due binding -- and never the broad, event-type
+/// -matching [EventDispatchService.dispatch]. [dispatch] throws
+/// deliberately, so a regression back to calling it fails this test
+/// loudly instead of silently.
+class _CountingDispatcher implements EventDispatchService {
+  final runScriptCalls = <int>[];
+
+  @override
+  Future<ScriptRunResult> runScript(int scriptId) async {
+    runScriptCalls.add(scriptId);
+    return ScriptRunResult(outcome: JsExecutionOutcome.ok(null));
+  }
+
+  @override
+  Future<List<ScriptRunResult>> dispatch({
+    required String? tableName,
+    required String eventType,
+    String? fieldName,
+    int? recordId,
+  }) async {
+    throw StateError(
+      'dispatch() must never be called for a scheduled binding -- '
+      'see EventDispatchService.runScript\'s own doc comment for why.',
+    );
+  }
+
+  @override
+  Future<void> dispatchAndApplyEffects(
+    BuildContext context, {
+    required String? tableName,
+    required String eventType,
+    String? fieldName,
+    int? recordId,
+  }) => throw UnimplementedError();
+}
+
 /// Fake for the one failing-pass test above -- throws instead of running
 /// any script, to reach runDueScheduledEvents' catch/rethrow path without
 /// needing a script that can actually fail script execution itself.
@@ -329,6 +403,11 @@ class _ThrowingDispatcher implements EventDispatchService {
     String? fieldName,
     int? recordId,
   }) async {
+    throw StateError('simulated dispatch failure');
+  }
+
+  @override
+  Future<ScriptRunResult> runScript(int scriptId) async {
     throw StateError('simulated dispatch failure');
   }
 

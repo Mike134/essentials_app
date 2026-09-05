@@ -8548,3 +8548,168 @@ upload has no retry queue.
 Not yet assigned a phase number -- built and shipped ad hoc, same as
 several other post-Phase-7 sessions.
 given the natural cycle works fine on its own.
+
+## Recurring-schedule real-device testing session, concluded (2026-09-05) — two real bugs found and fixed, plus a script API addition
+
+Continuation of the alarm-scheduling/recurring-schedule/per-device-
+targeting work already documented above under "Build order step 8" and
+"Essentials v2 recurring-schedule design" -- this session put real,
+shared-script, per-device `schedule_interval` bindings on both MIKE-CU
+and MIKE-12R at once and used that to shake out real, live bugs neither
+platform's earlier isolated testing had surfaced.
+
+### Real bug: QuickJS's `Date` has no real timezone data — confirmed empirically, fixed with a bridge, not a QuickJS patch
+
+Mike reported a script's own `notify()` message showing "02:53:53 PM"
+when the actual local fire time was 09:53 AM CDT -- exactly a 5-hour
+(CDT/UTC) offset. Confirmed the root cause empirically rather than
+guessed: a throwaway diagnostic script
+(`tool/create_tz_diagnostic.dart`/`remove_tz_diagnostic.dart`, real
+table + real script + `app_launch` binding, run through a real built app)
+wrote `new Date().getTimezoneOffset()`/`.toString()` into a real row --
+confirmed `offsetMin=0` and a UTC wall-clock value mislabeled as local,
+every time, on a real device with a real non-UTC timezone. QuickJS's
+built-in `Date` genuinely has no timezone database at all; this can't be
+fixed by configuring the engine, only worked around.
+
+**Fix:** two new script-API bridge functions, alongside `record`/
+`table()`/`notify()`/`navigate` (`lib/util/scripting/script_api_runtime
+.dart`): `deviceId()` (the real device name the script is currently
+running on -- also directly answers Mike's separate request, "let a
+script retrieve the name of the device it just ran on," so one shared
+script can serve several per-device bindings instead of needing a
+near-duplicate copy per device) and `localTime()`/`localTime.iso()` (the
+device's real local time, computed by Dart -- which does have real
+timezone data -- in 12-hour display and `YYYY-MM-DD HH:MM:SS` forms).
+`ScriptRunContext` gained a `deviceId` field, threaded through from
+`EventDispatchService.dispatch`'s existing `DeviceId.resolve()` call.
+Documented in code as "never use `new Date()` for 'what time is it right
+now' -- use `localTime()`/`localTime.iso()` instead," and in
+`USER_GUIDE.md`'s "Scripts and events" section for Mike's own reference.
+Confirmed fixed via the same diagnostic table, side by side:
+`device=MIKE-CU localTime=10:08:38 AM ... (broken) new Date()=... GMT+0000`.
+
+### Real bug: a scheduled binding's script ran twice per fire, on whichever device was due — `EventDispatchService.dispatch()` used the wrong match
+
+Mike built one shared script ("Generic Script Fired") bound to two
+separate per-device `schedule_interval` events (MIKE-12R every 11
+minutes, MIKE-CU every 13) and reported "two messages on each device
+when the event fires." Root-caused directly, not guessed:
+`BackgroundScheduleService.runDueScheduledEvents()` called
+`EventDispatchService.dispatch(tableName: null, eventType: binding
+.eventType)` for each due binding -- but `dispatch()`'s own query matches
+*every* enabled `event_definitions` row sharing that `(event_type,
+table_name, field_name)` tuple, not just the one binding that's actually
+due. Since every `schedule_interval` binding always has `table_name`/
+`field_name` both `NULL`, and both of Mike's bindings shared one script,
+this matched *both* event_definitions rows regardless of which device
+was due or which device was executing -- so each device ran the shared
+script twice per fire, both runs correctly naming that device's own name
+(not "one message per device" as it first looked -- two-on-one-device,
+each time).
+
+**Fix:** new `EventDispatchService.runScript(scriptId)` -- runs exactly
+one named script, no `event_definitions` re-query at all.
+`BackgroundScheduleService.runDueScheduledEvents()` now calls
+`_dispatcher.runScript(binding.scriptId)` for the one binding it has
+already determined is due, never the broad `dispatch()`. New regression
+test (`test/background_schedule_service_test.dart`) injects a fake
+dispatcher whose `dispatch()` throws by design, so a future regression
+back to the broad method fails loudly rather than silently double-firing
+again. `dispatch()` itself is untouched and still correct for its real
+purpose -- foreground UI/data events, where every script genuinely bound
+to that same real-world event should run.
+
+### Escalated Android's alarm precision twice, both times based on live evidence, not assumption
+
+First switched `AndroidAlarmManager.oneShotAt`'s `exact` parameter from a
+hardcoded `false` to a live `Permission.scheduleExactAlarm.isGranted`
+check (`SCHEDULE_EXACT_ALARM` added to the manifest, requested once via
+`ensureExactAlarmPermission()` in `HomeShell`'s bootstrap -- confirmed
+this device auto-grants the permission at install, so the settings
+screen never actually appeared, which is correct behavior, not a bug).
+Real-device testing then showed even a genuinely exact alarm
+(`setExactAndAllowWhileIdle`) still drifting several minutes on an
+11-minute `schedule_interval` binding -- traced to Android's own
+undocumented-in-the-plugin anti-abuse throttle on that alarm type
+(~9 minutes minimum gap per app, confirmed by reading `AlarmService
+.java`'s native source and matching the observed drift exactly).
+Escalated again, Mike's own explicit call, to `alarmClock: true`
+(`AlarmManagerCompat.setAlarmClock`) -- the one alarm type Android fully
+exempts from Doze/standby throttling, at the cost of a status-bar
+"alarm" icon while armed (confirmed absent on this device -- ColorOS
+suppresses that particular system icon; cosmetic, not a functional gap)
+and somewhat higher battery cost, accepted given short-interval
+schedules are expected to be rare and short-lived. Confirmed via
+`dumpsys alarm` (`windowLength 0`, a real `Alarm clock:` block) and two
+consecutive live fires landing exactly on `:00`, zero drift.
+
+Windows has no equivalent mechanism -- the only lever is
+`register_background_schedule_task.ps1`'s own polling interval, tightened
+from 15 minutes to 1 (Task Scheduler's documented floor for a repeating
+trigger), Mike's own call, after the same live testing showed a
+13-minute Windows-targeted binding drifting up to 11 minutes late under
+the old 15-minute cadence. Confirmed after tightening: consistent ~33s
+drift, a large improvement, applied live via re-running the registration
+script (no rebuild needed -- pure Task Scheduler config).
+
+### Real-device reboot survival re-confirmed under the new `alarmClock` mode
+
+Mike rebooted both devices to confirm the scheduled events would resume
+entirely on their own. Both did, confirmed directly, not assumed:
+Windows' Scheduled Task fired automatically post-reboot with the app
+never opened (`bg_check:ok` recorded from that run); MIKE-12R's alarm
+chain re-armed itself via `rescheduleOnReboot: true` and kept firing on
+its own 11-minute cadence with the app closed the entire time (confirmed
+via `dumpsys alarm`'s live `Alarm clock:` entry and the device's own
+local `schedule_last_run` advancing past the reboot).
+
+**One real, well-understood non-issue surfaced along the way, worth
+recording since it looked alarming at first:** MIKE-CU's synced copy of
+MIKE-12R's `schedule_last_run` looked "stuck" pre-reboot -- traced to
+MIKE-12R's sync connection having dropped (code 1006) at 11:39:13 and
+never reconnecting, while the alarm/script-firing mechanism itself kept
+working perfectly the whole time. This is expected, architectural
+behavior, not a bug: none of the background-firing code paths
+(`scheduledEventAlarmCallback`, the safety-net task, Windows' background
+entrypoint) ever call `SyncService.connect()` -- by design, to keep
+background engine-boot cost minimal (see "Build order step 6" above).
+Sync only runs while a device's real foreground app session is alive;
+a scheduled script fires reliably with the app fully closed regardless,
+exactly as intended. Worth remembering if a "device looks stuck" report
+ever recurs: check whether the *app* has actually been opened since,
+before assuming the scheduling mechanism itself is broken.
+
+### Extensibility brainstorm captured, not built
+
+A real-world use case (fetching stock prices into a table on a daily
+schedule) surfaced a genuine architecture question -- giving the script
+sandbox a generic, non-hardcoded way to reach outside the app (network
+access, initially) -- captured in
+`claude/essentials-v2-extensibility-brainstorm.md` per Mike's own
+explicit framing (a small, growing personal ecosystem of tools --
+Microsoft 365, Obsidian, essentials_app, Claude/ChatGPT -- each with its
+own natural lane) rather than built. Flagged as brainstorm-only, no
+build order, needs its own real design pass later like every other phase
+in this project.
+
+### Wrap-up
+
+Both throwaway test scripts/bindings ("Generic Script Fired" and its two
+`schedule_interval` events) deleted by Mike through the app's own UI once
+each had fired at least once more under the final `alarmClock`/1-minute-
+polling configuration, confirming the whole chain end to end one last
+time before cleanup. `flutter analyze` clean throughout every fix in this
+session; `test/alarm_schedule_service_test.dart` (7/7) and
+`test/background_schedule_service_test.dart` (14/14, including the new
+double-dispatch regression test) both pass; both `flutter build windows`/
+`flutter build apk --debug` clean at every checkpoint. `USER_GUIDE.md`
+(Obsidian vault, not git-tracked -- see "`USER_GUIDE.md` moved out of the
+repo" above) updated for the new script API functions, the `Date`/
+timezone gotcha, per-device targeting semantics, missed-occurrence
+notifications, and the exact-alarm/`alarmClock`-vs-1-minute-Windows-
+polling accuracy story, plus corresponding "Known gaps" entries.
+
+**Next session:** not yet decided -- Mike's own continued real usage, or
+picking up the extensibility brainstorm as a real design pass whenever
+he's ready.

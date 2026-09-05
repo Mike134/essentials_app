@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../models/table_config.dart';
 import '../screens/generic_form_screen.dart';
 import '../screens/generic_list_screen.dart';
+import '../util/device_id.dart';
+import '../util/scripting/js_engine.dart';
 import '../util/scripting/script_api_runtime.dart';
 import 'database_helper.dart';
 import 'generic_dao.dart';
@@ -77,6 +79,7 @@ class EventDispatchService {
     if (bindings.isEmpty) return const [];
 
     final databasePath = await DatabaseHelper.instance.resolveDatabasePath();
+    final deviceId = await DeviceId.resolve();
     final results = <ScriptRunResult>[];
     for (final binding in bindings) {
       final scriptId = binding['script_id'] as int;
@@ -89,11 +92,54 @@ class EventDispatchService {
       final result = await _runtime.run(
         code,
         databasePath: databasePath,
-        context: ScriptRunContext(recordTable: tableName, recordId: recordId),
+        context: ScriptRunContext(recordTable: tableName, recordId: recordId, deviceId: deviceId),
       );
       results.add(result);
     }
     return results;
+  }
+
+  /// Runs exactly the script named by [scriptId] -- no `event_definitions`
+  /// re-query at all, unlike [dispatch].
+  ///
+  /// **Exists because [dispatch] is the wrong tool for a scheduled
+  /// binding, and using it that way produced a real, live bug:**
+  /// [dispatch] matches on `(event_type, table_name, field_name)` alone --
+  /// correct for a foreground UI/data event, where every script bound to
+  /// that same real-world event genuinely should run. A scheduled binding
+  /// has no such uniquely-identifying tuple, though -- every
+  /// `schedule_interval` binding shares `table_name IS NULL AND field_name
+  /// IS NULL`, so calling `dispatch(eventType: 'schedule_interval')` for
+  /// one specific due binding actually matched -- and ran the script
+  /// for -- *every* enabled `schedule_interval` binding, regardless of
+  /// which one was due or which device it targeted. Confirmed live: Mike
+  /// created two `schedule_interval` bindings sharing one script (one
+  /// targeting MIKE-CU, one MIKE-12R) and saw two notifications on each
+  /// device for a single due binding firing -- both event_definitions
+  /// rows matched the broad query and both ran, on whichever device
+  /// happened to be checking due bindings at the time (`deviceId()`
+  /// reflects the executing device, not which binding's row matched, so
+  /// both runs on a given device showed that same device's own name --
+  /// not "one message naming each device" as it might first look).
+  /// [BackgroundScheduleService.runDueScheduledEvents] now calls this
+  /// instead, once per binding it has already determined is due, so
+  /// exactly one script run happens per due binding, full stop.
+  Future<ScriptRunResult> runScript(int scriptId) async {
+    final crdt = await DatabaseHelper.instance.crdt;
+    final scriptRows = await crdt.query(
+      'SELECT code FROM script_definitions WHERE id = ?1 AND is_deleted = 0',
+      [scriptId],
+    );
+    if (scriptRows.isEmpty) {
+      return ScriptRunResult(outcome: JsExecutionOutcome.failure('Script $scriptId no longer exists.'));
+    }
+    final databasePath = await DatabaseHelper.instance.resolveDatabasePath();
+    final deviceId = await DeviceId.resolve();
+    return _runtime.run(
+      scriptRows.first['code'] as String,
+      databasePath: databasePath,
+      context: ScriptRunContext(deviceId: deviceId),
+    );
   }
 
   /// [dispatch], then applies every resulting effect for real: a

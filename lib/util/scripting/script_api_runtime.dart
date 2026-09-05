@@ -6,6 +6,7 @@ import 'package:flutter_js/flutter_js.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite3;
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
+import '../date_format.dart';
 import '../sql_identifiers.dart';
 import 'js_engine.dart';
 
@@ -15,11 +16,20 @@ import 'js_engine.dart';
 /// field-changed, a button on a record's own form); scheduled/app-launch
 /// events have no ambient record, so both fields are `null` and the JS
 /// global `record` is `null` too.
+///
+/// [deviceId] is this device's real, human-facing id (e.g. `"MIKE-CU"`),
+/// resolved by the caller via `DeviceId.resolve()` -- exposed to a script
+/// as `deviceId()`, per Mike's own request: a single script bound to
+/// several per-device scheduled bindings can call this instead of needing
+/// one near-duplicate script per device. `null` (never resolved by a
+/// caller) surfaces as JS `null`, not an empty string, so a script can
+/// tell the difference if it needs to.
 class ScriptRunContext {
-  const ScriptRunContext({this.recordTable, this.recordId});
+  const ScriptRunContext({this.recordTable, this.recordId, this.deviceId});
 
   final String? recordTable;
   final int? recordId;
+  final String? deviceId;
 }
 
 /// Where a `navigate.*` call wants to go -- captured during script
@@ -248,6 +258,7 @@ void _runInIsolate(_ScriptIsolateRequest request) async {
       notifications: notifications,
       navigations: navigations,
       pendingWrites: pendingWrites,
+      deviceId: request.context.deviceId,
     );
 
     final result = runtime.evaluate(request.code);
@@ -290,6 +301,7 @@ void _installBridge(
   required List<String> notifications,
   required List<NavigateRequest> navigations,
   required List<_PendingWrite> pendingWrites,
+  required String? deviceId,
 }) {
   final setGlobal = runtime.localContext['setToGlobalObject'] as JSInvokable;
   void install(String name, Function fn) => setGlobal.invoke([name, fn]);
@@ -343,6 +355,21 @@ void _installBridge(
     notifications.add(message);
     return null;
   });
+
+  install('__bridge_device_id', () => deviceId);
+  // The embedded QuickJS engine's own `Date`/`new Date()` has no real
+  // timezone data at all -- confirmed empirically (a diagnostic script
+  // writing `new Date().getTimezoneOffset()`/`.toString()` into a real
+  // row): it always reports offset 0 and labels UTC as if it were local
+  // wall-clock time. A script relying on `new Date()` for "what time is
+  // it right now, here" gets a value off by whatever this device's real
+  // UTC offset is -- exactly what Mike hit live (a script that fired at
+  // 09:53 local displayed "02:53:53 PM", a straight 5-hour CDT/UTC
+  // skew). There's no fix inside QuickJS itself to reach for -- these two
+  // bridge functions hand a script the real local time computed by Dart
+  // (which does have real timezone data) instead.
+  install('__bridge_local_time_iso', () => isoDateTime(DateTime.now()));
+  install('__bridge_local_time_display', () => _formatLocalTimeDisplay(DateTime.now()));
   install('__bridge_navigate_to', (String table) {
     final resolved = _resolveTableName(readDb, table);
     navigations.add(NavigateRequest.toTable(resolved));
@@ -371,6 +398,12 @@ void _installBridge(
       };
     }
     function notify(message) { return __bridge_notify(String(message)); }
+    function deviceId() { return __bridge_device_id(); }
+    // Never `new Date()` for "what time is it right now, here" -- see
+    // __bridge_local_time_iso's own doc comment above for why QuickJS's
+    // built-in Date always reports UTC mislabeled as local.
+    function localTime() { return __bridge_local_time_display(); }
+    localTime.iso = function() { return __bridge_local_time_iso(); };
     var navigate = {
       to: function(tableName) { return __bridge_navigate_to(tableName); },
       toRecord: function(rec) {
@@ -380,6 +413,19 @@ void _installBridge(
       },
     };
   ''');
+}
+
+/// A plain 12-hour clock string (`"2:53:03 PM"`) for `localTime()` -- the
+/// same shape a script's own notify() message is likely to want to embed,
+/// matching what Mike's own test script was already trying to produce by
+/// hand via (broken) `new Date()` calls.
+String _formatLocalTimeDisplay(DateTime time) {
+  final hour24 = time.hour;
+  final period = hour24 < 12 ? 'AM' : 'PM';
+  final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+  final minute = time.minute.toString().padLeft(2, '0');
+  final second = time.second.toString().padLeft(2, '0');
+  return '$hour12:$minute:$second $period';
 }
 
 List<Map<String, Object?>> _rowsToJson(String table, List<Map<String, Object?>> rows) {

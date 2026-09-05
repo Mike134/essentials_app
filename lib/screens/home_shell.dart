@@ -213,6 +213,19 @@ class _HomeShellState extends State<HomeShell> {
       unawaited(registerAlarmSafetyNetTask());
     }
 
+    // Requests SCHEDULE_EXACT_ALARM once per device -- see
+    // alarm_schedule_service.dart's own manifest/doc comments for why
+    // exact timing is now wanted (ColorOS was batching inexact alarms by
+    // several minutes, a real problem for short schedule_interval
+    // bindings). A no-op once already granted; opens the system "Alarms &
+    // reminders" settings screen the first time it isn't. Fire-and-forget,
+    // same as every other bootstrap permission/scheduling call here --
+    // rescheduleNextAlarm below checks the real granted status itself
+    // rather than assuming this call finished first.
+    if (Platform.isAndroid) {
+      unawaited(ensureExactAlarmPermission());
+    }
+
     // Essentials v2 alarm-based scheduling, build order step 4 (see
     // claude/essentials-v2-alarm-scheduling-design.md) -- app launch is
     // one of the trigger points that (re)arms the exact-time alarm chain,

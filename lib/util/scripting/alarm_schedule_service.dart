@@ -1,4 +1,5 @@
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../../db/event_definitions_dao.dart';
@@ -151,15 +152,69 @@ Future<void> rescheduleNextAlarm({
   // fires an alarm requested for the past as soon as possible, exactly
   // the desired "catch up" behavior, confirmed live during the step 2
   // reboot-survival test.
+  //
+  // alarmClock (AlarmManagerCompat.setAlarmClock), not exact
+  // (setExactAndAllowWhileIdle) -- a real, live-confirmed escalation, not
+  // the first fix attempted. First switched from a hardcoded exact=false
+  // to a granted-status-checked exact=true after live testing showed
+  // ColorOS batching an inexact alarm by several minutes -- fine for
+  // hourly+ schedules, a real problem once schedule_interval allows
+  // intervals as short as 5 minutes. That still wasn't enough: even a
+  // genuinely exact alarm using setExactAndAllowWhileIdle is subject to
+  // Android's own OS-level anti-abuse throttle (undocumented in this
+  // plugin, but real -- AlarmManager's own platform docs: no more than
+  // once every ~9 minutes per app, with OEM skins like ColorOS often
+  // layering their own standby-bucket restrictions on top), confirmed
+  // live: an 11-minute schedule_interval binding still drifted several
+  // minutes late even with exact=true and the permission genuinely
+  // granted (confirmed via a temporary debug print). `setAlarmClock` is
+  // the one alarm type Android fully exempts from Doze/standby-bucket
+  // throttling -- genuinely to-the-second, no OS-imposed minimum gap --
+  // at the cost of a small, permanent status-bar "alarm" icon while one
+  // is armed and somewhat higher battery use than the other two options.
+  // Mike's own call, made knowingly: acceptable given short (<30 minute)
+  // schedules are expected to be rare and short-lived (a couple hours at
+  // most), not a permanent fixture.
+  //
+  // Same permission gate as before either way -- the native side checks
+  // `AlarmManager.canScheduleExactAlarms()` for alarmClock too, not just
+  // plain exact (confirmed by reading AlarmService.java). Checking the
+  // real granted status live and falling back to the old inexact
+  // behavior when it isn't means a device that hasn't granted the
+  // permission yet (or ever revokes it) degrades gracefully instead of
+  // AlarmService.java silently no-op'ing the schedule call (confirmed by
+  // reading its native source: a missing permission there just logs an
+  // error and returns -- it does NOT throw back to Dart, contrary to
+  // this plugin's own Dart-side doc comment).
+  final canScheduleExact = await Permission.scheduleExactAlarm.isGranted;
   await AndroidAlarmManager.oneShotAt(
     due,
     _scheduledEventsAlarmId,
     scheduledEventAlarmCallback,
-    exact: false,
+    alarmClock: canScheduleExact,
+    exact: canScheduleExact,
     allowWhileIdle: true,
     wakeup: true,
     rescheduleOnReboot: true,
   );
+}
+
+/// One-time request for the `SCHEDULE_EXACT_ALARM` permission -- see this
+/// file's own manifest comment for why exact timing is now wanted.
+/// `Permission.scheduleExactAlarm.request()` doesn't show a normal
+/// Allow/Deny runtime dialog for this particular permission (Android's own
+/// design, not a permission_handler quirk) -- it takes the user straight to
+/// the system "Alarms & reminders" special-app-access settings screen,
+/// where the grant is a persistent device setting, not something re-asked
+/// on every launch. Safe to call unconditionally on every bootstrap: a
+/// no-op once already granted (`request()` only actually opens the screen
+/// when the status isn't already granted), same idempotent-call posture as
+/// every other bootstrap permission check in this app.
+Future<void> ensureExactAlarmPermission() async {
+  final status = await Permission.scheduleExactAlarm.status;
+  if (!status.isGranted) {
+    await Permission.scheduleExactAlarm.request();
+  }
 }
 
 /// The alarm callback itself -- runs in the plugin's own separate,

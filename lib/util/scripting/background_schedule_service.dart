@@ -128,25 +128,27 @@ class BackgroundScheduleService {
         if (lastRun != null)
           await _notifyIfOccurrencesWereMissed(binding, lastRun, now);
 
-        final results = await _dispatcher.dispatch(
-          tableName: null,
-          eventType: binding.eventType,
-        );
+        // Exactly this one due binding's script -- not `_dispatcher
+        // .dispatch()`, which matches broadly on (event_type, table_name,
+        // field_name) and would run every other enabled schedule_interval
+        // binding sharing that same tuple too (every one of them, since
+        // table_name/field_name are always null for a schedule). See
+        // EventDispatchService.runScript's own doc comment for the real,
+        // live double-notification bug this replaced.
+        final result = await _dispatcher.runScript(binding.scriptId);
         await settings.setDeviceSetting(
           _lastRunKey(binding.id),
           now.toIso8601String(),
         );
         appliedCount++;
 
-        for (final result in results) {
-          for (final message in result.effects.notifications) {
-            await _tryNotify(message);
-          }
-          if (result.outcome.timedOut) {
-            await _tryNotify('A scheduled script timed out.');
-          } else if (result.outcome.error != null) {
-            await _tryNotify('Scheduled script error: ${result.outcome.error}');
-          }
+        for (final message in result.effects.notifications) {
+          await _tryNotify(message);
+        }
+        if (result.outcome.timedOut) {
+          await _tryNotify('A scheduled script timed out.');
+        } else if (result.outcome.error != null) {
+          await _tryNotify('Scheduled script error: ${result.outcome.error}');
         }
       }
 
