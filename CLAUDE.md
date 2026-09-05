@@ -8713,3 +8713,45 @@ polling accuracy story, plus corresponding "Known gaps" entries.
 **Next session:** not yet decided -- Mike's own continued real usage, or
 picking up the extensibility brainstorm as a real design pass whenever
 he's ready.
+
+## `readFirstLine(path)` — the extensibility brainstorm's first real capability, designed and built same day (2026-09-05)
+
+Mike picked two items out of `claude/essentials-v2-extensibility-brainstorm.md`
+to turn into a real design: (1) giving the script sandbox a real way to
+reach outside itself, and (2) doing it additively -- new capabilities as
+new bridge functions that never touch existing ones, proven the same way
+`deviceId()`/`localTime()` already were. He deliberately picked the first
+concrete capability to be simple rather than the brainstorm's original
+stock-price motivation ("a little complicated... almost a project in and
+of itself") -- a file-read function instead: open a path, read its first
+line, close it, return the line. Design settled through a short back-and-
+forth, each point Mike's own call: no path restriction at all ("let the
+file system decide what the user has access to"), and on failure, return
+the real underlying exception's own text verbatim, wrapped in `<<...>>`,
+never a canned category of error message -- "then we don't have to keep
+revisiting it when users claim our function doesn't give enough to
+troubleshoot on." Full design in `claude/essentials-v2-extensibility-design.md`.
+
+Built exactly as designed: `readFirstLineOf` (`lib/util/scripting/
+read_first_line.dart`) is a small pure-Dart function -- empty file returns
+`''`, not an error; any thrown exception returns `'<<$e>>'`, a bare
+`catch (e)` on purpose (no canned buckets to ever have to expand). One new
+line in `script_api_runtime.dart`'s `_installBridge`
+(`install('__bridge_read_first_line', readFirstLineOf)`) plus one new JS
+wrapper function -- confirming the additive-isolation claim held for
+real: zero changes to any existing bridge function or JS wrapper. 6 new
+unit tests (`test/read_first_line_test.dart`), all passing. Confirmed
+end-to-end through the real QuickJS bridge on MIKE-CU via the same
+diagnostic-table technique used earlier this session for `deviceId()`/
+`localTime()`: a real file's first line, a missing-path error, and a
+directory-path error all came back exactly as designed, real exception
+text intact. Android verification ran into this project's already
+well-documented `crdt_sync` batch-atomicity sync race (unrelated to the
+new feature -- pure test-setup noise from two overlapping diagnostic
+tables sharing a name in quick succession) and wasn't worth chasing to a
+clean conclusion for what was only ever a verification nicety; recovered
+cleanly (diagnostic table dropped everywhere, `integrity_check: ok`, no
+residue) rather than left in a broken state. `USER_GUIDE.md` updated with
+the new function.
+
+**Next session:** not yet decided.

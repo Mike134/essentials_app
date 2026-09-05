@@ -9,6 +9,7 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 import '../date_format.dart';
 import '../sql_identifiers.dart';
 import 'js_engine.dart';
+import 'read_first_line.dart';
 
 /// Which record (if any) a script run is bound to -- see
 /// claude/essentials-v2-phase5-design.md's Script API section: `record`
@@ -370,6 +371,13 @@ void _installBridge(
   // (which does have real timezone data) instead.
   install('__bridge_local_time_iso', () => isoDateTime(DateTime.now()));
   install('__bridge_local_time_display', () => _formatLocalTimeDisplay(DateTime.now()));
+
+  // claude/essentials-v2-extensibility-design.md -- the first capability
+  // that genuinely leaves the sandbox (real filesystem I/O on this
+  // device), proving the same additive pattern as deviceId()/localTime()
+  // above. See read_first_line.dart's own doc comment for the no-
+  // path-restriction/verbatim-error-sentinel reasoning.
+  install('__bridge_read_first_line', readFirstLineOf);
   install('__bridge_navigate_to', (String table) {
     final resolved = _resolveTableName(readDb, table);
     navigations.add(NavigateRequest.toTable(resolved));
@@ -404,6 +412,10 @@ void _installBridge(
     // built-in Date always reports UTC mislabeled as local.
     function localTime() { return __bridge_local_time_display(); }
     localTime.iso = function() { return __bridge_local_time_iso(); };
+    // claude/essentials-v2-extensibility-design.md. Errors come back as
+    // a plain string, '<<...>>' -- check result.startsWith('<<') rather
+    // than try/catch.
+    function readFirstLine(path) { return __bridge_read_first_line(path); }
     var navigate = {
       to: function(tableName) { return __bridge_navigate_to(tableName); },
       toRecord: function(rec) {
