@@ -1,7 +1,14 @@
 # Scripting extensibility — design (2026-09-05)
 
-**Status: `readFirstLine(path)` built and real-device verified on
-MIKE-CU (Windows); see "Built and verified" at the end of this doc.**
+**Status: built and real-device verified on MIKE-CU (Windows); see "Built
+and verified" and "Renamed and extended" at the end of this doc.**
+**Naming note:** everywhere below that says `readFirstLine(path)` is the
+function's original name during design/first build -- it was renamed to
+`readFileFirstLine(path)` immediately after, alongside a new sibling
+`readFileLines(path, n)`, per Mike's own request for clearer naming. See
+"Renamed and extended" for the final names and behavior; the reasoning
+in the body below (no path restriction, verbatim error sentinel, sync
+implementation) is unchanged and still applies to both functions.
 
 Promotes two of the items from `claude/essentials-v2-extensibility-brainstorm.md`
 (2026-09-05, pure brainstorm, not a committed direction) into a real,
@@ -283,4 +290,50 @@ works; the Android sync noise was purely an artifact of two overlapping
 diagnostic tables sharing one display name in quick succession during
 testing, not a code defect worth chasing further. Worth a plain
 in-app confirmation on MIKE-12R next time Mike is using a real script
-that calls `readFirstLine()`, but not treated as a blocking gap.
+that calls it, but not treated as a blocking gap.
+
+## Renamed and extended (2026-09-05, same day)
+
+Mike asked for two changes right after the first build: rename
+`readFirstLine(path)` to **`readFileFirstLine(path)`** ("makes clearer
+what the function is doing") and add a sibling, **`readFileLines(path,
+n)`**, for the more general "give me up to n lines" case he'd originally
+had in mind. Both now live in `lib/util/scripting/read_file.dart`
+(renamed from `read_first_line.dart`, since the two functions are
+tightly related enough to share one small file, unlike e.g. `bool_value
+.dart`/`lookup_value.dart`'s one-function-per-file norm).
+
+**`readFileFirstLine(path)`** — unchanged behavior from everything
+above, new name only (`readFileFirstLineOf` on the Dart side,
+`__bridge_read_file_first_line` as the bridge name).
+
+**`readFileLines(path, n)`** — same no-restriction/verbatim-error
+posture, extended to a bounded line count:
+- Returns up to `n` lines from the start of the file, as a **real JS
+  array** of strings — not a single joined string. Follows this app's
+  existing convention for structured values crossing the bridge
+  (`table().find()`/`table().all()` already return JSON, parsed by the
+  JS wrapper) rather than inventing a new shape: the Dart side
+  (`readFileLinesOf`) returns a JSON-encoded array string;
+  `readFileLines`'s JS wrapper calls `JSON.parse` on it, *unless* the
+  string starts with `<<`, in which case it's an error and gets returned
+  as-is (a real array and an error string are different JS types, so the
+  wrapper has to check before parsing).
+- **`n <= 0` means "every line in the file," not zero lines** — a
+  deliberate default: there's no everyday reason a script would ask this
+  function for nothing, so a non-positive count reads as "no limit"
+  rather than a literal empty result. Requesting more lines than the
+  file has just returns however many real lines exist — no padding, no
+  error.
+- An empty file still returns `''`/`[]` respectively for both functions,
+  never an error, same reasoning as before.
+
+Confirmed end-to-end through the real QuickJS bridge on MIKE-CU
+(`build/windows`), same diagnostic-table technique as the first build:
+`readFileFirstLine` unchanged (`Hello from a real file`), and
+`JSON.stringify(readFileLines(path, 1))` correctly round-tripped a real
+JS array (`["Hello from a real file"]`) through the JSON-encode/parse
+bridge. 6 new unit tests added to `test/read_file_test.dart` (now 12
+total across both functions, including the `n <= 0`/more-lines-than-exist/
+empty-file/error cases for `readFileLinesOf`) — all pass. `flutter
+analyze` clean. `USER_GUIDE.md` updated with both final names.

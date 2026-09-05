@@ -30,11 +30,12 @@ Future<void> main() async {
 
   final code =
       "table('$tableName').create({info: "
-      "'real=' + readFirstLine('$_probePath') + "
-      "' | missing=' + readFirstLine('$_missingPath') + "
-      "' | dir=' + readFirstLine('$_dirPath')});";
+      "'firstLine=' + readFileFirstLine('$_probePath') + "
+      "' | lines=' + JSON.stringify(readFileLines('$_probePath', 1)) + "
+      "' | missing=' + readFileFirstLine('$_missingPath') + "
+      "' | dir=' + readFileFirstLine('$_dirPath')});";
 
-  final scriptId = await scripts.create(name: _scriptName, code: code, description: 'readFirstLine() diagnostic script (12R).');
+  final scriptId = await scripts.create(name: _scriptName, code: code, description: 'readFileFirstLine()/readFileLines() diagnostic script (12R).');
 
   final eventId = await events.create(
     scriptId: scriptId,

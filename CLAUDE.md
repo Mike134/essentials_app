@@ -8754,4 +8754,20 @@ cleanly (diagnostic table dropped everywhere, `integrity_check: ok`, no
 residue) rather than left in a broken state. `USER_GUIDE.md` updated with
 the new function.
 
+**Renamed and extended same day, Mike's own follow-up request:**
+`readFirstLine(path)` renamed to **`readFileFirstLine(path)`** ("makes
+clearer what the function is doing"), plus a new sibling,
+**`readFileLines(path, n)`** — up to `n` lines from the start of the
+file, returned as a real JS array (not a joined string), following this
+app's existing "Dart returns JSON, JS wrapper parses it" convention for
+structured bridge values (`table().find()`/`table().all()` already do
+this). `n <= 0` means "every line," not zero, since there's no everyday
+reason a script would ask for nothing. Same file
+(`lib/util/scripting/read_file.dart`, renamed from `read_first_line.dart`
+since the two functions are closely related enough to share one file).
+Confirmed end-to-end on MIKE-CU again after the rename/extension
+(`readFileLines(path, 1)` round-tripped a real JSON array through the
+bridge correctly); 12 unit tests total now (`test/read_file_test.dart`).
+`flutter analyze` clean, `USER_GUIDE.md` updated with the final names.
+
 **Next session:** not yet decided.

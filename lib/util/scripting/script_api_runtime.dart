@@ -9,7 +9,7 @@ import 'package:sqlite_crdt/sqlite_crdt.dart';
 import '../date_format.dart';
 import '../sql_identifiers.dart';
 import 'js_engine.dart';
-import 'read_first_line.dart';
+import 'read_file.dart';
 
 /// Which record (if any) a script run is bound to -- see
 /// claude/essentials-v2-phase5-design.md's Script API section: `record`
@@ -375,9 +375,10 @@ void _installBridge(
   // claude/essentials-v2-extensibility-design.md -- the first capability
   // that genuinely leaves the sandbox (real filesystem I/O on this
   // device), proving the same additive pattern as deviceId()/localTime()
-  // above. See read_first_line.dart's own doc comment for the no-
+  // above. See read_file.dart's own doc comment for the no-
   // path-restriction/verbatim-error-sentinel reasoning.
-  install('__bridge_read_first_line', readFirstLineOf);
+  install('__bridge_read_file_first_line', readFileFirstLineOf);
+  install('__bridge_read_file_lines', readFileLinesOf);
   install('__bridge_navigate_to', (String table) {
     final resolved = _resolveTableName(readDb, table);
     navigations.add(NavigateRequest.toTable(resolved));
@@ -415,7 +416,11 @@ void _installBridge(
     // claude/essentials-v2-extensibility-design.md. Errors come back as
     // a plain string, '<<...>>' -- check result.startsWith('<<') rather
     // than try/catch.
-    function readFirstLine(path) { return __bridge_read_first_line(path); }
+    function readFileFirstLine(path) { return __bridge_read_file_first_line(path); }
+    function readFileLines(path, n) {
+      var raw = __bridge_read_file_lines(path, n === undefined ? 0 : n);
+      return raw.indexOf('<<') === 0 ? raw : JSON.parse(raw);
+    }
     var navigate = {
       to: function(tableName) { return __bridge_navigate_to(tableName); },
       toRecord: function(rec) {

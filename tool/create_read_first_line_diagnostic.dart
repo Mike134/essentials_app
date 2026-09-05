@@ -1,11 +1,11 @@
 // ignore_for_file: avoid_print
-// One-off diagnostic -- proves readFirstLine(path) end-to-end through the
-// real QuickJS bridge (not just the pure-Dart unit tests), same pattern
-// as tool/create_tz_diagnostic.dart. Creates a real throwaway table + an
-// app_launch-bound script that calls readFirstLine() against a few real
-// paths (a real file, a missing file, a directory) and writes the results
-// into a field. Relaunching the real Windows exe fires app_launch
-// immediately -- no waiting on a schedule.
+// One-off diagnostic -- proves readFileFirstLine(path)/readFileLines(path,
+// n) end-to-end through the real QuickJS bridge (not just the pure-Dart
+// unit tests), same pattern as tool/create_tz_diagnostic.dart. Creates a
+// real throwaway table + an app_launch-bound script that calls both
+// against a few real paths (a real file, a missing file, a directory) and
+// writes the results into a field. Relaunching the real Windows exe fires
+// app_launch immediately -- no waiting on a schedule.
 //
 //   flutter test tool/create_read_first_line_diagnostic.dart
 //
@@ -40,11 +40,12 @@ Future<void> main() async {
   final missingPath = '${Directory.systemTemp.path}/rfl_diagnostic_missing_${DateTime.now().microsecondsSinceEpoch}.txt';
   final code =
       "table('$tableName').create({info: "
-      "'real=' + readFirstLine(${_jsString(probeFile.path)}) + "
-      "' | missing=' + readFirstLine(${_jsString(missingPath)}) + "
-      "' | dir=' + readFirstLine(${_jsString(Directory.systemTemp.path)})});";
+      "'firstLine=' + readFileFirstLine(${_jsString(probeFile.path)}) + "
+      "' | lines=' + JSON.stringify(readFileLines(${_jsString(probeFile.path)}, 1)) + "
+      "' | missing=' + readFileFirstLine(${_jsString(missingPath)}) + "
+      "' | dir=' + readFileFirstLine(${_jsString(Directory.systemTemp.path)})});";
 
-  final scriptId = await scripts.create(name: _scriptName, code: code, description: 'readFirstLine() diagnostic script.');
+  final scriptId = await scripts.create(name: _scriptName, code: code, description: 'readFileFirstLine()/readFileLines() diagnostic script.');
 
   final eventId = await events.create(
     scriptId: scriptId,
