@@ -5,14 +5,15 @@
 > tooling reads. Keep both in sync, same convention as every other design doc
 > here (see CLAUDE.md "Repo move: CLAUDE.md/schema.sql").
 
-**Status: build order steps 1-6 done (step 6 folding in step 7), and the
-core of step 8 now real-device verified on MIKE-12R** -- a real
+**Status: build order steps 1-7 done, and step 8 (real-device
+verification) is done except for one deliberately-deferred item.** A real
 `schedule_hourly` binding was confirmed live, on real hardware, to arm on
-sync, fire, dispatch, and correctly reschedule itself an hour later; and
-deleting it was confirmed to correctly cancel the alarm rather than
-leaving it armed. Two step 8 checklist items remain open by choice, not
-oversight -- see that section's own "Not done this pass" note. Grew
-directly out of the
+sync, fire, dispatch, and correctly reschedule itself an hour later;
+deleting it was confirmed to correctly cancel the alarm; and a real `adb
+reboot` confirmed the alarm survives a genuine restart via the plugin's
+native `RebootBroadcastReceiver`, with zero Dart code involved. Only a
+fresh multi-hour PSS re-measurement remains undone -- see that section's
+own note for why. Grew directly out of the
 2026-09-04 background-check memory-leak investigation (see CLAUDE.md's
 session write-up) — not a new phase number, a scoped fix for a problem that
 investigation found and fully diagnosed.
@@ -636,17 +637,62 @@ the design -- step 4's own real-device pass could only confirm the
 "nothing due, correctly cancel" case, since no real binding existed on
 the device at the time.
 
-**Not done this pass, deliberately, not overlooked:**
-- **A real reboot test.** The underlying mechanism
-  (`rescheduleOnReboot: true`) is completely unchanged since step 2's own
-  live reboot test (a real `adb reboot`, confirmed the alarm fired before
-  reconnection with no app process ever created) -- nothing in steps 3-6
-  touched that code path. Re-running a full reboot test is disruptive to
-  the physical device (needs a fresh wireless-adb pairing dance
-  afterward, per this project's own documented recovery steps) and adds
-  little new information given the mechanism is provably unchanged; worth
-  doing if Mike wants extra confidence, not done unilaterally here.
-- **Multi-hour PSS re-monitoring** to directly re-measure the
+**A real reboot test, run at Mike's explicit request after this section
+was first written -- confirmed clean, with one honest wrinkle worth
+recording.** A fresh test binding was armed (same tool script), confirmed
+via `dumpsys alarm` before rebooting (`origWhen=1788609372656`), then a
+real `adb reboot` was sent to MIKE-12R.
+
+- **Wireless adb reconnected on its own** this time, no fresh pairing
+  needed -- mDNS auto-discovery re-found the paired device once Wi-Fi came
+  back up (the one-time pairing code from "Toolchain setup" above is only
+  needed for a device's *first* pairing with a given PC; a previously
+  -paired device reconnects automatically as long as Wireless debugging
+  is still toggled on).
+- The persisted alarm did **not** reappear immediately -- `BOOT_COMPLETED`
+  delivery to this app was genuinely delayed (~2.5 minutes after boot,
+  confirmed via `adb shell dumpsys alarm` polling), consistent with
+  ColorOS staggering non-system boot broadcasts rather than any fault in
+  this app or the plugin.
+- Once delivered, `logcat` showed the unambiguous smoking gun:
+  `ActivityManager: Start proc 18986:com.example.essentials_app/u0a524
+  for broadcast {.../RebootBroadcastReceiver}` -- the OS's own log,
+  naming exactly the plugin's reboot receiver as the reason this process
+  was created, not a launcher tap or an `adb shell monkey` call (neither
+  of which was used at any point in this window). The restored alarm's
+  `origWhen` was **byte-for-byte identical** to the pre-reboot value --
+  the native receiver replayed the persisted request verbatim, it wasn't
+  recomputed.
+- **Confirmed this process never ran a line of Dart** -- `logcat` for
+  this exact pid has zero `flutter`/`dart`/`impeller`/`AlarmService`/
+  `SyncService` output of any kind. This matters: it rules out the
+  alternative explanation that `HomeShell.initState()`'s own
+  `rescheduleNextAlarm()` call (which happens on every real app launch)
+  was secretly the actual source of the restored alarm -- coincidentally
+  landing on the identical target time is what a fresh recomputation
+  would also produce, since `nextDueTime` is deterministic given an
+  unchanged `schedule_last_run`. With zero Dart ever executing in this
+  process, that alternative is ruled out directly, not just assumed
+  unlikely.
+- **One honest wrinkle:** `dumpsys activity activities` showed
+  `MainActivity` as a live, visible, resumed task in this same process --
+  a real difference from step 2's spike, where no activity/task existed
+  at all afterward. Given the complete absence of any Flutter/Dart engine
+  log line in the same process, this is almost certainly ColorOS
+  restoring a cached recent-task window/snapshot for whatever was in the
+  foreground at reboot time (this test binding's own earlier fire had
+  left the app foregrounded) -- a window-manager-level bookkeeping
+  artifact, not a real activity relaunch. Recorded here rather than
+  quietly smoothed over: the *alarm-survival* claim is airtight (no Dart
+  ran, the timestamp matched exactly, the OS's own log named the reboot
+  receiver as the cause), but this run wasn't quite as visually clean as
+  step 2's "zero task, zero activity, full stop" result.
+- Cleanup: the test binding was soft-deleted and the deletion confirmed
+  to correctly cancel the reboot-restored alarm on the next relaunch --
+  `dumpsys alarm` empty for the app afterward, matching the "nothing due"
+  baseline both devices are left in.
+
+**Multi-hour PSS re-monitoring** to directly re-measure the
   engine-boot-cycle frequency drop the whole design exists to achieve.
   Given steps 6-7's own direct confirmation that the old 15-minute
   `workmanager` task is gone and replaced by a 12-hour safety net, plus
