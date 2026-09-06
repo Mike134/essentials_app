@@ -875,7 +875,15 @@ class _HomeShellState extends State<HomeShell> {
   Widget _buildDrawer(List<_SidebarGroup> groups) {
     return Drawer(
       child: ListView(
-        padding: EdgeInsets.zero,
+        // Bottom-only inset for the system nav bar -- without it, the
+        // last item (Settings) sits partly underneath a 3-button nav
+        // bar on devices that have one (confirmed live on MIKE-12R: a
+        // tap low enough on "Settings" landed on the system bar instead
+        // of the app, triggering an unrelated Android overlay). Same
+        // `MediaQuery.paddingOf(context).bottom` fix already used on
+        // every other screen this app has hit this on (Settings, Manage
+        // Tables/Fields, New Table, Add Field, GenericFormScreen).
+        padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
         children: [
           const DrawerHeader(child: Text('Essentials')),
           for (final group in groups) ..._drawerGroupChildren(group, groups),
