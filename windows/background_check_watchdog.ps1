@@ -18,7 +18,17 @@
 # can't silence the other) -- every 30 minutes is plenty; this only
 # reads `essentials.db`, it never launches essentials_app.exe itself.
 #
-# Alarms on two independent conditions, either one being real trouble:
+# Alarms on two independent conditions, either one being real trouble --
+# but only for a device currently targeted by at least one enabled
+# schedule_interval binding (see $activeScheduleDevices below). On
+# Android, runDueScheduledEvents is only ever invoked by an exact alarm
+# firing, and no alarm is armed for a device with nothing bound to it --
+# so a device with zero active bindings will *always* look stale/frozen,
+# forever, and that's correct, not a problem. Confirmed live: MIKE-12R
+# went a full day "stale" this way once its one schedule_interval test
+# binding was deleted, with nothing actually wrong -- see CLAUDE.md's
+# "Background-check reliability session" for the investigation this
+# fix grew out of.
 #   - consecutive_failures >= 2 for any device (one transient failure is
 #     expected/normal -- MigrationService's own "transient errors should
 #     retry, not permanently fail" posture, matched here rather than
@@ -74,6 +84,32 @@ foreach ($row in $rows) {
     $byDevice[$row.device_id][$row.setting_key] = $row.value
 }
 
+# Which devices currently have at least one enabled, non-deleted
+# schedule_interval binding targeting them -- mirrors
+# EventDefinitionsDao.loadActiveScheduleIntervalTargetDevices exactly
+# (same query, same "target_devices" JSON-array-of-device-ids shape), so
+# the in-app screen and this watchdog can never disagree about which
+# devices are actually expected to be checking in.
+$targetJson = (& sqlite3.exe -json $dbPath @"
+SELECT target_devices FROM event_definitions
+WHERE is_deleted = 0 AND table_name IS NULL
+  AND event_type = 'schedule_interval' AND enabled = 1
+"@) -join "`n"
+$targetRows = if ([string]::IsNullOrWhiteSpace($targetJson)) { @() } else { $targetJson | ConvertFrom-Json }
+$activeScheduleDevices = [System.Collections.Generic.HashSet[string]]::new()
+foreach ($row in $targetRows) {
+    if ([string]::IsNullOrWhiteSpace($row.target_devices)) { continue }
+    try {
+        foreach ($deviceId in ($row.target_devices | ConvertFrom-Json)) {
+            [void]$activeScheduleDevices.Add($deviceId)
+        }
+    } catch {
+        # Malformed target_devices JSON -- treat as "targets nothing",
+        # same lenient fallback EventDefinitionsDao._parseTargetDevices
+        # uses on the Dart side.
+    }
+}
+
 $state = if (Test-Path $stateFile) {
     Get-Content $stateFile -Raw | ConvertFrom-Json -AsHashtable
 } else {
@@ -84,6 +120,12 @@ $now = Get-Date
 $problems = @()
 
 foreach ($deviceId in $byDevice.Keys) {
+    # A device with nothing currently scheduled can't be stale or
+    # failing -- see this script's own header comment. Whatever
+    # last_result/consecutive_failures still say is leftover from before
+    # its last binding was removed, not a live problem.
+    if (-not $activeScheduleDevices.Contains($deviceId)) { continue }
+
     $status = $byDevice[$deviceId]
     $failures = [int]($status['bg_check:consecutive_failures'] ?? '0')
     $lastAttemptText = $status['bg_check:last_attempt_at']
@@ -115,6 +157,12 @@ foreach ($deviceId in $byDevice.Keys) {
 # recovery doesn't leave a stale cooldown blocking a genuinely new
 # problem's first alert.
 foreach ($deviceId in @($state.Keys)) {
+    if (-not $activeScheduleDevices.Contains($deviceId)) {
+        # No longer targeted by anything -- can't still be "in trouble"
+        # by definition, regardless of what its frozen bg_check values say.
+        $state.Remove($deviceId)
+        continue
+    }
     $status = $byDevice[$deviceId]
     if (-not $status) { continue }
     $failures = [int]($status['bg_check:consecutive_failures'] ?? '0')

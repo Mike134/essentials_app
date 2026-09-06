@@ -112,6 +112,34 @@ class EventDefinitionsDao {
     return [for (final row in rows) EventDefinition.fromRow(row)];
   }
 
+  /// Every device id targeted by at least one currently-active (enabled,
+  /// not soft-deleted) `schedule_interval` binding -- used by
+  /// [BackgroundProcessesScreen] to tell "this device's background check
+  /// has gone stale/failing" apart from "this device simply has nothing
+  /// scheduled right now, so of course [BackgroundScheduleService
+  /// .runDueScheduledEvents] hasn't run" (the latter is expected and
+  /// harmless: on Android specifically, that method is only ever invoked
+  /// by an alarm firing, and no alarm is armed for a device with zero
+  /// active bindings targeting it -- see `alarm_schedule_service.dart`).
+  /// `app_launch` bindings are deliberately excluded -- they don't drive
+  /// the `bg_check:*` staleness story at all (`runDueScheduledEvents`
+  /// itself skips `app_launch` rows, per its own `eventType == 'app_launch'`
+  /// guard), so a device with only an `app_launch` binding is exactly as
+  /// "nothing scheduled" as one with none at all.
+  Future<Set<String>> loadActiveScheduleIntervalTargetDevices() async {
+    final db = await _db;
+    final rows = await db.query(
+      "SELECT target_devices FROM event_definitions "
+      "WHERE is_deleted = 0 AND table_name IS NULL "
+      "AND event_type = 'schedule_interval' AND enabled = 1",
+    );
+    final devices = <String>{};
+    for (final row in rows) {
+      devices.addAll(_parseTargetDevices(row['target_devices'] as String?));
+    }
+    return devices;
+  }
+
   Future<int> create({
     required int scriptId,
     required String eventType,

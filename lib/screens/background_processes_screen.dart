@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../db/database_helper.dart';
+import '../db/event_definitions_dao.dart';
 import '../db/sync_service.dart';
 import '../util/scripting/background_schedule_service.dart';
 
@@ -39,6 +40,13 @@ class _DeviceStatus {
   String? lastSuccessAt;
   int consecutiveFailures = 0;
   int? lastAppliedCount;
+
+  /// Whether at least one enabled `schedule_interval` binding currently
+  /// targets this device -- see [EventDefinitionsDao
+  /// .loadActiveScheduleIntervalTargetDevices]'s own doc comment for why
+  /// this matters: without it, "hasn't run in a long time" reads as a
+  /// failure even when it's just this device having nothing scheduled.
+  bool hasActiveSchedule = false;
 }
 
 class _BackgroundProcessesScreenState extends State<BackgroundProcessesScreen> {
@@ -80,6 +88,8 @@ class _BackgroundProcessesScreenState extends State<BackgroundProcessesScreen> {
       "WHERE setting_key LIKE ?1 AND is_deleted = 0",
       ['$_keyPrefix%'],
     );
+    final activeScheduleDevices = await EventDefinitionsDao()
+        .loadActiveScheduleIntervalTargetDevices();
 
     final byDevice = <String, _DeviceStatus>{};
     for (final row in rows) {
@@ -101,6 +111,15 @@ class _BackgroundProcessesScreenState extends State<BackgroundProcessesScreen> {
         case BackgroundScheduleService.statusLastAppliedCountKey:
           status.lastAppliedCount = int.tryParse(value ?? '');
       }
+    }
+    // A device can be actively targeted by a schedule it's never had a
+    // chance to run yet (binding just created) -- show it too, not only
+    // devices with existing bg_check history.
+    for (final deviceId in activeScheduleDevices) {
+      byDevice.putIfAbsent(deviceId, () => _DeviceStatus(deviceId));
+    }
+    for (final status in byDevice.values) {
+      status.hasActiveSchedule = activeScheduleDevices.contains(status.deviceId);
     }
 
     final statuses = byDevice.values.toList()
@@ -139,10 +158,12 @@ class _BackgroundProcessesScreenState extends State<BackgroundProcessesScreen> {
                 padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
                 children: [
                   const Text(
-                    'Every device\'s own hourly/daily/weekly schedule-check '
-                    'runs -- Android\'s workmanager, Windows\' scheduled task. '
-                    'Checks approximately every 15 minutes; most passes have '
-                    'nothing due, which is normal.',
+                    'Every device\'s own schedule-check runs. Windows polls '
+                    'on its own scheduled task; Android only runs this when '
+                    'an exact alarm actually fires, which only happens while '
+                    'at least one schedule_interval binding targets that '
+                    'device -- a device with nothing scheduled shows as '
+                    'idle, not stale, since there is nothing to check.',
                   ),
                   const SizedBox(height: 16),
                   if (_statuses.isEmpty)
@@ -167,9 +188,27 @@ class _DeviceStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isError = status.lastResult == 'error';
-    final isStale = status.consecutiveFailures >= 2;
+    // A device with nothing currently scheduled can't be "stale" or
+    // "failing" -- on Android specifically, runDueScheduledEvents is only
+    // ever invoked by an alarm, and no alarm is armed unless a
+    // schedule_interval binding actively targets this device (see
+    // EventDefinitionsDao.loadActiveScheduleIntervalTargetDevices's own
+    // doc comment). Whatever last_result/consecutive_failures happen to
+    // still say is leftover from before the last binding was removed, not
+    // a live problem -- show it as idle, not red, regardless.
+    final isIdle = !status.hasActiveSchedule;
+    final isError = !isIdle && status.lastResult == 'error';
+    final isStale = !isIdle && status.consecutiveFailures >= 2;
     final color = isError || isStale ? Theme.of(context).colorScheme.error : null;
+
+    IconData icon;
+    if (isIdle) {
+      icon = Icons.pause_circle_outline;
+    } else if (isError || isStale) {
+      icon = Icons.error_outline;
+    } else {
+      icon = Icons.check_circle_outline;
+    }
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -180,20 +219,25 @@ class _DeviceStatusCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(
-                  isError || isStale ? Icons.error_outline : Icons.check_circle_outline,
-                  color: color,
-                ),
+                Icon(icon, color: color),
                 const SizedBox(width: 8),
                 Text(status.deviceId, style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
             const SizedBox(height: 8),
+            if (isIdle)
+              Text(
+                'No active schedule -- nothing bound to this device right now, '
+                'so there is nothing to run. Not a failure.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
             Text('Last attempt: ${relativeTime(status.lastAttemptAt)}'),
             Text('Last success: ${relativeTime(status.lastSuccessAt)}'),
             if (status.lastAppliedCount != null)
               Text('Bindings applied last pass: ${status.lastAppliedCount}'),
-            if (status.consecutiveFailures > 0)
+            if (!isIdle && status.consecutiveFailures > 0)
               Text(
                 'Consecutive failures: ${status.consecutiveFailures}',
                 style: TextStyle(color: color, fontWeight: FontWeight.bold),
