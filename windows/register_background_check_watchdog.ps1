@@ -80,7 +80,21 @@ $scriptPath = [System.IO.Path]::GetFullPath($scriptPath)
 
 $taskName = 'EssentialsAppBackgroundCheckWatchdog'
 
-$action = New-ScheduledTaskAction -Execute $pwsh.Source -Argument "-NoProfile -File `"$scriptPath`""
+# Launched via a VBS wrapper (WScript.Shell.Run with windowStyle 0), not
+# pwsh.exe directly -- Task Scheduler launching a console exe directly
+# still briefly flashes a real console window on screen even with no
+# -WindowStyle flag, confirmed live (a black window appearing every 30
+# minutes for a couple seconds). Same technique server/launch_tray_hidden
+# .vbs already uses for the sync server's own Startup-folder launch.
+$vbsPath = Join-Path $PSScriptRoot 'launch_watchdog_hidden.vbs'
+$vbsPath = [System.IO.Path]::GetFullPath($vbsPath)
+$wscript = Get-Command wscript -ErrorAction SilentlyContinue
+if (-not $wscript) {
+    Write-Error 'wscript.exe (Windows Script Host) not found -- required to launch the watchdog with a fully hidden window.'
+    exit 1
+}
+
+$action = New-ScheduledTaskAction -Execute $wscript.Source -Argument "`"$vbsPath`""
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days (365 * 20))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 
