@@ -8939,22 +8939,38 @@ are the real technical filename, not a user-facing label. Confirmed
 directly against the built exe's `VersionInfo`, not just trusted from the
 source edit.
 
-**Real, still-not-fully-resolved Windows shell-caching finding, worth
-knowing if this ever needs debugging again:** MIKE-12R picked up the new
+**Real Windows finding, root-caused and fixed -- worth knowing if this
+ever comes up again for any future exe:** MIKE-12R picked up the new
 label immediately; MIKE-CU's Start tile/taskbar pin kept showing
-"essentials_app" through icon-cache-clear (the same fix that worked for
-the app-icon caching issue earlier this session) and two full unpin/
-re-pin cycles, on both Start and the taskbar. **Confirmed the rebuild
-itself was correct and not the cause** -- the actual running window's
-title bar showed "Essentials" the whole time, only the pinned tile's
-cached label was stale. Leading explanation, not yet confirmed: Windows
-11's Start menu tile data lives in `StartMenuExperienceHost.exe`, a
-separate process from `explorer.exe`, so restarting Explorer doesn't
-reliably refresh it, and unpin/re-pin can reuse an already-cached tile
-object rather than doing a genuine fresh read. Next step, not yet tried:
-a full reboot (flushes Start tile cache + icon cache + property cache
-together, rather than chasing which specific one is still stale) --
-outcome not yet known as of this note.
+"essentials_app" through icon-cache-clear, two full unpin/re-pin cycles,
+and even a full reboot. **The shell-caching theory (Start tile data
+cached by `StartMenuExperienceHost.exe`, surviving Explorer restarts)
+was wrong** -- a reboot flushes that unconditionally, and the label still
+didn't change, which rules out any cache. The actual, much simpler cause:
+pinning a *raw* `.exe` directly to Start/taskbar (not a shortcut) makes
+Windows display the file's own name minus the extension
+(`essentials_app.exe` -> "essentials_app") as the tile text -- it does
+**not** read the exe's embedded `FileDescription`/`ProductName` version-
+resource fields for this at all, regardless of what those say (that
+metadata does drive other things -- Explorer's Details-tab "Description"
+column, the taskbar tooltip while the window is actually running -- just
+not the pin's own display text). Confirmed the actual running window's
+title bar showed "Essentials" correctly the entire time; only the pinned
+tile's label was ever affected.
+
+**Fix:** created a real `.lnk` shortcut named `Essentials.lnk` (not
+`essentials_app.lnk`) in `%AppData%\Microsoft\Windows\Start Menu\
+Programs\`, pointing at the same exe, via `WScript.Shell`'s
+`CreateShortcut` (`Shortcut.TargetPath`/`.WorkingDirectory`/
+`.IconLocation`/`.Description` set, then `.Save()`). Mike unpinned the
+old raw-exe pins and pinned this shortcut instead (found via Start's own
+"All apps" list, where it now correctly shows as "Essentials") --
+confirmed working immediately, no reboot/cache-clear needed once the
+actual root cause was addressed. **General rule for any future Windows
+exe from this project (or others) pinned without a real installer:**
+always pin a purpose-named shortcut, never the bare `.exe` -- the exe's
+own filename is what Windows will otherwise show, independent of any
+embedded metadata.
 
 **`USER_GUIDE.md` renamed to `Essentials User Guide.md`** (Mike, same
 Obsidian vault location -- see "`USER_GUIDE.md` moved out of the repo,
