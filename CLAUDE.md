@@ -8879,4 +8879,47 @@ to the default, and a custom image icon syncing correctly between
 devices all confirmed working through real, live use, "different ways"
 on each device per Mike's own testing.
 
+**App icon iterated twice more the same day, both real fixes, not just
+taste.** Mike found the shipped devices/hub icon "very amateurish" and
+supplied a third candidate, `essentials_icon_gold_cube.png` -- same
+devices/hub concept (the gold cube is the hub, the three blue arms are
+the devices attached to it), executed with real polish; swapped in
+(`13757d5`). Mike then supplied a transparent version of the same design
+(`essentials_icon_gold_cube_transparent.png`, no baked-in dark
+rounded-square backdrop) and it replaced that (`69433e9`).
+
+**Real bug, confirmed live on MIKE-12R, not theorized: a flat legacy icon
+with transparent pixels isn't the same as a genuine Android Adaptive
+Icon.** Without a real two-layer (foreground + background) Adaptive Icon,
+`android: true` alone generates a plain flat PNG per mipmap density, and
+many launchers fill its transparent areas with white rather than leaving
+them see-through -- exactly what showed up on-device. Fixed
+(`401c312`): `adaptive_icon_background: "#01091E"` (sampled directly from
+the earlier non-transparent gold-cube PNG's own backdrop, so it matches)
++ `adaptive_icon_foreground` (the transparent artwork) -- `flutter
+_launcher_icons` then generates a real `mipmap-anydpi-v26/ic_launcher.xml`
++ separate foreground/background drawables, so the OS composites and
+masks the two layers itself instead of the launcher guessing a fill
+color. Confirmed genuinely transparent at every edge sampled (alpha=0,
+not just visually not-white) before shipping. Re-verified by Mike on
+MIKE-12R after the fix -- "that looks really good."
+
+**One still-open, non-blocking cosmetic note:** the artwork's three
+arm-tips sit close to the edge of the source canvas, and Android's
+Adaptive Icon spec expects content to stay within roughly the inner 66%
+-- a circular-mask launcher could clip them slightly. Not confirmed as an
+actual visible problem on MIKE-12R; worth a quick look if it's ever
+flagged, fix would be more transparent padding around the artwork.
+
+**Windows Start Menu/taskbar:** not a code issue -- `flutter build
+windows` produces a bare `.exe` with no installer and no auto-created
+shortcut, so there was never a real Start Menu entry to begin with (what
+looked like "still shows the wrong icon" earlier was Windows' icon cache
+for a manually-run exe, not a real shortcut). Resolved by Mike pinning
+`build\windows\x64\runner\Release\essentials_app.exe` directly to both
+Start and the taskbar. This is the right long-term move, not a workaround
+to revisit: `flutter build windows` always overwrites the exe in place at
+that same path, so the pin keeps pointing at whatever the current build
+is without needing to be redone after a rebuild.
+
 **Next session:** not yet decided.
