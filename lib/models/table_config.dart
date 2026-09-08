@@ -260,6 +260,7 @@ class TableConfig {
     this.filterArgs,
     this.openRowDetail,
     this.deleteWarning,
+    this.icon,
   });
 
   final String tableName;
@@ -336,4 +337,14 @@ class TableConfig {
   /// `orders`, or an `orders` row with zero items) falls back to the
   /// default message -- there's nothing hidden to call out in that case.
   final Future<String?> Function(Map<String, Object?> row)? deleteWarning;
+
+  /// Raw `table_definitions.icon` value -- see `lib/util/table_icon.dart`'s
+  /// own doc comment for the `material:`/`image:` shapes this can hold.
+  /// `null` for every table before this feature existed (and for any
+  /// `TableConfig` built outside [SchemaRegistry] -- the dead
+  /// `TableDiscoveryService`/`table_configs.dart` paths have no real
+  /// `table_definitions` row to read one from). Never rendered directly --
+  /// always through [TableIconWidget], which already handles a `null`/
+  /// unrecognized value by falling back to the generic default icon.
+  final String? icon;
 }

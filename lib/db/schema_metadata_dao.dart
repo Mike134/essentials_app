@@ -214,6 +214,7 @@ class SchemaMetadataDao {
     String tableName, {
     required String displayName,
     String? description,
+    String? icon,
   }) async {
     final trimmed = displayName.trim();
     if (trimmed.isEmpty) throw ArgumentError('A table needs a name.');
@@ -246,6 +247,7 @@ class SchemaMetadataDao {
         if (!crdtBookkeepingColumns.contains(entry.key)) entry.key: entry.value,
       'display_name': trimmed,
       'description': description,
+      'icon': icon,
     });
   }
 

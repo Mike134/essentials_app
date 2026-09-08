@@ -16,6 +16,7 @@ import '../theme/theme_controller.dart';
 import '../util/device_id.dart';
 import '../util/layout.dart';
 import '../util/scripting/alarm_schedule_service.dart';
+import '../util/table_icon_widget.dart';
 import 'calendar_screen.dart';
 import 'generic_list_screen.dart';
 import 'kanban_view_screen.dart';
@@ -826,9 +827,10 @@ class _HomeShellState extends State<HomeShell> {
         color: selected ? colorScheme.secondaryContainer : null,
         child: Column(
           children: [
-            Icon(
-              selected ? Icons.table_chart : Icons.table_chart_outlined,
+            TableIconWidget(
+              icon: table.icon,
               color: selected ? colorScheme.onSecondaryContainer : null,
+              fallback: selected ? Icons.table_chart : Icons.table_chart_outlined,
             ),
             const SizedBox(height: 4),
             Text(
@@ -991,7 +993,7 @@ class _HomeShellState extends State<HomeShell> {
     final tile = GestureDetector(
       onSecondaryTap: () => _showMoveToGroupMenu(table, groups),
       child: ListTile(
-        leading: const Icon(Icons.table_chart_outlined),
+        leading: TableIconWidget(icon: table.icon),
         title: Text(table.displayName),
         selected: table.tableName == _selectedTableName,
         trailing: IconButton(

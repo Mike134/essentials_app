@@ -11,6 +11,8 @@ import '../models/table_config.dart';
 import '../models/template_field.dart';
 import '../util/calendar_field.dart';
 import '../util/permanent_delete_gate.dart';
+import '../util/table_icon_picker.dart';
+import '../util/table_icon_widget.dart';
 
 /// Essentials v2 Phase 1's "Manage Tables" screen (build order step 8) --
 /// the table-level counterpart to [ManageFieldsScreen], which already
@@ -267,6 +269,7 @@ class _ManageTablesScreenState extends State<ManageTablesScreen> {
               else
                 for (final table in active)
                   ListTile(
+                    leading: TableIconWidget(icon: table.icon),
                     title: Text(table.displayName),
                     subtitle: Text(table.description ?? table.tableName),
                     onTap: () => _openEditor(table),
@@ -295,6 +298,7 @@ class _ManageTablesScreenState extends State<ManageTablesScreen> {
                   children: [
                     for (final table in deleted)
                       ListTile(
+                        leading: TableIconWidget(icon: table.icon),
                         title: Text(table.displayName),
                         subtitle: Text(table.description ?? table.tableName),
                         trailing: Row(
@@ -336,6 +340,7 @@ class _TableEditorDialog extends StatefulWidget {
 class _TableEditorDialogState extends State<_TableEditorDialog> {
   late final TextEditingController _displayNameController;
   late final TextEditingController _descriptionController;
+  late String? _icon;
   String? _error;
   bool _saving = false;
 
@@ -353,6 +358,7 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
     super.initState();
     _displayNameController = TextEditingController(text: widget.table.displayName);
     _descriptionController = TextEditingController(text: widget.table.description ?? '');
+    _icon = widget.table.icon;
     _configFuture = SchemaRegistry().buildConfig(widget.table.tableName);
 
     final parsed = CalendarFieldConfig.tryParse(widget.table.calendarField);
@@ -383,6 +389,7 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
         widget.table.tableName,
         displayName: _displayNameController.text,
         description: _descriptionController.text.trim().isEmpty ? null : _descriptionController.text.trim(),
+        icon: _icon,
       );
 
       // Only ever written when there's a real eligible field selected --
@@ -495,6 +502,11 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
               TextField(
                 controller: _descriptionController,
                 decoration: const InputDecoration(labelText: 'Description (optional)'),
+              ),
+              TableIconPickerField(
+                icon: _icon,
+                tableName: widget.table.tableName,
+                onChanged: (value) => setState(() => _icon = value),
               ),
               FutureBuilder<TableConfig>(
                 future: _configFuture,

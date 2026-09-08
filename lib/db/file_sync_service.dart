@@ -213,4 +213,17 @@ class FileSyncService {
     final [table, recordId, fieldName, filename] = segments;
     await delete(table: table, recordId: recordId, fieldName: fieldName, filename: filename);
   }
+
+  /// [fetch]'s counterpart to [deleteByRelativeKey] -- parses a stored
+  /// relative key and resolves it to a local file, same "parse the four
+  /// segments already present in the value, don't reconstruct them from
+  /// context" reasoning as [GenericFormScreen._resolveImageFile]. Used by
+  /// [TableIconWidget] to resolve a `table_definitions.icon` value of the
+  /// `image:<relative_key>` shape.
+  Future<File?> fetchByRelativeKey(String relativeKey) {
+    final segments = relativeKey.split('/');
+    if (segments.length != 4) return Future.value(null);
+    final [table, recordId, fieldName, filename] = segments;
+    return fetch(table: table, recordId: recordId, fieldName: fieldName, filename: filename);
+  }
 }

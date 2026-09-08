@@ -9,6 +9,7 @@ import '../db/template_definitions_dao.dart';
 import '../models/builtin_templates.dart';
 import '../models/template_field.dart';
 import '../util/field_format_choice.dart';
+import '../util/table_icon_picker.dart';
 import '../util/template_instantiation.dart';
 import 'add_field_screen.dart' show autoDisplayField;
 
@@ -203,8 +204,8 @@ class _NewTableScreenState extends State<NewTableScreen> {
 
   final _displayNameController = TextEditingController();
   final _descriptionController = TextEditingController();
-  final _iconController = TextEditingController();
   final _fieldNameController = TextEditingController();
+  String? _icon;
 
   FieldFormatChoice _fieldFormat = FieldFormatChoice.text;
   String? _linkedTable;
@@ -231,7 +232,6 @@ class _NewTableScreenState extends State<NewTableScreen> {
   void dispose() {
     _displayNameController.dispose();
     _descriptionController.dispose();
-    _iconController.dispose();
     _fieldNameController.dispose();
     super.dispose();
   }
@@ -408,7 +408,7 @@ class _NewTableScreenState extends State<NewTableScreen> {
       final tableName = await _editor.createTable(
         displayName: _displayNameController.text,
         description: _descriptionController.text.trim().isEmpty ? null : _descriptionController.text.trim(),
-        icon: _iconController.text.trim().isEmpty ? null : _iconController.text.trim(),
+        icon: _icon,
       );
       // Sequential, not concurrent -- addField's own position lookup
       // reads the current max position first, so two concurrent calls
@@ -528,12 +528,14 @@ class _NewTableScreenState extends State<NewTableScreen> {
             decoration: const InputDecoration(labelText: 'Description (optional)'),
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _iconController,
-            decoration: const InputDecoration(
-              labelText: 'Icon (optional)',
-              hintText: 'Not shown anywhere yet -- stored for later use',
-            ),
+          TableIconPickerField(
+            icon: _icon,
+            // The table being created doesn't exist yet, so a custom
+            // uploaded image (which needs a real table_name for its
+            // storage key) isn't available here -- only a built-in
+            // Material icon. See TableIconPickerField's own doc comment.
+            tableName: null,
+            onChanged: (value) => setState(() => _icon = value),
           ),
           const SizedBox(height: 24),
           const Divider(),

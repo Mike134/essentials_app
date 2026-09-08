@@ -149,6 +149,7 @@ class SchemaRegistry {
       displayName: tableRow['display_name'] as String,
       displayColumn: (tableRow['display_field'] as String?) ?? 'id',
       orderBy: tableRow['order_by'] as String?,
+      icon: tableRow['icon'] as String?,
       fields: fields,
       computePreview: (hasFormulas || hasLinkedComputed)
           ? (values) async {
