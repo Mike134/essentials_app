@@ -252,12 +252,28 @@ flutter:
 # first two candidate icons this project tried, this one has a genuinely
 # transparent background (no baked-in rounded-square backdrop), so each
 # platform's own icon masking (squircle, circle, Android adaptive icon,
-# whatever) applies cleanly with no double-rounding risk. Not a runtime
-# Flutter asset -- only read by the generator at build-icon time, so it's
-# not listed under flutter/assets.
+# whatever) applies cleanly with no double-rounding risk.
+#
+# `android: true` alone (no adaptive_icon_* keys) generates a plain flat
+# PNG per mipmap density -- fine on Windows (a bare transparent .ico is
+# normal there), but a real bug found live on MIKE-12R: a flat icon with
+# transparent pixels isn't the same thing as a real Android Adaptive Icon
+# (a genuine two-layer foreground+background format, API 26+), and
+# without one, many launchers fill transparent areas with a flat white
+# background rather than leaving them see-through -- confirmed live, not
+# theorized. `adaptive_icon_background` (a solid color, sampled directly
+# from the earlier non-transparent gold-cube PNG's own backdrop so it
+# matches) + `adaptive_icon_foreground` (the transparent artwork) fixes
+# this by generating a real adaptive icon: the OS composites and masks
+# the two layers itself, so no launcher-specific white-fill guess is
+# ever needed. `image_path` (the flat fallback used for API < 26 and for
+# Windows) is kept as the same transparent source -- correct there
+# regardless, since neither of those paths has the white-fill problem.
 flutter_launcher_icons:
   image_path: "assets/icon/app_icon.png"
   android: true
+  adaptive_icon_background: "#01091E"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
   windows:
     generate: true
     icon_size: 256
