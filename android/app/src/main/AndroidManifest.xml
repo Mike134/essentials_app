@@ -33,7 +33,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
-        android:label="essentials_app"
+        android:label="Essentials"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
