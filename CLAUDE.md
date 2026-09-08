@@ -8923,3 +8923,42 @@ that same path, so the pin keeps pointing at whatever the current build
 is without needing to be redone after a rebuild.
 
 **Next session:** not yet decided.
+
+## App display name changed to "Essentials", and USER_GUIDE.md renamed
+
+**Display name, both platforms (2026-09-08).** Mike asked for the app to
+show as "Essentials" (not "essentials_app") everywhere a user actually
+sees it -- picked over "Essentials App" (both offered, Mike's call).
+Changed: Android's `AndroidManifest.xml` `android:label` (home screen/app
+drawer/Settings/Recents); Windows' window title
+(`windows/runner/main.cpp`'s `window.Create(L"Essentials", ...)`) and the
+exe's version-resource `FileDescription`/`ProductName`
+(`windows/runner/Runner.rc`) -- `InternalName`/`OriginalFilename`
+deliberately left as `essentials_app`/`essentials_app.exe`, since those
+are the real technical filename, not a user-facing label. Confirmed
+directly against the built exe's `VersionInfo`, not just trusted from the
+source edit.
+
+**Real, still-not-fully-resolved Windows shell-caching finding, worth
+knowing if this ever needs debugging again:** MIKE-12R picked up the new
+label immediately; MIKE-CU's Start tile/taskbar pin kept showing
+"essentials_app" through icon-cache-clear (the same fix that worked for
+the app-icon caching issue earlier this session) and two full unpin/
+re-pin cycles, on both Start and the taskbar. **Confirmed the rebuild
+itself was correct and not the cause** -- the actual running window's
+title bar showed "Essentials" the whole time, only the pinned tile's
+cached label was stale. Leading explanation, not yet confirmed: Windows
+11's Start menu tile data lives in `StartMenuExperienceHost.exe`, a
+separate process from `explorer.exe`, so restarting Explorer doesn't
+reliably refresh it, and unpin/re-pin can reuse an already-cached tile
+object rather than doing a genuine fresh read. Next step, not yet tried:
+a full reboot (flushes Start tile cache + icon cache + property cache
+together, rather than chasing which specific one is still stale) --
+outcome not yet known as of this note.
+
+**`USER_GUIDE.md` renamed to `Essentials User Guide.md`** (Mike, same
+Obsidian vault location -- see "`USER_GUIDE.md` moved out of the repo,
+into the Obsidian vault" above for why it lives there and isn't
+git-tracked; that reasoning is unchanged, only the filename is new).
+**Refer to it as "the Guide" going forward** -- Mike's own shorthand, to
+cut down on typing the full name repeatedly.
