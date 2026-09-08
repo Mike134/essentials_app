@@ -8795,3 +8795,88 @@ here so it isn't forgotten; both MIKE-CU and MIKE-12R are already on
 builds carrying all three functions.
 
 **Next session:** not yet decided.
+
+## App icon + per-table icons — built and real-device verified (2026-09-08)
+
+Two small features, same session: a real launcher icon (there had never
+been one -- both platforms still showed Flutter's default scaffold icon),
+and per-table icons (a stub since Essentials v2 Phase 1's New Table
+screen: `table_definitions.icon` existed but "nothing renders it anywhere
+yet, just stored for later").
+
+**App icon.** Mike supplied two candidate designs
+(`essentials_icon_jost_light3_devices.png` -- a devices/hub motif echoing
+this project's own hub-and-spoke sync architecture, and a simpler bold
+"e" mark); Mike picked the devices/hub one, used as-is despite its
+already-baked-in rounded corners (his call, accepted the small risk of
+double-rounding on some Android adaptive-icon shapes rather than
+re-editing the source). Generated via the new `flutter_launcher_icons`
+dev dependency (`assets/icon/app_icon.png` -> every Android mipmap
+density + a 256px Windows `.ico`), committed as `269d9dd`.
+
+**Real, non-code finding: Windows Start menu/taskbar kept showing the old
+default Flutter icon after the rebuild, MIKE-12R was correct
+immediately.** Root cause confirmed, not guessed -- pulling the icon
+straight back out of the freshly-built `essentials_app.exe` (via a
+PowerShell `ExtractAssociatedIcon` script) showed the *correct* new icon,
+proving the build itself was right. Windows' Start menu/taskbar pull
+icons from `%LocalAppData%\Microsoft\Windows\Explorer\iconcache_*.db`,
+keyed by file path -- having run `essentials_app.exe` from that same
+`build\windows\x64\runner\Release\` path before this session meant
+Explorer kept the stale cached bitmap regardless of the exe's actual
+content. Fixed by having Mike stop `explorer.exe`, delete the icon-cache
+files, and restart it (`Stop-Process -Name explorer -Force` /
+`Remove-Item ...iconcache_*.db` / `Start-Process explorer.exe`) --
+confirmed fixed immediately after. Worth remembering if a future icon
+change on Windows ever looks "not applied" again: check the actual exe's
+embedded icon before assuming the build is wrong, this exact cache
+staleness is the more likely cause.
+
+**Per-table icons.** `table_definitions.icon` (no schema change needed --
+the column already existed) now holds a small tagged value:
+`material:<name>` (a curated ~60-icon catalog, `lib/util/table_icon.dart`
+-- same "curated list, not free text" call already made for font family)
+or `image:<relative_key>`, a custom uploaded image reusing the exact same
+`{table}/{record_id}/{field_name}/{filename}` hub file-transfer key shape
+the image field already established, under a synthetic
+`_table_icons/<table_name>/icon/<filename>` namespace (confirmed safe --
+the hub's `/files/...` endpoint never validates the `table` segment
+against real schema, only that it's a safe filesystem name).
+
+- `TableIconWidget` (`lib/util/table_icon_widget.dart`) -- the one
+  rendering site every nav/list surface uses, resolving a custom image
+  via `FileSyncService.fetchByRelativeKey` (new method, mirroring the
+  existing `deleteByRelativeKey`) with the same three-state
+  loading/broken-image/resolved pattern `GenericFormScreen`'s own image
+  preview already uses. Falls back to the existing generic table icon for
+  `null`/unrecognized values, so an icon-less table renders exactly as it
+  always has.
+- `TableIconPickerField`/`_IconPickerSheet`
+  (`lib/util/table_icon_picker.dart`) -- a bottom sheet, Material grid vs.
+  Upload image (camera/gallery on Android via `image_picker`, Browse on
+  Windows via `file_picker` -- no drag-and-drop target built for this,
+  Browse alone covers it, a deliberate scope trim from the image field's
+  fuller UI), timestamped upload filenames (same "a fixed filename can't
+  displace a stale cached copy on another device" lesson the image field
+  already learned the hard way, applied here from the start). Used by
+  both `NewTableScreen` (Material icon only -- no real `table_name` yet
+  for an image key until the table's actually created) and
+  `ManageTablesScreen`'s table editor (both mechanisms, since the real
+  table name is already known there).
+- `SchemaMetadataDao.updateTable` widened to accept `icon` (same
+  "caller submits the complete new state" convention `displayName`/
+  `description` already use there).
+- Rendered at every table nav/list site: `HomeShell`'s rail and drawer,
+  and `ManageTablesScreen`'s own active/deleted lists.
+
+`flutter analyze` clean, both `flutter build windows`/`apk --debug`
+clean, committed as `cc27f50`.
+
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R** -- picking a built-in icon via New Table and via Manage
+Tables, uploading a custom image on both platforms, clearing an icon back
+to the default, and a custom image icon syncing correctly between
+devices all confirmed working through real, live use, "different ways"
+on each device per Mike's own testing.
+
+**Next session:** not yet decided.
