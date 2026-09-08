@@ -245,14 +245,16 @@ flutter:
 
 # App launcher icon, generated via `dart run flutter_launcher_icons` --
 # source is assets/icon/app_icon.png (Mike's "gold cube" design,
-# essentials_icon_gold_cube.png -- the gold cube is the hub, the three
-# blue arms are the devices attached to it, same concept as the first
-# icon this project shipped with, just executed with more polish; swapped
-# in after Mike found the original "very amateurish"). Used as-is (its
-# baked-in rounded corners aren't removed -- Mike's call; each platform's
-# own masking may add slight double-rounding on some Android launcher
-# shapes, accepted). Not a runtime Flutter asset -- only read by the
-# generator at build-icon time, so it's not listed under flutter/assets.
+# essentials_icon_gold_cube_transparent.png -- the gold cube is the hub,
+# the three blue arms are the devices attached to it, same concept as the
+# first icon this project shipped with, just executed with more polish;
+# swapped in after Mike found the original "very amateurish"). Unlike the
+# first two candidate icons this project tried, this one has a genuinely
+# transparent background (no baked-in rounded-square backdrop), so each
+# platform's own icon masking (squircle, circle, Android adaptive icon,
+# whatever) applies cleanly with no double-rounding risk. Not a runtime
+# Flutter asset -- only read by the generator at build-icon time, so it's
+# not listed under flutter/assets.
 flutter_launcher_icons:
   image_path: "assets/icon/app_icon.png"
   android: true
