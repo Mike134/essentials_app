@@ -37,6 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _backgroundColorController;
   late final TextEditingController _gridStripeColorController;
   late final TextEditingController _listStripeColorController;
+  late final TextEditingController _listGroupHeaderStripeColorController;
   bool _rebuildingSearchIndex = false;
   bool _backingUp = false;
 
@@ -64,6 +65,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? ''
           : ThemeController.colorToHex(controller.listStripeColorOverride!),
     );
+    _listGroupHeaderStripeColorController = TextEditingController(
+      text: controller.listGroupHeaderStripeColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listGroupHeaderStripeColorOverride!),
+    );
   }
 
   @override
@@ -72,6 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _backgroundColorController.dispose();
     _gridStripeColorController.dispose();
     _listStripeColorController.dispose();
+    _listGroupHeaderStripeColorController.dispose();
     super.dispose();
   }
 
@@ -199,6 +206,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await controller.setListStripeColorOverride(color);
   }
 
+  Future<void> _applyListGroupHeaderStripeColor(ThemeController controller, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await controller.setListGroupHeaderStripeColorOverride(null);
+      return;
+    }
+    final color = ThemeController.parseHexColor(trimmed);
+    if (color == null) {
+      _showInvalidHexMessage();
+      _listGroupHeaderStripeColorController.text = controller.listGroupHeaderStripeColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listGroupHeaderStripeColorOverride!);
+      return;
+    }
+    await controller.setListGroupHeaderStripeColorOverride(color);
+  }
+
   void _showInvalidHexMessage() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Not a valid hex color (e.g. #1A73E8).')),
@@ -231,6 +255,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (picked == null) return;
     _listStripeColorController.text = ThemeController.colorToHex(picked);
     await controller.setListStripeColorOverride(picked);
+  }
+
+  Future<void> _pickListGroupHeaderStripeColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _listGroupHeaderStripeColorController.text = ThemeController.colorToHex(picked);
+    await controller.setListGroupHeaderStripeColorOverride(picked);
   }
 
   Widget _colorSwatch(Color color) {
@@ -514,6 +545,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   onSubmitted: (text) => _applyListStripeColor(controller, text),
                   onTapOutside: (_) => _applyListStripeColor(controller, _listStripeColorController.text),
+                ),
+                const SizedBox(height: 16),
+              ],
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Alternate group header colors in List view'),
+                subtitle: const Text(
+                  'A second, independent stripe for group headers -- separate from the entries above.',
+                ),
+                value: controller.listGroupHeaderStripeEnabled,
+                onChanged: (v) => controller.setListGroupHeaderStripeEnabled(v ?? false),
+              ),
+              if (controller.listGroupHeaderStripeEnabled) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Group header stripe color'),
+                    if (controller.listGroupHeaderStripeColorOverride != null)
+                      TextButton(
+                        onPressed: () {
+                          controller.setListGroupHeaderStripeColorOverride(null);
+                          _listGroupHeaderStripeColorController.clear();
+                        },
+                        child: const Text('Reset to default'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _listGroupHeaderStripeColorController,
+                  decoration: InputDecoration(
+                    hintText: '#RRGGBB -- blank to use the default',
+                    suffixIcon: IconButton(
+                      icon: _colorSwatch(controller.listGroupHeaderStripeColor(context)),
+                      tooltip: 'Pick a color',
+                      onPressed: () => _pickListGroupHeaderStripeColor(
+                        controller,
+                        controller.listGroupHeaderStripeColor(context),
+                      ),
+                    ),
+                  ),
+                  onSubmitted: (text) => _applyListGroupHeaderStripeColor(controller, text),
+                  onTapOutside: (_) =>
+                      _applyListGroupHeaderStripeColor(controller, _listGroupHeaderStripeColorController.text),
                 ),
               ],
               const SizedBox(height: 32),

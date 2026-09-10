@@ -54,10 +54,24 @@ class ThemeController extends ChangeNotifier {
   bool listStripeEnabled = false;
   Color? listStripeColorOverride;
 
+  /// List view's *group header* stripe -- a second, independent alternating
+  /// level from [listStripeEnabled]/[listStripeColorOverride] above, which
+  /// only ever colors the record rows inside a group. Group headers already
+  /// get their own fixed background (`surfaceContainerHighest`, matching
+  /// the un-striped default) regardless of this setting -- enabling this
+  /// alternates every other *header* between that default and this color,
+  /// entirely independent of whatever's happening to the entries beneath
+  /// it. Same override-falls-back-to-[defaultStripeColor] shape as the
+  /// other two stripe colors.
+  bool listGroupHeaderStripeEnabled = false;
+  Color? listGroupHeaderStripeColorOverride;
+
   Color defaultStripeColor(BuildContext context) => Theme.of(context).colorScheme.surfaceContainerHighest;
 
   Color gridStripeColor(BuildContext context) => gridStripeColorOverride ?? defaultStripeColor(context);
   Color listStripeColor(BuildContext context) => listStripeColorOverride ?? defaultStripeColor(context);
+  Color listGroupHeaderStripeColor(BuildContext context) =>
+      listGroupHeaderStripeColorOverride ?? defaultStripeColor(context);
 
   ThemeSettingsDao? _dao;
   bool _loaded = false;
@@ -78,6 +92,8 @@ class ThemeController extends ChangeNotifier {
     gridStripeColorOverride = parseHexColor(appSettings['grid_stripe_color']);
     listStripeEnabled = appSettings['list_stripe_enabled'] == '1';
     listStripeColorOverride = parseHexColor(appSettings['list_stripe_color']);
+    listGroupHeaderStripeEnabled = appSettings['list_header_stripe_enabled'] == '1';
+    listGroupHeaderStripeColorOverride = parseHexColor(appSettings['list_header_stripe_color']);
 
     final fontSizeText = await dao.loadDeviceFontSize();
     fontSizeOverride = fontSizeText == null ? null : double.tryParse(fontSizeText);
@@ -158,6 +174,18 @@ class ThemeController extends ChangeNotifier {
   Future<void> setListStripeColorOverride(Color? color) async {
     listStripeColorOverride = color;
     await _dao?.setAppSetting('list_stripe_color', color == null ? null : colorToHex(color));
+    notifyListeners();
+  }
+
+  Future<void> setListGroupHeaderStripeEnabled(bool enabled) async {
+    listGroupHeaderStripeEnabled = enabled;
+    await _dao?.setAppSetting('list_header_stripe_enabled', enabled ? '1' : '0');
+    notifyListeners();
+  }
+
+  Future<void> setListGroupHeaderStripeColorOverride(Color? color) async {
+    listGroupHeaderStripeColorOverride = color;
+    await _dao?.setAppSetting('list_header_stripe_color', color == null ? null : colorToHex(color));
     notifyListeners();
   }
 

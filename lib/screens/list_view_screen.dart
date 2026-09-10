@@ -318,10 +318,14 @@ class _ListViewScreenState extends State<ListViewScreen> {
     if (changed == true) _reload();
   }
 
-  /// [index] is this row's position among every *visible* row in the
-  /// screen, continuous across group boundaries (not reset to 0 per group)
-  /// -- so stripes read as one continuous alternating sequence down the
-  /// whole list, grouped or not, matching Grid's own uniform striping.
+  /// [index] is this row's position among the *visible* rows -- when the
+  /// view isn't grouped, this is its position in the whole list (one
+  /// continuous alternating sequence, matching Grid's own uniform
+  /// striping); when it is grouped, this is its position *within its own
+  /// group* (resets to 0 at the start of every group), so the entry-level
+  /// stripe is a genuinely independent alternation from the group-header
+  /// level's own -- see [_buildGroupHeader]'s doc comment for the header
+  /// side of that same "two independent levels" split.
   Widget _buildRow(Map<String, Object?> row, FieldConfig primaryField, SavedViewData data, int index) {
     final line1 = savedViewDisplayText(primaryField, row[primaryField.column], data);
     final secondaryField = fieldByColumn(widget.config, _config['secondary_field'] as String?);
@@ -359,12 +363,22 @@ class _ListViewScreenState extends State<ListViewScreen> {
     return stripe == null ? tile : Container(color: stripe, child: tile);
   }
 
-  Widget _buildGroupHeader(_ListGroup group, bool collapsed) {
+  /// [groupIndex] is this group's position among all the groups -- its own
+  /// alternating sequence, entirely independent of [_buildRow]'s per-group
+  /// entry index (which resets to 0 inside every group). Headers alternate
+  /// between the ordinary default background and
+  /// [ThemeController.listGroupHeaderStripeColor] when
+  /// [ThemeController.listGroupHeaderStripeEnabled] is on; otherwise every
+  /// header keeps the single fixed background this always had.
+  Widget _buildGroupHeader(_ListGroup group, bool collapsed, int groupIndex) {
+    final headerStripe = (ThemeController.instance.listGroupHeaderStripeEnabled && groupIndex.isOdd)
+        ? ThemeController.instance.listGroupHeaderStripeColor(context)
+        : Theme.of(context).colorScheme.surfaceContainerHighest;
     return InkWell(
       onTap: () => _toggleGroup(group.key),
       child: Container(
         width: double.infinity,
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        color: headerStripe,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Row(
           children: [
@@ -422,29 +436,18 @@ class _ListViewScreenState extends State<ListViewScreen> {
     }
 
     final groups = _buildGroups(sorted, primaryField, data);
-    // Prefix sums of each group's row count -- gives every row a single
-    // running index across all groups, even though ListView.builder only
-    // ever builds one group's worth of children at a time (see _buildRow's
-    // own doc comment for why this needs to be continuous, not per-group).
-    final groupStartIndex = <int>[];
-    var runningIndex = 0;
-    for (final group in groups) {
-      groupStartIndex.add(runningIndex);
-      runningIndex += group.rows.length;
-    }
     return ListView.builder(
       itemCount: groups.length,
       itemBuilder: (context, i) {
         final group = groups[i];
         final collapsed = _collapsedGroups.contains(group.key);
-        final start = groupStartIndex[i];
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildGroupHeader(group, collapsed),
+            _buildGroupHeader(group, collapsed, i),
             if (!collapsed)
               for (var j = 0; j < group.rows.length; j++)
-                _buildRow(group.rows[j], primaryField, data, start + j),
+                _buildRow(group.rows[j], primaryField, data, j),
           ],
         );
       },
