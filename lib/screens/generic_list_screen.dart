@@ -869,6 +869,25 @@ class _GenericListScreenState extends State<GenericListScreen> {
     return null;
   }
 
+  /// The color every cell in [row] should show its text in --
+  /// [_resolveRowColor]'s data-driven "Use Color" accent takes precedence
+  /// (an intentional per-record choice), falling back to
+  /// [ThemeController.gridStripeFontColorOverride] only when [rowIdx] is
+  /// one of the rows the grid's own alternating stripe is actually painting
+  /// -- see `_trinaGridStyle`'s `oddRowColor`/`evenRowColor` doc comment for
+  /// the same `rowIdx % 2 == 0` parity TrinaGrid itself uses internally
+  /// (`TrinaBaseRow._backgroundColor`) to decide which one applies. Same
+  /// "only touch text that's actually sitting on a stripe" rule as List
+  /// view's own stripe font colors (`ThemeController.listStripeFontColorOverride`'s
+  /// doc comment) -- an un-striped row keeps the ordinary theme text color.
+  Color? _resolveRowTextColor(TrinaRow row, int rowIdx) {
+    final explicit = _resolveRowColor(row);
+    if (explicit != null) return explicit;
+    if (!ThemeController.instance.gridStripeEnabled) return null;
+    if (rowIdx % 2 != 0) return null;
+    return ThemeController.instance.gridStripeFontColorOverride;
+  }
+
   /// Column-menu "Set column footer..." handler (see [_ColumnMenuDelegate])
   /// -- unlike wrap/group-by, this can't work through `setState` plus a
   /// rebuild: `TrinaGrid` only ever consumes the `columns`/`rows`
@@ -1387,7 +1406,9 @@ class _GenericListScreenState extends State<GenericListScreen> {
                   child: Text(
                     text,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: _resolveRowColor(rendererContext.row)),
+                    style: TextStyle(
+                      color: _resolveRowTextColor(rendererContext.row, rendererContext.rowIdx),
+                    ),
                   ),
                 ),
                 IconButton(
@@ -1546,8 +1567,11 @@ class _GenericListScreenState extends State<GenericListScreen> {
                     // Same reasoning as _wrapAwareCellRenderer's doc comment
                     // -- this renderer builds its own Text, bypassing
                     // TrinaGrid's rowTextStyleCallback entirely, so row
-                    // coloring has to be applied here explicitly too.
-                    style: TextStyle(color: _resolveRowColor(rendererContext.row)),
+                    // coloring (and the stripe font color fallback) has to
+                    // be applied here explicitly too.
+                    style: TextStyle(
+                      color: _resolveRowTextColor(rendererContext.row, rendererContext.rowIdx),
+                    ),
                   ),
                 ),
               ],
@@ -1725,15 +1749,16 @@ class _GenericListScreenState extends State<GenericListScreen> {
   /// height row would otherwise paint past the row's bounds and bleed into
   /// the row above/below instead of just being cut off at [_wrappedRowHeight].
   ///
-  /// Also reads [_resolveRowColor] live, same reasoning -- this renderer
-  /// bypasses TrinaGrid's own text-style resolution entirely (it builds its
-  /// own `Text` instead of going through the default cell widget), so it's
-  /// one of the two places (the other being the color-field renderer) that
-  /// has to apply row coloring itself rather than getting it for free via
+  /// Also reads [_resolveRowTextColor] live, same reasoning -- this
+  /// renderer bypasses TrinaGrid's own text-style resolution entirely (it
+  /// builds its own `Text` instead of going through the default cell
+  /// widget), so it's one of the two places (the other being the
+  /// color-field renderer) that has to apply row coloring/the stripe font
+  /// color itself rather than getting it for free via
   /// `rowTextStyleCallback`.
   Widget _wrapAwareCellRenderer(TrinaColumnRendererContext rendererContext) {
     final wrapped = _wrapTextColumns[rendererContext.column.field] ?? false;
-    final rowColor = _resolveRowColor(rendererContext.row);
+    final rowColor = _resolveRowTextColor(rendererContext.row, rendererContext.rowIdx);
     final baseStyle = rendererContext.stateManager.style.cellTextStyle;
     final text = Text(
       rendererContext.column.formattedValueForDisplay(rendererContext.cell.value),
@@ -1939,7 +1964,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
             // instead; the link renderer deliberately never does either, per
             // Mike's "except hyperlinks."
             rowTextStyleCallback: (rowColorContext) {
-              final color = _resolveRowColor(rowColorContext.row);
+              final color = _resolveRowTextColor(rowColorContext.row, rowColorContext.rowIdx);
               return color == null ? null : TextStyle(color: color);
             },
             columnMenuDelegate: _ColumnMenuDelegate(

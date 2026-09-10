@@ -66,6 +66,20 @@ class ThemeController extends ChangeNotifier {
   bool listGroupHeaderStripeEnabled = false;
   Color? listGroupHeaderStripeColorOverride;
 
+  /// Font color for text sitting on a *striped* row/header -- deliberately
+  /// separate from [fontColorOverride] (the app's ordinary text color,
+  /// used everywhere else). A dark stripe background with the ordinary
+  /// (often near-black) text color on top can read as illegible or
+  /// invisible -- found live, Mike picking a dark List stripe color and
+  /// the default text disappearing into it. `null` (the default) means
+  /// "don't touch it" -- striped text keeps using the ordinary font color
+  /// exactly as it always has, so picking a light stripe color needs no
+  /// extra step. Only applied to the cells/rows that actually got the
+  /// stripe background, never the un-striped ones in between.
+  Color? listStripeFontColorOverride;
+  Color? listGroupHeaderStripeFontColorOverride;
+  Color? gridStripeFontColorOverride;
+
   Color defaultStripeColor(BuildContext context) => Theme.of(context).colorScheme.surfaceContainerHighest;
 
   Color gridStripeColor(BuildContext context) => gridStripeColorOverride ?? defaultStripeColor(context);
@@ -94,6 +108,9 @@ class ThemeController extends ChangeNotifier {
     listStripeColorOverride = parseHexColor(appSettings['list_stripe_color']);
     listGroupHeaderStripeEnabled = appSettings['list_header_stripe_enabled'] == '1';
     listGroupHeaderStripeColorOverride = parseHexColor(appSettings['list_header_stripe_color']);
+    listStripeFontColorOverride = parseHexColor(appSettings['list_stripe_font_color']);
+    listGroupHeaderStripeFontColorOverride = parseHexColor(appSettings['list_header_stripe_font_color']);
+    gridStripeFontColorOverride = parseHexColor(appSettings['grid_stripe_font_color']);
 
     final fontSizeText = await dao.loadDeviceFontSize();
     fontSizeOverride = fontSizeText == null ? null : double.tryParse(fontSizeText);
@@ -186,6 +203,27 @@ class ThemeController extends ChangeNotifier {
   Future<void> setListGroupHeaderStripeColorOverride(Color? color) async {
     listGroupHeaderStripeColorOverride = color;
     await _dao?.setAppSetting('list_header_stripe_color', color == null ? null : colorToHex(color));
+    notifyListeners();
+  }
+
+  Future<void> setListStripeFontColorOverride(Color? color) async {
+    listStripeFontColorOverride = color;
+    await _dao?.setAppSetting('list_stripe_font_color', color == null ? null : colorToHex(color));
+    notifyListeners();
+  }
+
+  Future<void> setListGroupHeaderStripeFontColorOverride(Color? color) async {
+    listGroupHeaderStripeFontColorOverride = color;
+    await _dao?.setAppSetting(
+      'list_header_stripe_font_color',
+      color == null ? null : colorToHex(color),
+    );
+    notifyListeners();
+  }
+
+  Future<void> setGridStripeFontColorOverride(Color? color) async {
+    gridStripeFontColorOverride = color;
+    await _dao?.setAppSetting('grid_stripe_font_color', color == null ? null : colorToHex(color));
     notifyListeners();
   }
 

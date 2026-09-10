@@ -343,23 +343,29 @@ class _ListViewScreenState extends State<ListViewScreen> {
       if (text.isNotEmpty) line2Parts.add(text);
     }
 
+    final striped = ThemeController.instance.listStripeEnabled && index.isOdd;
+    final stripe = striped ? ThemeController.instance.listStripeColor(context) : null;
+    // Only consulted on an actually-striped row -- an un-striped row keeps
+    // the ordinary theme text color untouched, same reasoning as
+    // [ThemeController.listStripeFontColorOverride]'s own doc comment.
+    final fontOverride = striped ? ThemeController.instance.listStripeFontColorOverride : null;
+
     final tile = ListTile(
       title: Text(
         line1.isEmpty ? '(blank)' : line1,
-        style: const TextStyle(fontWeight: FontWeight.bold),
+        style: TextStyle(fontWeight: FontWeight.bold, color: fontOverride),
       ),
-      subtitle: line2Parts.isEmpty ? null : Text(line2Parts.join(' · ')),
+      subtitle: line2Parts.isEmpty
+          ? null
+          : Text(line2Parts.join(' · '), style: fontOverride == null ? null : TextStyle(color: fontOverride)),
       trailing: IconButton(
-        icon: const Icon(Icons.copy_outlined),
+        icon: Icon(Icons.copy_outlined, color: fontOverride),
         tooltip: 'Copy',
         onPressed: () => _copyRow(row),
       ),
       onTap: () => _openRow(row),
     );
 
-    final stripe = (ThemeController.instance.listStripeEnabled && index.isOdd)
-        ? ThemeController.instance.listStripeColor(context)
-        : null;
     return stripe == null ? tile : Container(color: stripe, child: tile);
   }
 
@@ -371,9 +377,15 @@ class _ListViewScreenState extends State<ListViewScreen> {
   /// [ThemeController.listGroupHeaderStripeEnabled] is on; otherwise every
   /// header keeps the single fixed background this always had.
   Widget _buildGroupHeader(_ListGroup group, bool collapsed, int groupIndex) {
-    final headerStripe = (ThemeController.instance.listGroupHeaderStripeEnabled && groupIndex.isOdd)
+    final headerStriped = ThemeController.instance.listGroupHeaderStripeEnabled && groupIndex.isOdd;
+    final headerStripe = headerStriped
         ? ThemeController.instance.listGroupHeaderStripeColor(context)
         : Theme.of(context).colorScheme.surfaceContainerHighest;
+    // Same "only on the actually-striped headers" rule as _buildRow's own
+    // fontOverride -- an un-striped (even-indexed) header keeps the
+    // ordinary theme text color.
+    final fontOverride = headerStriped ? ThemeController.instance.listGroupHeaderStripeFontColorOverride : null;
+
     return InkWell(
       onTap: () => _toggleGroup(group.key),
       child: Container(
@@ -382,15 +394,18 @@ class _ListViewScreenState extends State<ListViewScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Row(
           children: [
-            Icon(collapsed ? Icons.chevron_right : Icons.expand_more, size: 20),
+            Icon(collapsed ? Icons.chevron_right : Icons.expand_more, size: 20, color: fontOverride),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 group.key.isEmpty ? '(blank)' : group.key,
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                style: TextStyle(fontWeight: FontWeight.bold, color: fontOverride),
               ),
             ),
-            Text('${group.rows.length}', style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              '${group.rows.length}',
+              style: (Theme.of(context).textTheme.bodySmall ?? const TextStyle()).copyWith(color: fontOverride),
+            ),
           ],
         ),
       ),

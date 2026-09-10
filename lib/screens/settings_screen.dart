@@ -38,6 +38,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _gridStripeColorController;
   late final TextEditingController _listStripeColorController;
   late final TextEditingController _listGroupHeaderStripeColorController;
+  late final TextEditingController _listStripeFontColorController;
+  late final TextEditingController _listGroupHeaderStripeFontColorController;
+  late final TextEditingController _gridStripeFontColorController;
   bool _rebuildingSearchIndex = false;
   bool _backingUp = false;
 
@@ -70,6 +73,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? ''
           : ThemeController.colorToHex(controller.listGroupHeaderStripeColorOverride!),
     );
+    _listStripeFontColorController = TextEditingController(
+      text: controller.listStripeFontColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listStripeFontColorOverride!),
+    );
+    _listGroupHeaderStripeFontColorController = TextEditingController(
+      text: controller.listGroupHeaderStripeFontColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listGroupHeaderStripeFontColorOverride!),
+    );
+    _gridStripeFontColorController = TextEditingController(
+      text: controller.gridStripeFontColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.gridStripeFontColorOverride!),
+    );
   }
 
   @override
@@ -79,6 +97,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _gridStripeColorController.dispose();
     _listStripeColorController.dispose();
     _listGroupHeaderStripeColorController.dispose();
+    _listStripeFontColorController.dispose();
+    _listGroupHeaderStripeFontColorController.dispose();
+    _gridStripeFontColorController.dispose();
     super.dispose();
   }
 
@@ -223,6 +244,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await controller.setListGroupHeaderStripeColorOverride(color);
   }
 
+  Future<void> _applyListStripeFontColor(ThemeController controller, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await controller.setListStripeFontColorOverride(null);
+      return;
+    }
+    final color = ThemeController.parseHexColor(trimmed);
+    if (color == null) {
+      _showInvalidHexMessage();
+      _listStripeFontColorController.text = controller.listStripeFontColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listStripeFontColorOverride!);
+      return;
+    }
+    await controller.setListStripeFontColorOverride(color);
+  }
+
+  Future<void> _applyListGroupHeaderStripeFontColor(ThemeController controller, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await controller.setListGroupHeaderStripeFontColorOverride(null);
+      return;
+    }
+    final color = ThemeController.parseHexColor(trimmed);
+    if (color == null) {
+      _showInvalidHexMessage();
+      _listGroupHeaderStripeFontColorController.text =
+          controller.listGroupHeaderStripeFontColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.listGroupHeaderStripeFontColorOverride!);
+      return;
+    }
+    await controller.setListGroupHeaderStripeFontColorOverride(color);
+  }
+
+  Future<void> _applyGridStripeFontColor(ThemeController controller, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await controller.setGridStripeFontColorOverride(null);
+      return;
+    }
+    final color = ThemeController.parseHexColor(trimmed);
+    if (color == null) {
+      _showInvalidHexMessage();
+      _gridStripeFontColorController.text = controller.gridStripeFontColorOverride == null
+          ? ''
+          : ThemeController.colorToHex(controller.gridStripeFontColorOverride!);
+      return;
+    }
+    await controller.setGridStripeFontColorOverride(color);
+  }
+
   void _showInvalidHexMessage() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Not a valid hex color (e.g. #1A73E8).')),
@@ -262,6 +335,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (picked == null) return;
     _listGroupHeaderStripeColorController.text = ThemeController.colorToHex(picked);
     await controller.setListGroupHeaderStripeColorOverride(picked);
+  }
+
+  Future<void> _pickGridStripeFontColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _gridStripeFontColorController.text = ThemeController.colorToHex(picked);
+    await controller.setGridStripeFontColorOverride(picked);
+  }
+
+  Future<void> _pickListStripeFontColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _listStripeFontColorController.text = ThemeController.colorToHex(picked);
+    await controller.setListStripeFontColorOverride(picked);
+  }
+
+  Future<void> _pickListGroupHeaderStripeFontColor(ThemeController controller, Color current) async {
+    final picked = await pickColor(context, initial: current);
+    if (picked == null) return;
+    _listGroupHeaderStripeFontColorController.text = ThemeController.colorToHex(picked);
+    await controller.setListGroupHeaderStripeFontColorOverride(picked);
   }
 
   Widget _colorSwatch(Color color) {
@@ -509,6 +603,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTapOutside: (_) => _applyGridStripeColor(controller, _gridStripeColorController.text),
                 ),
                 const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Grid stripe font color'),
+                    if (controller.gridStripeFontColorOverride != null)
+                      TextButton(
+                        onPressed: () {
+                          controller.setGridStripeFontColorOverride(null);
+                          _gridStripeFontColorController.clear();
+                        },
+                        child: const Text('Reset to default'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _gridStripeFontColorController,
+                  decoration: InputDecoration(
+                    hintText: '#RRGGBB -- blank to leave the ordinary font color alone',
+                    suffixIcon: IconButton(
+                      icon: _colorSwatch(
+                        controller.gridStripeFontColorOverride ?? Theme.of(context).colorScheme.onSurface,
+                      ),
+                      tooltip: 'Pick a color',
+                      onPressed: () => _pickGridStripeFontColor(
+                        controller,
+                        controller.gridStripeFontColorOverride ?? Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  onSubmitted: (text) => _applyGridStripeFontColor(controller, text),
+                  onTapOutside: (_) => _applyGridStripeFontColor(controller, _gridStripeFontColorController.text),
+                ),
+                const SizedBox(height: 16),
               ],
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
@@ -545,6 +673,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   onSubmitted: (text) => _applyListStripeColor(controller, text),
                   onTapOutside: (_) => _applyListStripeColor(controller, _listStripeColorController.text),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('List stripe font color'),
+                    if (controller.listStripeFontColorOverride != null)
+                      TextButton(
+                        onPressed: () {
+                          controller.setListStripeFontColorOverride(null);
+                          _listStripeFontColorController.clear();
+                        },
+                        child: const Text('Reset to default'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _listStripeFontColorController,
+                  decoration: InputDecoration(
+                    hintText: '#RRGGBB -- blank to leave the ordinary font color alone',
+                    suffixIcon: IconButton(
+                      icon: _colorSwatch(
+                        controller.listStripeFontColorOverride ?? Theme.of(context).colorScheme.onSurface,
+                      ),
+                      tooltip: 'Pick a color',
+                      onPressed: () => _pickListStripeFontColor(
+                        controller,
+                        controller.listStripeFontColorOverride ?? Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  onSubmitted: (text) => _applyListStripeFontColor(controller, text),
+                  onTapOutside: (_) => _applyListStripeFontColor(controller, _listStripeFontColorController.text),
                 ),
                 const SizedBox(height: 16),
               ],
@@ -589,6 +751,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onSubmitted: (text) => _applyListGroupHeaderStripeColor(controller, text),
                   onTapOutside: (_) =>
                       _applyListGroupHeaderStripeColor(controller, _listGroupHeaderStripeColorController.text),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Group header stripe font color'),
+                    if (controller.listGroupHeaderStripeFontColorOverride != null)
+                      TextButton(
+                        onPressed: () {
+                          controller.setListGroupHeaderStripeFontColorOverride(null);
+                          _listGroupHeaderStripeFontColorController.clear();
+                        },
+                        child: const Text('Reset to default'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _listGroupHeaderStripeFontColorController,
+                  decoration: InputDecoration(
+                    hintText: '#RRGGBB -- blank to leave the ordinary font color alone',
+                    suffixIcon: IconButton(
+                      icon: _colorSwatch(
+                        controller.listGroupHeaderStripeFontColorOverride ??
+                            Theme.of(context).colorScheme.onSurface,
+                      ),
+                      tooltip: 'Pick a color',
+                      onPressed: () => _pickListGroupHeaderStripeFontColor(
+                        controller,
+                        controller.listGroupHeaderStripeFontColorOverride ??
+                            Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  onSubmitted: (text) => _applyListGroupHeaderStripeFontColor(controller, text),
+                  onTapOutside: (_) => _applyListGroupHeaderStripeFontColor(
+                    controller,
+                    _listGroupHeaderStripeFontColorController.text,
+                  ),
                 ),
               ],
               const SizedBox(height: 32),
