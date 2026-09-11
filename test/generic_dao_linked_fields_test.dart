@@ -152,4 +152,80 @@ void main() {
     final parentRows = await db.query('SELECT * FROM ${pair.parent} WHERE id = ?1 AND is_deleted = 0', [parentId]);
     expect(parentRows, isEmpty);
   });
+
+  test(
+    'getLookupOptions sorts by the target table\'s order_by when set, not just the display column',
+    () async {
+      // Added 2026-09-11: a real request -- a lookup table like "Priority"
+      // wants its own explicit sort column (e.g. "Position") honored in
+      // every dropdown that looks it up, not always alphabetically by
+      // whichever field happens to be the display column.
+      final pair = await createLinkedPair('GDL Lookup OrderBy');
+      await editor.addField(tableName: pair.parent, displayName: 'Name', format: 'text');
+      await editor.addField(tableName: pair.parent, displayName: 'Position', format: 'integer');
+
+      // Deliberately out of alphabetical order by name vs. position, so a
+      // passing test actually distinguishes the two sort orders.
+      await insertRow(pair.parent, {'name': 'Zulu', 'position': 1});
+      await insertRow(pair.parent, {'name': 'Alpha', 'position': 2});
+      await insertRow(pair.parent, {'name': 'Mike', 'position': 3});
+
+      final childConfig = await registry.buildConfig(pair.child);
+      final lookup = childConfig.fields.firstWhere((f) => f.column == pair.linkField).lookup!;
+
+      final beforeNames = [for (final o in await GenericDao(childConfig).getLookupOptions(lookup)) o['name']];
+      expect(beforeNames, ['Alpha', 'Mike', 'Zulu'], reason: 'no order_by set yet -- falls back to the display column');
+
+      await metadata.updateSortField(pair.parent, 'position');
+
+      final afterNames = [for (final o in await GenericDao(childConfig).getLookupOptions(lookup)) o['name']];
+      expect(afterNames, ['Zulu', 'Alpha', 'Mike'], reason: 'order_by=position must now win over the display column');
+    },
+  );
+
+  test('getLinkedRecordOptions sorts by the target table\'s order_by too, same as getLookupOptions', () async {
+    final parent = await createTestTable('GDL LinkRecord OrderBy Parent');
+    await editor.addField(tableName: parent, displayName: 'Name', format: 'text');
+    await editor.addField(tableName: parent, displayName: 'Position', format: 'integer');
+    await insertRow(parent, {'name': 'Zulu', 'position': 1});
+    await insertRow(parent, {'name': 'Alpha', 'position': 2});
+
+    // link_record, not select -- exercises getLinkedRecordOptions instead.
+    final linkOptions = {'mode': 'linked', 'table': parent, 'multiple': false};
+    final linkFieldTable = await createTestTable('GDL LinkRecord OrderBy Child');
+    await editor.addField(
+      tableName: linkFieldTable,
+      displayName: 'Parent Link',
+      format: 'link_record',
+      optionsJson: jsonEncode(linkOptions),
+    );
+    final config = await registry.buildConfig(linkFieldTable);
+    final linkRecord = config.fields.firstWhere((f) => f.column == 'parent_link').linkRecord!;
+
+    final beforeNames = [
+      for (final o in await GenericDao(config).getLinkedRecordOptions(linkRecord)) o['name'],
+    ];
+    expect(beforeNames, ['Alpha', 'Zulu']);
+
+    await metadata.updateSortField(parent, 'position');
+
+    final afterNames = [for (final o in await GenericDao(config).getLinkedRecordOptions(linkRecord)) o['name']];
+    expect(afterNames, ['Zulu', 'Alpha']);
+  });
+
+  test('a stale order_by naming a column this device doesn\'t have yet falls back to the display column', () async {
+    // Mirrors _resolveDisplayColumn's own existing fallback -- a value that
+    // arrived via sync ahead of the schema change that added the column
+    // must degrade gracefully, not crash the whole lookup.
+    final pair = await createLinkedPair('GDL OrderBy Fallback');
+    await editor.addField(tableName: pair.parent, displayName: 'Name', format: 'text');
+    await insertRow(pair.parent, {'name': 'Zulu'});
+    await insertRow(pair.parent, {'name': 'Alpha'});
+    await metadata.updateSortField(pair.parent, 'no_such_column');
+
+    final childConfig = await registry.buildConfig(pair.child);
+    final lookup = childConfig.fields.firstWhere((f) => f.column == pair.linkField).lookup!;
+    final names = [for (final o in await GenericDao(childConfig).getLookupOptions(lookup)) o['name']];
+    expect(names, ['Alpha', 'Zulu']);
+  });
 }

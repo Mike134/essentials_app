@@ -576,6 +576,7 @@ class GenericDao {
     assertSafeSqlIdentifier(lookup.table);
     assertSafeSqlIdentifier(lookup.displayColumn);
     final displayColumn = await _resolveDisplayColumn(crdt, lookup.table, lookup.displayColumn);
+    final orderBy = await _resolveOrderBy(crdt, lookup.table, displayColumn);
     // Aliased back onto the *configured* key when it had to fall back --
     // every consumer (this screen's lookupMaps, the form's dropdown) reads
     // `option[lookup.displayColumn]`, the original key, so without this a
@@ -586,7 +587,7 @@ class GenericDao {
         : ', $displayColumn AS ${lookup.displayColumn}';
     return crdt.query(
       'SELECT *$alias FROM ${lookup.table} '
-      'WHERE is_deleted = 0 ORDER BY $displayColumn',
+      'WHERE is_deleted = 0 ORDER BY $orderBy',
     );
   }
 
@@ -603,13 +604,14 @@ class GenericDao {
       linkRecord.table,
       linkRecord.displayColumn,
     );
+    final orderBy = await _resolveOrderBy(crdt, linkRecord.table, displayColumn);
     // Same aliasing-on-fallback reasoning as getLookupOptions above.
     final alias = displayColumn == linkRecord.displayColumn
         ? ''
         : ', "$displayColumn" AS "${linkRecord.displayColumn}"';
     return crdt.query(
       'SELECT *$alias FROM "${linkRecord.table}" '
-      'WHERE is_deleted = 0 ORDER BY "$displayColumn"',
+      'WHERE is_deleted = 0 ORDER BY "$orderBy"',
     );
   }
 
@@ -638,6 +640,35 @@ class GenericDao {
     final columns = await crdt.query('PRAGMA table_info("$table")');
     final exists = columns.any((c) => c['name'] == configuredColumn);
     return exists ? configuredColumn : 'id';
+  }
+
+  /// [fallback] (typically [table]'s own resolved display column), unless
+  /// [table]'s own `table_definitions.order_by` names a real physical
+  /// column on it -- in which case that wins instead. Added 2026-09-11:
+  /// Mike's own lookup tables (`Priority`, and every other lookup table
+  /// generally) have a real "Position" field meant to drive display order
+  /// everywhere the table is used as a lookup target, not just
+  /// alphabetically by whichever field happens to be the display column.
+  /// Set via `ManageTablesScreen`'s "Sort by" picker
+  /// ([SchemaMetadataDao.updateSortField]) -- this is the read side both
+  /// [getLookupOptions] and [getLinkedRecordOptions] share.
+  ///
+  /// Same lenient "fall back rather than crash" posture as
+  /// [_resolveDisplayColumn]: a stale `order_by` naming a column this
+  /// device doesn't have yet (e.g. synced in ahead of the schema change
+  /// that added it) just falls back to [fallback], exactly as if `order_by`
+  /// had never been set.
+  Future<String> _resolveOrderBy(CrdtApi crdt, String table, String fallback) async {
+    final rows = await crdt.query(
+      'SELECT order_by FROM table_definitions WHERE table_name = ?1 AND is_deleted = 0',
+      [table],
+    );
+    final configured = rows.isEmpty ? null : rows.first['order_by'] as String?;
+    if (configured == null || configured.trim().isEmpty) return fallback;
+    if (!isSafeSqlIdentifier(configured)) return fallback;
+    final columns = await crdt.query('PRAGMA table_info("$table")');
+    final exists = columns.any((c) => c['name'] == configured);
+    return exists ? configured : fallback;
   }
 
   /// Every other-table record whose own `link_record` field points back at

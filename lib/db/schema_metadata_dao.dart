@@ -68,6 +68,7 @@ class TableDefinitionRow {
     required this.description,
     required this.icon,
     required this.calendarField,
+    required this.orderBy,
     required this.isDeleted,
     required this.modified,
   });
@@ -84,6 +85,7 @@ class TableDefinitionRow {
     // key either way, same lenient handling as every other nullable column
     // read here.
     calendarField: row['calendar_field'] as String?,
+    orderBy: row['order_by'] as String?,
     isDeleted: (row['is_deleted'] as int) == 1,
     modified: row['modified'] as String,
   );
@@ -97,6 +99,19 @@ class TableDefinitionRow {
   /// `CalendarFieldConfig.tryParse`/`resolveCalendarField`
   /// (`lib/util/calendar_field.dart`), never read directly.
   final String? calendarField;
+
+  /// A single physical field name this table's rows should sort by
+  /// (ascending) wherever an explicit order isn't otherwise given -- both
+  /// this table's own grid default (`GenericDao.getAll`, via
+  /// `SchemaRegistry.buildConfig`'s `TableConfig.orderBy`) and, since
+  /// 2026-09-11, every other table's lookup/`link_record` dropdown pointing
+  /// *at* this table (`GenericDao.getLookupOptions`/`getLinkedRecordOptions`,
+  /// via `_resolveOrderBy`). `null` falls back to sorting by the display
+  /// column instead, same as before this existed. Set via
+  /// [SchemaMetadataDao.updateSortField]/`ManageTablesScreen`'s "Sort by"
+  /// picker -- real, previously-unused columns (`table_definitions.order_by`),
+  /// see CLAUDE.md's write-up for why no UI had ever set it before.
+  final String? orderBy;
 
   final bool isDeleted;
 
@@ -267,6 +282,29 @@ class SchemaMetadataDao {
       for (final entry in existing.entries)
         if (!crdtBookkeepingColumns.contains(entry.key)) entry.key: entry.value,
       'calendar_field': calendarFieldJson,
+    });
+  }
+
+  /// Sets/clears [tableName]'s `order_by` -- the "Sort by" picker in
+  /// [ManageTablesScreen], added 2026-09-11 after a real lookup-table sort
+  /// request (Priority's own "Position" column). `null`/[fieldName] must be
+  /// a real physical column on this device; the caller (the picker itself)
+  /// only ever offers real fields, so this doesn't re-validate against
+  /// `PRAGMA table_info` the way the read side ([GenericDao]'s
+  /// `_resolveOrderBy`) defensively does for a value that arrived via sync
+  /// from a device that might not have the column yet. Same safe
+  /// spread-[existing]-then-override pattern as [updateCalendarField], for
+  /// the identical stale-`hlc` reason documented on [updateTable].
+  Future<void> updateSortField(String tableName, String? fieldName) async {
+    final existing = await loadTable(tableName, includeDeleted: true);
+    if (existing == null) {
+      throw ArgumentError('No table_definitions row for "$tableName".');
+    }
+    final db = await _db;
+    await db.upsert('table_definitions', {
+      for (final entry in existing.entries)
+        if (!crdtBookkeepingColumns.contains(entry.key)) entry.key: entry.value,
+      'order_by': fieldName,
     });
   }
 

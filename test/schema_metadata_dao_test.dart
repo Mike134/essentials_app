@@ -234,4 +234,39 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('updateSortField sets and clears order_by, and advances hlc like updateTable', () async {
+    // Added 2026-09-11: a real lookup-table sort request (Priority's own
+    // "Position" column) -- see GenericDao's `_resolveOrderBy` for the read
+    // side this feeds. Same spread-based upsert shape as updateTable/
+    // updateCalendarField, so it needs the identical hlc-advances check.
+    final tableName = await createTestTable('SMD Sort Field');
+    await editor.addField(tableName: tableName, displayName: 'Position', format: 'integer');
+    final before = await metadata.loadTable(tableName);
+    expect(before!['order_by'], isNull);
+
+    await metadata.updateSortField(tableName, 'position');
+    final afterSet = await metadata.loadTable(tableName);
+    expect(afterSet!['order_by'], 'position');
+    expect(
+      Hlc.parse(afterSet['hlc'] as String) > Hlc.parse(before['hlc'] as String),
+      isTrue,
+      reason: 'a fresh write must produce a strictly later hlc, or a sort-field change never wins '
+          'the CRDT last-write-wins comparison on another device',
+    );
+
+    await metadata.updateSortField(tableName, null);
+    final afterClear = await metadata.loadTable(tableName);
+    expect(afterClear!['order_by'], isNull);
+
+    final all = await metadata.loadAllTables();
+    expect(all.where((t) => t.tableName == tableName).single.orderBy, isNull);
+  });
+
+  test('updateSortField throws for a table with no table_definitions row', () async {
+    expect(
+      () => metadata.updateSortField('no_such_table_$runTag', 'position'),
+      throwsArgumentError,
+    );
+  });
 }

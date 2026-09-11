@@ -353,12 +353,18 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
   String? _calendarStartField;
   String? _calendarEndField;
 
+  /// The "Sort by" picker's current choice -- `null` means "no override,
+  /// keep sorting by the display column" (this table's own default, and
+  /// what every table already did before this existed).
+  String? _sortField;
+
   @override
   void initState() {
     super.initState();
     _displayNameController = TextEditingController(text: widget.table.displayName);
     _descriptionController = TextEditingController(text: widget.table.description ?? '');
     _icon = widget.table.icon;
+    _sortField = widget.table.orderBy;
     _configFuture = SchemaRegistry().buildConfig(widget.table.tableName);
 
     final parsed = CalendarFieldConfig.tryParse(widget.table.calendarField);
@@ -410,6 +416,15 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
       await widget.metadata.updateCalendarField(
         widget.table.tableName,
         toSave == null ? null : jsonEncode(toSave.toJson()),
+      );
+
+      // Same "don't save a choice that's no longer valid" guard as the
+      // calendar field above -- a sort field picked before some other edit
+      // (deleting the field) invalidated it shouldn't silently persist.
+      final sortable = {for (final f in config.fields) if (!f.readOnly && !f.isLinkRecord) f.column};
+      await widget.metadata.updateSortField(
+        widget.table.tableName,
+        _sortField != null && sortable.contains(_sortField) ? _sortField : null,
       );
 
       if (mounted) Navigator.pop(context, true);
@@ -478,6 +493,45 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
     );
   }
 
+  /// Excludes computed (`readOnly` -- formula/lookup/rollup) and
+  /// `link_record` fields: both are stored as either an always-`NULL`
+  /// physical column (computed fields never write their result to disk,
+  /// see `FormulaService`'s doc comment) or a JSON array (`link_record`),
+  /// so an `ORDER BY` against either would be meaningless -- sort by
+  /// nulls, or by raw JSON text. Every other field, including a plain
+  /// `select`/linked field (stored as its raw key), is offered.
+  Widget _buildSortFieldSection(TableConfig config) {
+    final sortable = [for (final f in config.fields) if (!f.readOnly && !f.isLinkRecord) f];
+    if (sortable.isEmpty) return const SizedBox.shrink();
+    final current = sortable.any((f) => f.column == _sortField) ? _sortField : null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 16),
+        const Divider(),
+        const SizedBox(height: 4),
+        Text('Sort by', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 4),
+        Text(
+          'Row order everywhere this table is used -- its own grid, and any '
+          'lookup/linked dropdown pointing at it. Defaults to the display '
+          'column if not set.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String?>(
+          initialValue: current,
+          decoration: const InputDecoration(labelText: 'Field'),
+          items: [
+            const DropdownMenuItem(value: null, child: Text('Default (display column)')),
+            for (final f in sortable) DropdownMenuItem(value: f.column, child: Text(f.label)),
+          ],
+          onChanged: (v) => setState(() => _sortField = v),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -513,6 +567,13 @@ class _TableEditorDialogState extends State<_TableEditorDialog> {
                 builder: (context, snapshot) {
                   final config = snapshot.data;
                   return config == null ? const SizedBox.shrink() : _buildCalendarFieldSection(config);
+                },
+              ),
+              FutureBuilder<TableConfig>(
+                future: _configFuture,
+                builder: (context, snapshot) {
+                  final config = snapshot.data;
+                  return config == null ? const SizedBox.shrink() : _buildSortFieldSection(config);
                 },
               ),
               if (_error != null) ...[

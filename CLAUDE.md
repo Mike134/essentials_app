@@ -9026,3 +9026,71 @@ ok`, `end_2` present, "End" back in its original spot between "Start" and
 `mobile_scanner`/`workmanager_android` KGP warning aside), debug APK
 pushed to MIKE-12R via `adb install -r`. **Mike confirmed saving an Agenda
 record now works.**
+
+## New feature: "Sort by" -- an explicit row-order override for lookup tables (2026-09-11)
+
+Mike's ask: `Priority` (and every lookup table generally) needed a real
+sort column -- his own mental model was a plain `SELECT ... ORDER BY
+Position ASC` query, but every lookup/`link_record` dropdown across the
+app only ever sorted alphabetically by the display column, with no way
+to override it.
+
+**Turned out `table_definitions.order_by` already existed physically** --
+added back in the Phase 3 (View Types) schema, read by `SchemaRegistry
+.buildConfig` into `TableConfig.orderBy` (already driving a table's own
+grid default order, via `GenericDao.getAll`), but **no UI had ever set it**
+(the same real gap Phase 4's findings write-up already flagged for its
+sibling column, `display_field`) and `getLookupOptions`/
+`getLinkedRecordOptions` never consulted it at all -- both hardcoded
+`ORDER BY <display column>` unconditionally.
+
+**Fix, both sides:**
+- **Write side:** `SchemaMetadataDao.updateSortField` (same safe
+  spread-`existing`-then-override upsert pattern as `updateTable`/
+  `updateCalendarField`, for the identical stale-`hlc` reason). A new
+  "Sort by" picker in `ManageTablesScreen`'s table editor dialog (next to
+  the existing Calendar field picker) -- a dropdown of the table's own
+  fields, excluding computed (`readOnly` -- formula/lookup/rollup, always
+  physically `NULL`) and `link_record` (stored as JSON, meaningless to
+  sort by) fields, plus a "Default (display column)" option that clears
+  it back to `null`.
+- **Read side:** `GenericDao._resolveOrderBy` (new, alongside the existing
+  `_resolveDisplayColumn`) -- both `getLookupOptions`/`getLinkedRecordOptions`
+  now check the *target* table's own `order_by` first, falling back to the
+  display column exactly as before when it's unset or names a column this
+  device doesn't have yet (same lenient "degrade, don't crash" posture as
+  `_resolveDisplayColumn`'s own fallback -- a value that arrived via sync
+  ahead of the schema change that added it shouldn't break every lookup
+  depending on that table).
+
+**A real bug caught before it shipped, by an existing test breaking:** the
+first cut of `sqlReservedKeywords` (see the reserved-keyword section just
+above -- both features landed the same session) mistakenly included plain
+`first`/`last` as reserved words. They aren't -- only `first_value`/
+`last_value` (SQLite's window-function keywords) actually are. Caught
+immediately: a pre-existing test creating fields literally named "First"/
+"Second"/"Third" broke, generating `first_2` instead of `first`. Fixed by
+correcting the list to the real `first_value`/`last_value` entries --
+worth remembering if this list is ever extended again: cross-check
+against SQLite's own published keyword list
+(https://www.sqlite.org/lang_keywords.html), don't guess at plausible-
+sounding entries.
+
+New regression tests: `schema_metadata_dao_test.dart` (`updateSortField`
+sets/clears `order_by`, advances `hlc` like every other metadata write,
+throws for a nonexistent table) and `generic_dao_linked_fields_test.dart`
+(three tests: `getLookupOptions` and `getLinkedRecordOptions` both sort by
+a configured `order_by` over the display column, and a stale/nonexistent
+`order_by` value falls back gracefully). `flutter analyze` clean; every
+touched/new test file run individually per the standing
+`SchemaEditorService.createTable`-isolation rule, all passing; the full
+v2 regression set (`schema_registry_test.dart`,
+`schema_editor_service_v2_test.dart`, `generic_dao_insert_id_test.dart`,
+`table_registry_v2_test.dart`) re-confirmed clean too, since the keyword-
+list fix touches identifier generation broadly. `flutter build windows`/
+`flutter build apk --debug` both clean, debug APK pushed to MIKE-12R.
+`PRAGMA integrity_check: ok`, no leaked active test tables. Not yet
+Mike-tested interactively -- next: set Priority's own "Sort by" to
+"Position" via Manage Tables on either device and confirm it takes effect
+in both that table's own grid and any dropdown pointing at it, then
+confirm the setting syncs to the other device.
