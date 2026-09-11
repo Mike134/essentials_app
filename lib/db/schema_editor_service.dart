@@ -437,7 +437,7 @@ class SchemaEditorService {
 
     var candidate = base;
     var suffix = 2;
-    while (taken.contains(candidate) || isInfraTable(candidate)) {
+    while (taken.contains(candidate) || isInfraTable(candidate) || isSqlReservedKeyword(candidate)) {
       candidate = '${base}_$suffix';
       suffix++;
     }
@@ -469,7 +469,9 @@ class SchemaEditorService {
 
     var candidate = base;
     var suffix = 2;
-    while (taken.contains(candidate) || _reservedColumnNames.contains(candidate)) {
+    while (taken.contains(candidate) ||
+        _reservedColumnNames.contains(candidate) ||
+        isSqlReservedKeyword(candidate)) {
       candidate = '${base}_$suffix';
       suffix++;
     }

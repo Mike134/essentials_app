@@ -8978,3 +8978,51 @@ into the Obsidian vault" above for why it lives there and isn't
 git-tracked; that reasoning is unchanged, only the filename is new).
 **Refer to it as "the Guide" going forward** -- Mike's own shorthand, to
 cut down on typing the full name repeatedly.
+
+## Real bug: a field named "End" broke every save on a new table -- reserved-keyword identifiers now blocked at the source (2026-09-11)
+
+Mike created a real "Agenda" table (via New Table/Add Field) with a field
+named "End" (dateTime) -- every save attempt failed with `SqfliteFfiException
+... NOT NULL constraint failed: agenda.hlc`. Root-caused directly, not
+guessed: `PRAGMA table_info(agenda)` confirmed the field's generated
+physical column really was `end`, and the failing INSERT statement in the
+error text omitted `hlc`/`node_id`/`modified`/`is_deleted` entirely from
+its column list -- `sql_crdt`'s own `sqlparser` dependency doesn't
+recognize an unquoted `end` (a genuine SQLite reserved keyword, used in
+`CASE...END`/`CREATE TRIGGER...END`) as a plain column identifier, so its
+rewrite that normally appends those bookkeeping columns to every INSERT
+silently never ran for this table at all. **Exactly the same failure
+shape already documented in this file for a column literally named
+`key`** (see "007_rename_settings_key_column.sql" under "Part C -- real
+`essentials_app` wired onto `sqlite_crdt`") -- just the first time it hit
+a real, user-created v2 field rather than an internal settings table.
+
+**App-level fix, so this can't recur for any future field/table name:**
+new `sqlReservedKeywords`/`isSqlReservedKeyword` in `lib/util/sql_identifiers
+.dart` -- SQLite's full published keyword list, lowercased. `SchemaEditorService
+._generateTableIdentifier`/`_generateFieldIdentifier` (`lib/db/schema_editor_service
+.dart`) both now treat a reserved-keyword candidate exactly like a name
+collision -- append `_2`/`_3`/... until clear, same loop already used for
+taken names. The physical identifier is never user-visible (only
+`display_name` is), so this is purely internal and needed no UI change.
+
+**Live-data recovery**, since `agenda` already existed with the broken
+column: confirmed the table had zero real rows first (every save had
+failed and rolled back, so nothing was lost). `tool/fix_agenda_end_field
+.dart` (run via `flutter test tool/fix_agenda_end_field.dart` -- not `dart
+run`, same `SchemaEditorService` → `TableDiscoveryService` → Flutter-import
+chain reason as `tool/create_checkpoint_table.dart`) soft-deleted the
+broken "End" field, permanently dropped it (`SchemaEditorService.dropField`
+-- its own precondition only checks `is_deleted = 1`, not the UI's sync-
+confirmation gate, so this was safe to run immediately on the authoring
+device), re-added "End" (now generating the harmless physical name
+`end_2`, post-fix), and restored its original field position via
+`SchemaMetadataDao.reorderFields`. Verified after: `PRAGMA integrity_check:
+ok`, `end_2` present, "End" back in its original spot between "Start" and
+"Timeframe".
+
+`flutter analyze` clean, `flutter build windows` and `flutter build apk
+--debug` both clean (the pre-existing, documented `flutter_js`/
+`mobile_scanner`/`workmanager_android` KGP warning aside), debug APK
+pushed to MIKE-12R via `adb install -r`. **Mike confirmed saving an Agenda
+record now works.**
