@@ -131,12 +131,64 @@ class RecurringReminderService {
     return value?.toString().trim().toLowerCase();
   }
 
-  Future<int> _remindMinutesFor(_QualifyingRow q) async {
+  /// Combines the row's own "Remind" value with its "Remind Unit" choice
+  /// into a real fire time -- Mike's own real complaint about the old,
+  /// minutes-only field ("if you wanted to be notified a week in advance,
+  /// not everyone would know to multiply 1440 x 7... I would have to get
+  /// out a calculator"). Minute/Hour/Day are exact `Duration` subtraction
+  /// -- unambiguous, no calendar involved. Month/Year deliberately do
+  /// **not** approximate via a fixed day count (a month isn't a fixed
+  /// number of minutes) -- they subtract real calendar units from
+  /// [occurrence] instead (`DateTime(occurrence.year, occurrence.month -
+  /// value, ...)`), matching what "1 month before" actually means to a
+  /// person. Dart's `DateTime` constructor normalizes an out-of-range
+  /// month by rolling into the correct prior year on its own (no manual
+  /// borrow needed here) -- the one inherent ambiguity this can't remove
+  /// is a day-of-month that doesn't exist in the target month (e.g. "1
+  /// month before" a March 31st occurrence), which every real calendar
+  /// tool shares and Dart's own normalization resolves by rolling forward
+  /// into the following month, same as most calendar apps.
+  ///
+  /// [remindUnit] absent, blank, or holding an unrecognized key all fall
+  /// back to plain minutes -- identical to this feature's original,
+  /// unit-less behavior, so a table that never adds a "Remind Unit" field
+  /// (or a row that hasn't picked one yet) keeps working exactly as
+  /// before.
+  DateTime _fireTimeFor(_QualifyingRow q, DateTime occurrence) {
     final field = q.fields.remindMinutes;
-    if (field == null) return 0;
-    final raw = q.row[field.column];
-    if (raw == null) return 0;
-    return int.tryParse(raw.toString()) ?? 0;
+    final raw = field == null ? null : q.row[field.column];
+    final value = raw == null ? 0 : (int.tryParse(raw.toString()) ?? 0);
+    if (value == 0) return occurrence;
+
+    final unitField = q.fields.remindUnit;
+    final unit = unitField == null ? null : q.row[unitField.column]?.toString();
+    switch (unit) {
+      case 'hour':
+        return occurrence.subtract(Duration(hours: value));
+      case 'day':
+        return occurrence.subtract(Duration(days: value));
+      case 'month':
+        return DateTime(
+          occurrence.year,
+          occurrence.month - value,
+          occurrence.day,
+          occurrence.hour,
+          occurrence.minute,
+          occurrence.second,
+        );
+      case 'year':
+        return DateTime(
+          occurrence.year - value,
+          occurrence.month,
+          occurrence.day,
+          occurrence.hour,
+          occurrence.minute,
+          occurrence.second,
+        );
+      case 'minute':
+      default:
+        return occurrence.subtract(Duration(minutes: value));
+    }
   }
 
   /// The column whose value should actually name a row in a notification
@@ -216,7 +268,6 @@ class RecurringReminderService {
 
     final keyword = await _resolveTimeframeKeyword(q.fields.timeframe, q.row[q.fields.timeframe.column]);
     final rule = RecurrenceWhenRule.decode(q.row[q.fields.when.column]?.toString());
-    final remindMinutes = await _remindMinutesFor(q);
 
     final lastFiredText = await settings.loadDeviceSetting(_lastFiredKey(q.tableName, q.id));
     final lastFired = lastFiredText == null ? null : DateTime.tryParse(lastFiredText);
@@ -228,7 +279,7 @@ class RecurringReminderService {
       lastFired: lastFired,
     );
     if (occurrence == null) return null;
-    return (occurrence: occurrence, fireTime: occurrence.subtract(Duration(minutes: remindMinutes)));
+    return (occurrence: occurrence, fireTime: _fireTimeFor(q, occurrence));
   }
 
   /// The earliest upcoming (or already-overdue) fire time across every
@@ -273,10 +324,9 @@ class RecurringReminderService {
       if (start == null) break;
       final keyword = await _resolveTimeframeKeyword(q.fields.timeframe, q.row[q.fields.timeframe.column]);
       final rule = RecurrenceWhenRule.decode(q.row[q.fields.when.column]?.toString());
-      final remindMinutes = await _remindMinutesFor(q);
       final following = nextOccurrenceAfter(start: start, timeframeKeyword: keyword, rule: rule, after: due);
       if (following == null) break;
-      final followingFireTime = following.subtract(Duration(minutes: remindMinutes));
+      final followingFireTime = _fireTimeFor(q, following);
       if (followingFireTime.isAfter(now)) break;
       due = following;
       steps++;

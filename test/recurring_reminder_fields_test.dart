@@ -11,22 +11,36 @@ void main() {
   );
   const when = FieldConfig(column: 'period', label: 'When');
   const notify = FieldConfig(column: 'notify', label: 'Notify', type: FieldType.boolean);
-  const remind = FieldConfig(column: 'remind_minutes', label: 'Remind (Minutes Before)', type: FieldType.integer);
+  const remind = FieldConfig(column: 'remind_minutes', label: 'Remind', type: FieldType.integer);
+  const remindUnit = FieldConfig(
+    column: 'remind_unit',
+    label: 'Remind Unit',
+    inlineOptions: [InlineOption(key: 'minute', label: 'Minute(s)'), InlineOption(key: 'day', label: 'Day(s)')],
+  );
 
-  test('detects the full group, including the optional remind field', () {
-    final fields = recurringReminderFieldsOf([start, timeframe, when, notify, remind]);
+  test('detects the full group, including the optional remind fields', () {
+    final fields = recurringReminderFieldsOf([start, timeframe, when, notify, remind, remindUnit]);
     expect(fields, isNotNull);
     expect(fields!.start.column, 'start');
     expect(fields.timeframe.column, 'timeframe');
     expect(fields.when.column, 'period');
     expect(fields.notify.column, 'notify');
     expect(fields.remindMinutes?.column, 'remind_minutes');
+    expect(fields.remindUnit?.column, 'remind_unit');
   });
 
-  test('detects the group without the optional remind field', () {
+  test('detects the group without the optional remind fields', () {
     final fields = recurringReminderFieldsOf([start, timeframe, when, notify]);
     expect(fields, isNotNull);
     expect(fields!.remindMinutes, isNull);
+    expect(fields.remindUnit, isNull);
+  });
+
+  test('detects Remind without Remind Unit -- unit-less behavior is still supported', () {
+    final fields = recurringReminderFieldsOf([start, timeframe, when, notify, remind]);
+    expect(fields, isNotNull);
+    expect(fields!.remindMinutes?.column, 'remind_minutes');
+    expect(fields.remindUnit, isNull);
   });
 
   test('label match is case-insensitive and trims whitespace', () {

@@ -9401,3 +9401,54 @@ windows`/`apk --debug` clean, debug APK pushed to MIKE-12R at each
 checkpoint. **Mike's interactive verification: done, passed** -- "It
 works much better now." List/Kanban remain deliberately out of scope,
 per the original plan (Calendar only, for now).
+
+## Agenda's "Remind" gains a real unit picker (2026-09-12)
+
+Found while Mike was adding a birthday to Agenda for Calendar testing:
+the old "Remind (Minutes Before)" field forced every lead time into raw
+minutes -- his own words, "if you wanted to be notified a week in
+advance, not everyone would know to multiply 1440 x 7... I would have to
+get out a calculator." Mike had already renamed the field to plain
+"Remind" himself via Manage Fields before this was built.
+
+**Added a real "Remind Unit" field to the live `agenda` table**
+(`tool/add_agenda_remind_unit_field.dart`, run once against the real
+`essentials.db`) -- inline-select, Minute(s)/Hour(s)/Day(s)/Month(s)/
+Year(s), `defaultValue: 'minute'` so every existing row (including
+Mike's real Guava Updates/Test the notice rows) keeps behaving exactly
+as before until a unit is actually picked on it. No custom form widget
+needed -- it's a normal inline-select field, so it renders as a standard
+dropdown next to "Remind" for free, the same as any other inline-select
+field in this app.
+
+**`RecurringReminderService` gained `_fireTimeFor`**, replacing the old
+`_remindMinutesFor`+flat `Duration(minutes:)` subtraction --
+Minute/Hour/Day still convert to an exact `Duration`, but **Month/Year
+deliberately subtract real calendar units from the occurrence
+(`DateTime(occurrence.year, occurrence.month - value, ...)`)**, not an
+approximated fixed-day count -- a month isn't a fixed number of minutes,
+and this is what "1 month before"/a birthday reminder actually means to
+a person. Dart's own `DateTime` constructor normalizes an out-of-range
+month by rolling into the correct prior year automatically, so no manual
+borrow logic was needed. `recurring_reminder_fields.dart`'s label
+constant for the Remind field was updated to match Mike's own rename
+(`'Remind'`, not `'Remind (Minutes Before)'`), and gained a new optional
+`remindUnit` field, detected the same way -- absent, blank, or an
+unrecognized unit key all fall back to plain minutes, so a table that
+never adds "Remind Unit" (or a row that hasn't picked one yet) keeps
+working identically to before this feature existed.
+
+5 new/updated tests in `test/recurring_reminder_service_test.dart`
+(hour, day, month via real calendar math, year including a leap-year
+case, and the blank-unit-falls-back-to-minutes case) plus the rename
+reflected in `recurring_reminder_fields_test.dart` and the read-only
+`agenda_recurring_reminder_regression_test.dart` (which asserts against
+the real live `agenda` table, not a throwaway one) -- all passing.
+`flutter analyze` clean, both `flutter build windows`/`apk --debug`
+clean, debug APK pushed to MIKE-12R, `essentials.db` integrity confirmed
+after the schema change.
+
+**Build-verified only -- not yet tested interactively.** Mike confirmed
+"Week" isn't needed as its own unit (7 Day(s) covers it). Next: try it on
+a real record (the birthday, or Agenda generally) and confirm the
+Month/Year math lands where expected.

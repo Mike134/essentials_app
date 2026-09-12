@@ -22,6 +22,7 @@ void main() {
     expect(fields.timeframe.label, 'Timeframe');
     expect(fields.when.label, 'When');
     expect(fields.notify.label, 'Notify');
-    expect(fields.remindMinutes?.label, 'Remind (Minutes Before)');
+    expect(fields.remindMinutes?.label, 'Remind');
+    expect(fields.remindUnit?.label, 'Remind Unit');
   });
 }

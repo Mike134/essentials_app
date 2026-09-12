@@ -64,13 +64,16 @@ void main() {
   }
 
   /// A throwaway table shaped exactly like Agenda's own recurring-reminder
-  /// field group, plus the optional Remind field when [withRemindField] is
-  /// true. Returns the table name and its resolved [RecurringReminderFields]
-  /// -- every test builds its insert maps from these real column names,
-  /// never a hardcoded guess.
+  /// field group, plus the optional Remind/Remind Unit fields when
+  /// [withRemindField]/[withRemindUnitField] are true (the latter only
+  /// meaningful alongside the former -- Remind Unit carries no meaning on
+  /// its own). Returns the table name and its resolved
+  /// [RecurringReminderFields] -- every test builds its insert maps from
+  /// these real column names, never a hardcoded guess.
   Future<(String tableName, RecurringReminderFields fields)> createReminderTable(
     String timeframeTable, {
     bool withRemindField = false,
+    bool withRemindUnitField = false,
   }) async {
     final tableName = await editor.createTable(displayName: 'RRSVC Notify Test $runTag');
     addTearDown(() => dropTestTable(editor, metadata, tableName));
@@ -89,7 +92,24 @@ void main() {
     await editor.addField(tableName: tableName, displayName: 'When', format: 'text');
     await editor.addField(tableName: tableName, displayName: 'Notify', format: 'boolean');
     if (withRemindField) {
-      await editor.addField(tableName: tableName, displayName: 'Remind (Minutes Before)', format: 'integer');
+      await editor.addField(tableName: tableName, displayName: 'Remind', format: 'integer');
+    }
+    if (withRemindUnitField) {
+      await editor.addField(
+        tableName: tableName,
+        displayName: 'Remind Unit',
+        format: 'select',
+        optionsJson: jsonEncode({
+          'mode': 'inline',
+          'options': [
+            {'key': 'minute', 'label': 'Minute(s)'},
+            {'key': 'hour', 'label': 'Hour(s)'},
+            {'key': 'day', 'label': 'Day(s)'},
+            {'key': 'month', 'label': 'Month(s)'},
+            {'key': 'year', 'label': 'Year(s)'},
+          ],
+        }),
+      );
     }
 
     final config = await registry.buildConfig(tableName);
@@ -265,7 +285,7 @@ void main() {
     expect(notified, isEmpty);
   });
 
-  test('a "Remind (Minutes Before)" lead time fires ahead of the actual occurrence', () async {
+  test('a "Remind" lead time with no Remind Unit field is read as plain minutes', () async {
     final (timeframeTable, timeframeIds) = await createTimeframeLookupTable();
     final (tableName, fields) = await createReminderTable(timeframeTable, withRemindField: true);
     final remindField = fields.remindMinutes!;
@@ -288,6 +308,128 @@ void main() {
     final fired = await service.checkAndFireDueReminders(notify: (m) async => notified.add(m));
     expect(fired, 1);
     expect(notified, hasLength(1));
+  });
+
+  /// Mike's own real complaint about the old, minutes-only field: "if you
+  /// wanted to be notified a week in advance, not everyone would know to
+  /// multiply 1440 x 7." These prove the value+unit combination actually
+  /// produces the right fire time for every unit, via [nextDueFireTime]
+  /// (pure computation, no dependency on "now" lining up with a due
+  /// window the way [checkAndFireDueReminders] needs).
+  group('Remind Unit combinations', () {
+    Future<void> expectLeadTime({
+      required int value,
+      required String unit,
+      required Duration expectedLead,
+    }) async {
+      final (timeframeTable, timeframeIds) = await createTimeframeLookupTable();
+      final (tableName, fields) = await createReminderTable(
+        timeframeTable,
+        withRemindField: true,
+        withRemindUnitField: true,
+      );
+      final dao = GenericDao(await configFor(tableName));
+
+      final start = DateTime.now().add(const Duration(days: 400)); // safely far out, never "due" yet
+      final id = await dao.insert({
+        fields.start.column: isoDateTime(start),
+        fields.timeframe.column: timeframeIds['once'],
+        fields.when.column: '',
+        fields.notify.column: 1,
+        fields.remindMinutes!.column: value,
+        fields.remindUnit!.column: unit,
+      });
+      addTearDown(() => cleanupLastFired(tableName, id));
+
+      final service = RecurringReminderService(settingsOverride: settings, onlyTables: [tableName]);
+      final due = await service.nextDueFireTime();
+      expect(due, isNotNull);
+      final expected = start.subtract(expectedLead);
+      expect(due!.difference(expected).inSeconds.abs() < 5, isTrue, reason: 'expected ~$expected, got $due');
+    }
+
+    test('hour', () => expectLeadTime(value: 3, unit: 'hour', expectedLead: const Duration(hours: 3)));
+
+    test('day', () => expectLeadTime(value: 7, unit: 'day', expectedLead: const Duration(days: 7)));
+
+    test('month uses real calendar subtraction, not a fixed day count', () async {
+      final (timeframeTable, timeframeIds) = await createTimeframeLookupTable();
+      final (tableName, fields) = await createReminderTable(
+        timeframeTable,
+        withRemindField: true,
+        withRemindUnitField: true,
+      );
+      final dao = GenericDao(await configFor(tableName));
+
+      final start = DateTime(2027, 3, 15, 9, 0);
+      final id = await dao.insert({
+        fields.start.column: isoDateTime(start),
+        fields.timeframe.column: timeframeIds['once'],
+        fields.when.column: '',
+        fields.notify.column: 1,
+        fields.remindMinutes!.column: 1,
+        fields.remindUnit!.column: 'month',
+      });
+      addTearDown(() => cleanupLastFired(tableName, id));
+
+      final service = RecurringReminderService(settingsOverride: settings, onlyTables: [tableName]);
+      final due = await service.nextDueFireTime();
+      expect(due, isNotNull);
+      expect(due, DateTime(2027, 2, 15, 9, 0), reason: '1 month before Mar 15 is Feb 15, not "30 days before"');
+    });
+
+    test('year, including a leap-year birthday landing correctly', () async {
+      final (timeframeTable, timeframeIds) = await createTimeframeLookupTable();
+      final (tableName, fields) = await createReminderTable(
+        timeframeTable,
+        withRemindField: true,
+        withRemindUnitField: true,
+      );
+      final dao = GenericDao(await configFor(tableName));
+
+      final start = DateTime(2028, 6, 1, 10, 30); // 2028 is a leap year -- unrelated here, just realistic
+      final id = await dao.insert({
+        fields.start.column: isoDateTime(start),
+        fields.timeframe.column: timeframeIds['once'],
+        fields.when.column: '',
+        fields.notify.column: 1,
+        fields.remindMinutes!.column: 1,
+        fields.remindUnit!.column: 'year',
+      });
+      addTearDown(() => cleanupLastFired(tableName, id));
+
+      final service = RecurringReminderService(settingsOverride: settings, onlyTables: [tableName]);
+      final due = await service.nextDueFireTime();
+      expect(due, isNotNull);
+      expect(due, DateTime(2027, 6, 1, 10, 30));
+    });
+
+    test('a blank Remind Unit value falls back to plain minutes', () async {
+      final (timeframeTable, timeframeIds) = await createTimeframeLookupTable();
+      final (tableName, fields) = await createReminderTable(
+        timeframeTable,
+        withRemindField: true,
+        withRemindUnitField: true,
+      );
+      final dao = GenericDao(await configFor(tableName));
+
+      final start = DateTime.now().add(const Duration(days: 400));
+      final id = await dao.insert({
+        fields.start.column: isoDateTime(start),
+        fields.timeframe.column: timeframeIds['once'],
+        fields.when.column: '',
+        fields.notify.column: 1,
+        fields.remindMinutes!.column: 20,
+        // fields.remindUnit deliberately omitted -- never picked yet
+      });
+      addTearDown(() => cleanupLastFired(tableName, id));
+
+      final service = RecurringReminderService(settingsOverride: settings, onlyTables: [tableName]);
+      final due = await service.nextDueFireTime();
+      expect(due, isNotNull);
+      final expected = start.subtract(const Duration(minutes: 20));
+      expect(due!.difference(expected).inSeconds.abs() < 5, isTrue);
+    });
   });
 
   test('nextDueFireTime reports the earliest upcoming fire time across every qualifying row', () async {
