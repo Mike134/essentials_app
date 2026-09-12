@@ -19,12 +19,14 @@ import '../util/color_picker.dart';
 import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
+import '../util/display_aware_filters.dart';
 import '../util/field_formats/field_format_handler.dart';
 import '../util/link_record.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
 import '../util/strings.dart';
 import 'csv_import_screen.dart';
+import 'filter_editor_dialog.dart';
 import 'generic_form_screen.dart';
 import 'view_switcher_bar.dart';
 
@@ -720,17 +722,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
     final filterJson = viewSetting?.filterJson;
     if (filterJson != null && filterJson.isNotEmpty) {
-      final decoded = jsonDecode(filterJson) as List<dynamic>;
-      final filterRows = [
-        for (final entry in decoded)
-          FilterHelper.createFilterRow(
-            columnField: entry['column'] as String?,
-            filterType:
-                _filterTypesByName[entry['type']] ??
-                const TrinaFilterTypeContains(),
-            filterValue: entry['value'],
-          ),
-      ];
+      final filterRows = _filterRowsFromEntries(jsonDecode(filterJson) as List<dynamic>);
       if (filterRows.isNotEmpty) {
         stateManager.setFilterWithFilterRows(filterRows);
       }
@@ -1295,10 +1287,10 @@ class _GenericListScreenState extends State<GenericListScreen> {
             title: field.label,
             field: field.column,
             type: field.type == FieldType.dateTime
-                ? TrinaColumnType.dateTime(format: 'yyyy-MM-dd HH:mm:ss')
+                ? TrinaColumnType.dateTime(format: 'yyyy-MM-dd HH:mm')
                 : TrinaColumnType.date(format: 'yyyy-MM-dd'),
             readOnly: true,
-            width: field.type == FieldType.dateTime ? 170 : 120,
+            width: field.type == FieldType.dateTime ? 150 : 120,
           ),
           setting,
         );
@@ -1594,9 +1586,9 @@ class _GenericListScreenState extends State<GenericListScreen> {
           title: field.label,
           field: field.column,
           type: field.type == FieldType.dateTime
-              ? TrinaColumnType.dateTime(format: 'yyyy-MM-dd HH:mm:ss')
+              ? TrinaColumnType.dateTime(format: 'yyyy-MM-dd HH:mm')
               : TrinaColumnType.date(format: 'yyyy-MM-dd'),
-          width: field.type == FieldType.dateTime ? 170 : 120,
+          width: field.type == FieldType.dateTime ? 150 : 120,
         ),
         setting,
       );
@@ -1865,7 +1857,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
       // stores these as plain ISO8601 TEXT either way, so both paths need
       // normalizing to that exact string shape before the write.
       if (value is DateTime) {
-        value = field.type == FieldType.dateTime ? isoDateTime(value) : isoDate(value);
+        value = field.type == FieldType.dateTime ? isoDateTimeMinutes(value) : isoDate(value);
       } else {
         final text = (value as String? ?? '').trim();
         value = text.isEmpty ? null : text;
@@ -1919,6 +1911,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
                 tableName: widget.config.tableName,
                 currentViewId: null,
                 onViewSelected: widget.onViewSelected!,
+                onFilterSetSelected: _applyFilterSet,
               ),
       ),
       drawer: widget.drawer,
@@ -1952,6 +1945,14 @@ class _GenericListScreenState extends State<GenericListScreen> {
               // -- 1.5x, per Mike.
               scrollbar: const TrinaGridScrollbarConfig(thickness: 12.0),
               style: _trinaGridStyle(context),
+              // Every stock filter type (Contains/Equals/.../Regex), wrapped
+              // to compare against a lookup/inline-select column's display
+              // text instead of its raw stored id -- see
+              // display_aware_filters.dart's own doc comment for the real
+              // bug this fixes (a regex like `^(?!closed$).*$` typed
+              // against "Status" silently matched every row, since the raw
+              // cell value is a ~16-digit id, never the word "closed").
+              columnFilter: TrinaGridColumnFilterConfig(filters: displayAwareFilterTypes),
             ),
             onChanged: _onGridChanged,
             onLoaded: (event) => _onGridLoaded(event, data.viewSetting),
@@ -1968,6 +1969,7 @@ class _GenericListScreenState extends State<GenericListScreen> {
               return color == null ? null : TextStyle(color: color);
             },
             columnMenuDelegate: _ColumnMenuDelegate(
+              tableName: widget.config.tableName,
               wrapTextColumns: _wrapTextColumns,
               onToggleWrapText: _toggleWrapText,
               // `id`/actions are excluded automatically -- neither is a
@@ -2072,7 +2074,38 @@ class _GenericListScreenState extends State<GenericListScreen> {
       rowHeight: _wrapTextColumns.values.any((wrapped) => wrapped)
           ? _wrappedRowHeight
           : ThemeController.instance.rowHeight,
+      // Suppresses the small filter icon TrinaGrid shows next to an
+      // already-filtered column's own title -- that icon calls
+      // `stateManager.showFilterPopup` directly
+      // (`trina_column_title.dart`, hardcoded, no override hook), opening
+      // TrinaGrid's own bare icon-toolbar popup instead of this app's
+      // filter_editor_dialog.dart replacement. Mike's own call: one filter
+      // -building UI, not two. Can't null out `style.filterIcon` itself --
+      // `TrinaGridStyleConfig.copyWith`'s own `filterIcon ?? this.filterIcon`
+      // means an explicit `null` there is indistinguishable from "not
+      // passed" and always falls back to the non-null default -- but the
+      // render check is `filterIconWidget != null || filterIcon != null`,
+      // and `filterIconWidget` *does* support being explicitly set via
+      // `TrinaOptional`, so a real (non-null) but zero-size widget here
+      // wins that check and replaces the tappable IconButton with
+      // something with no hit-test area at all, same net effect as hiding
+      // it, without needing to reconstruct this whole style config from
+      // scratch just to work around one field's copyWith bug.
+      filterIconWidget: const TrinaOptional(SizedBox.shrink()),
     );
+  }
+
+  /// [ViewSwitcherBar]'s `onFilterSetSelected` callback -- stamps a saved
+  /// Filter Set's rows onto the grid's *current* filter, replacing
+  /// whatever was there (same "one filter state, not additive" behavior
+  /// the Filters dialog's own "Close" already has). Uses the same
+  /// `{column, type, value}` shape/[_filterTypesByName] resolution
+  /// [_onGridLoaded]'s own saved-filter restore already relies on --
+  /// [_filterRowsFromEntries] is the one place both now go through.
+  void _applyFilterSet(ViewDefinition filterSet) {
+    final rows = filterSet.config['rows'];
+    if (rows is! List) return;
+    _stateManager?.setFilterWithFilterRows(_filterRowsFromEntries(rows));
   }
 
   @override
@@ -2090,13 +2123,38 @@ class _GenericListScreenState extends State<GenericListScreen> {
   }
 }
 
-/// Every default [TrinaFilterType] TrinaGrid ships with, keyed by
-/// [TrinaFilterType.title] -- used to turn a persisted filter's type name
-/// (see [_GenericListScreenState._persistGridSettings]) back into the actual
+/// Turns a saved filter's `[{column, type, value}, ...]` JSON (either a
+/// table's own per-device `table_view_settings.filter_json`, or a shared
+/// Filter Set's `view_definitions.config['rows']` -- same shape, two
+/// different storage scopes, see `filter_editor_dialog.dart`'s own
+/// "Save as Filter Set" doc comment) into real [TrinaRow]s ready for
+/// [TrinaGridStateManager.setFilterWithFilterRows]. An entry naming a
+/// filter type this device doesn't recognize (a stale save from before a
+/// filter type existed, or a typo in hand-edited data) falls back to
+/// plain Contains rather than throwing.
+List<TrinaRow> _filterRowsFromEntries(List<dynamic> entries) {
+  return [
+    for (final entry in entries)
+      FilterHelper.createFilterRow(
+        columnField: entry['column'] as String?,
+        filterType: _filterTypesByName[entry['type']] ?? const TrinaFilterTypeContains(),
+        filterValue: entry['value'],
+      ),
+  ];
+}
+
+/// Every [TrinaFilterType] this grid actually offers -- [displayAwareFilterTypes],
+/// not the raw [FilterHelper.defaultFilters] -- keyed by [TrinaFilterType
+/// .title], used to turn a persisted filter's type name (see
+/// [_GenericListScreenState._persistGridSettings]) back into the actual
 /// instance TrinaGrid's filter row cells expect (see
-/// [_GenericListScreenState._onGridLoaded]).
+/// [_GenericListScreenState._onGridLoaded]). Must stay in sync with
+/// whatever `filters:` the grid's own [TrinaGridColumnFilterConfig] is
+/// configured with -- restoring a saved filter as a *plain* (non-display
+/// -aware) type here would silently undo [displayAwareFilterTypes]'s whole
+/// fix the moment a table with a saved column filter reloads.
 final Map<String, TrinaFilterType> _filterTypesByName = {
-  for (final filterType in FilterHelper.defaultFilters) filterType.title: filterType,
+  for (final filterType in displayAwareFilterTypes) filterType.title: filterType,
 };
 
 /// Result of [_GenericListScreenState._loadData]: the raw rows (used for
@@ -2221,6 +2279,7 @@ class _ScreenData {
 /// closure each time the menu opens doesn't have that problem.
 class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
   const _ColumnMenuDelegate({
+    required this.tableName,
     required this.wrapTextColumns,
     required this.onToggleWrapText,
     required this.groupableColumns,
@@ -2246,6 +2305,7 @@ class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
   static const TrinaColumnMenuDelegateDefault _defaultDelegate =
       TrinaColumnMenuDelegateDefault();
 
+  final String tableName;
   final Map<String, bool> wrapTextColumns;
   final void Function(TrinaColumn column) onToggleWrapText;
   final Set<String> groupableColumns;
@@ -2407,6 +2467,28 @@ class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
       onStopUsingColor();
       return;
     }
+    // Override the stock "Reset Filter" item -- its default behavior
+    // (`stateManager.setFilter(null)`) clears *every* column's filter, not
+    // just this one's, which reads as a real bug from a per-column context
+    // menu (Mike's own report: "reset filter should clear only the current
+    // column filter"). `removeColumnFilter` is TrinaGridStateManager's own
+    // built-in method for exactly this -- it already existed, just wasn't
+    // wired to this menu item.
+    if (selected == TrinaColumnMenuDelegateDefault.defaultMenuResetFilter) {
+      stateManager.removeColumnFilter(column.field);
+      return;
+    }
+    // Override the stock "Set Filter" item -- opens this app's own plain
+    // -language dialog (Add Filter/Remove Filter/Clear Filters/Close)
+    // instead of TrinaGrid's bare icon-toolbar popup. See
+    // filter_editor_dialog.dart's own doc comment for the one known path
+    // that still reaches the stock popup (the small filter icon shown
+    // next to an already-filtered column's title, hardcoded inside
+    // TrinaGrid with no override hook).
+    if (selected == TrinaColumnMenuDelegateDefault.defaultMenuSetFilter) {
+      unawaited(showFilterEditorDialog(context, stateManager, column, tableName));
+      return;
+    }
     _defaultDelegate.onSelected(
       context: context,
       stateManager: stateManager,
@@ -2420,9 +2502,20 @@ class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
   /// the same map the grid renders cells from -- no extra query), pre-
   /// selected to the column's current filter if it's already an exact-match
   /// filter set this same way. Applying calls [TrinaGridStateManager
-  /// .setColumnFilter] with the chosen option's id (or [TrinaGridStateManager
-  /// .removeColumnFilter] if "(any)" is chosen) -- the user only ever sees
-  /// display text, the id substitution happens entirely here.
+  /// .setColumnFilter] with the chosen option's *display text* (or
+  /// [TrinaGridStateManager.removeColumnFilter] if "(any)" is chosen) --
+  /// the user only ever sees display text, and since
+  /// [displayAwareFilterTypes]' wrapped Equals filter already resolves a
+  /// row's raw id to display text before comparing, filtering by display
+  /// text on both sides is what makes this keep working correctly, both
+  /// immediately and after a reload restores the filter from
+  /// `table_view_settings` (which only ever persists a filter's `.title`,
+  /// never which concrete instance set it -- see [_filterTypesByName]'s
+  /// own doc comment). Storing the raw id here instead (this dialog's
+  /// original, pre-[displayAwareFilterTypes] behavior) would silently stop
+  /// matching anything the moment [_filterTypesByName] started resolving
+  /// every restored "Equals" filter's `base` to display text while `search`
+  /// stayed a raw id.
   Future<void> _showFilterByValueDialog(
     BuildContext context,
     TrinaGridStateManager stateManager,
@@ -2431,9 +2524,21 @@ class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
     final options = lookupOptions[column.field] ?? const <int, String>{};
     final currentFilterType = stateManager.getColumnFilterType(column.field);
     final currentFilterValue = stateManager.getColumnFilterValue(column.field);
-    int? selected = currentFilterType is TrinaFilterTypeEquals
-        ? int.tryParse('$currentFilterValue')
-        : null;
+    // Compared by title, not `is TrinaFilterTypeEquals` -- every filter
+    // type offered here is one of [displayAwareFilterTypes]' wrapped
+    // instances (see that file's own doc comment), so a functionally-Equals
+    // filter always carries a `_DisplayAwareFilterType` runtime type, never
+    // a bare `TrinaFilterTypeEquals`. `.title` forwards through the
+    // wrapper unchanged, so this still recognizes it correctly.
+    int? selected;
+    if (currentFilterType?.title == TrinaFilterTypeEquals.name) {
+      for (final entry in options.entries) {
+        if (entry.value == currentFilterValue) {
+          selected = entry.key;
+          break;
+        }
+      }
+    }
 
     final apply = await showDialog<bool>(
       context: context,
@@ -2469,8 +2574,11 @@ class _ColumnMenuDelegate implements TrinaColumnMenuDelegate<dynamic> {
     } else {
       stateManager.setColumnFilter(
         columnField: column.field,
-        filterType: const TrinaFilterTypeEquals(),
-        filterValue: selected.toString(),
+        // The wrapped instance, not a bare `TrinaFilterTypeEquals()` --
+        // see this method's own doc comment for why display text on both
+        // sides (not the raw id) is what has to be stored here now.
+        filterType: _filterTypesByName[TrinaFilterTypeEquals.name] ?? const TrinaFilterTypeEquals(),
+        filterValue: options[selected]!,
       );
     }
   }

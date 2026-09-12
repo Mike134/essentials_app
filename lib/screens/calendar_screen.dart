@@ -82,20 +82,32 @@ class _CalendarScreenState extends State<CalendarScreen> {
   bool _loading = true;
   String? _error;
 
-  static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+  /// Deliberately **UTC-flavored**, not a plain local `DateTime(y, m, d)`
+  /// -- a real, more serious bug than the "hour or so off midnight" this
+  /// comment used to describe. `DateTime.add`/`.subtract`/`.difference`
+  /// on a *local* `DateTime` are DST-aware (real elapsed time, re-expressed
+  /// in local wall-clock time); chaining a ~46,000-day addition from a
+  /// fixed 1900 epoch (`_weekStartForIndex`) doesn't just drift by an
+  /// hour, it can throw off `_weekIndexForDate`'s own `~/ 7` integer
+  /// division by a whole extra week -- confirmed live, not theorized:
+  /// `weekStart(DateTime.now()).difference(_weekEpoch)` measured
+  /// `46269 days 23 hours` (one net accumulated DST hour short of the true
+  /// `46270`-day multiple of 7), truncating to `index = 6609` where the
+  /// correct index was `6610` -- meaning the calendar could silently open
+  /// to an entirely wrong week, one week earlier than today, not just an
+  /// hour-crooked version of the right one. UTC has no DST at all, so
+  /// every date built and compared through this file stays exact
+  /// regardless of how large a `Duration` is chained onto it -- the
+  /// `.year`/`.month`/`.day` fields are still read as plain calendar-date
+  /// labels everywhere else in this file (`_isSameDate`, `day.day`, ...),
+  /// unaffected by the `isUtc` flag.
+  static DateTime _dateOnly(DateTime d) => DateTime.utc(d.year, d.month, d.day);
 
   /// Same calendar date, ignoring time-of-day -- deliberately NOT plain
-  /// DateTime `==`. Dart's local-time `DateTime.add(Duration)` is
-  /// DST-aware (it adds real elapsed time, then re-expresses the result
-  /// in local wall-clock time), so a date built by chaining thousands of
-  /// day-additions from a fixed epoch (every day this screen shows, via
-  /// `_weekStartForIndex`) can end up sitting an hour or so off midnight
-  /// even though its calendar date is correct -- silently breaking a
-  /// strict `==` against a freshly-built `_dateOnly(DateTime.now())`.
-  /// Confirmed live: Mike's "Today" cell showed no highlight at all
-  /// despite entries for that same day rendering in the right cell (entry
-  /// matching uses an inclusive day-range comparison, tolerant of exactly
-  /// this kind of drift; a strict equality check is not).
+  /// DateTime `==` (still worth keeping even now that [_dateOnly] is
+  /// UTC-exact: a raw, not-yet-`_dateOnly`'d value -- e.g. `DateTime.now()`
+  /// itself -- always carries a real local time-of-day, so comparing it
+  /// directly against an already-`_dateOnly`'d value needs this, not `==`).
   static bool _isSameDate(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
@@ -106,7 +118,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // ListView.builder only ever builds the visible rows, so the bound costs
   // nothing at runtime; it just needs to comfortably cover any date a
   // personal record could realistically carry.
-  static final DateTime _weekEpoch = _weekStart(DateTime(1900, 1, 1));
+  static final DateTime _weekEpoch = _weekStart(_dateOnly(DateTime(1900, 1, 1)));
   static const int _monthWeekItemCount = 10400;
   static const double _monthRowHeight = 110;
 
@@ -121,7 +133,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   static int _weekIndexForDate(DateTime day) => _weekStart(day).difference(_weekEpoch).inDays ~/ 7;
 
-  static DateTime _weekStartForIndex(int index) => _weekEpoch.add(Duration(days: index * 7));
+  static DateTime _weekStartForIndex(int index) => _dateOnly(_weekEpoch.add(Duration(days: index * 7)));
 
   @override
   void initState() {
@@ -156,7 +168,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   /// first attempt) made the header lag up to 6 days behind what was
   /// actually mostly on screen -- flagged live by Mike ("should have
   /// already changed to September... a week late").
-  DateTime get _monthLabelReference => _weekStart(_anchor).add(const Duration(days: 3));
+  DateTime get _monthLabelReference => _dateOnly(_weekStart(_anchor).add(const Duration(days: 3)));
 
   bool _isInCurrentMonthLabel(DateTime day) {
     final ref = _monthLabelReference;
@@ -287,10 +299,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
   void _shift(int amount) {
     switch (_granularity) {
       case _Granularity.day:
-        setState(() => _anchor = _anchor.add(Duration(days: amount)));
+        setState(() => _anchor = _dateOnly(_anchor.add(Duration(days: amount))));
         _monthScrollDirty = true;
       case _Granularity.week:
-        setState(() => _anchor = _anchor.add(Duration(days: amount * 7)));
+        setState(() => _anchor = _dateOnly(_anchor.add(Duration(days: amount * 7))));
         _monthScrollDirty = true;
       case _Granularity.month:
         // Scrolls by one week, per Mike's ask -- _onMonthScroll updates
@@ -303,7 +315,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             curve: Curves.easeOut,
           );
         } else {
-          setState(() => _anchor = _anchor.add(Duration(days: amount * 7)));
+          setState(() => _anchor = _dateOnly(_anchor.add(Duration(days: amount * 7))));
           _monthScrollDirty = true;
         }
     }
@@ -337,13 +349,30 @@ class _CalendarScreenState extends State<CalendarScreen> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      // Explicit max height, rather than trusting `isScrollControlled`'s
+      // own default sizing -- found live: on a short/small window, this
+      // sheet could render with no reliable way to scroll to whatever
+      // didn't fit, per Mike's own report ("the selection box is off the
+      // window and has no way to scroll"). Bounding it to a fixed
+      // fraction of the real window height, and making the inner list a
+      // genuine `Expanded`+`ListView` (not `Flexible`+`shrinkWrap`, which
+      // only takes as much room as its content wants rather than the
+      // room actually available), guarantees the whole sheet always fits
+      // on screen with a real scrollbar for anything that doesn't.
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.6),
       builder: (context) {
         final selectedIds = (_view?.config['table_ids'] as List?)?.cast<String>().toSet() ?? const <String>{};
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
+            // Deliberately no `mainAxisSize: MainAxisSize.min` here --
+            // that would conflict with the `Expanded` list below (a flex
+            // child needs the Column to actually claim the full bounded
+            // height the `constraints:` above gives it, not shrink-wrap
+            // to content). The empty-state branch below wastes a little
+            // vertical space as a result, an acceptable trade-off for a
+            // rare edge case (a personal db with zero date-bearing tables).
             child: Column(
-              mainAxisSize: MainAxisSize.min,
               children: [
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -355,9 +384,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     child: Text('No tables have a date/dateTime field yet.'),
                   )
                 else
-                  Flexible(
+                  Expanded(
                     child: ListView(
-                      shrinkWrap: true,
                       children: [
                         for (final table in _eligible)
                           CheckboxListTile(
@@ -383,19 +411,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      // Same fixed-height/Expanded fix as _showListsPanel above -- a busy
+      // day could have enough entries to hit the same "off the window,
+      // can't scroll" risk.
+      constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.6),
       builder: (context) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             children: [
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Text(_formatDayHeader(day), style: const TextStyle(fontWeight: FontWeight.bold)),
               ),
-              Flexible(
+              Expanded(
                 child: ListView(
-                  shrinkWrap: true,
                   children: [
                     for (final entry in entries)
                       ListTile(
@@ -446,7 +476,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
   }
 
-  static DateTime _weekStart(DateTime day) => day.subtract(Duration(days: day.weekday - 1));
+  static DateTime _weekStart(DateTime day) => _dateOnly(day.subtract(Duration(days: day.weekday - 1)));
 
   @override
   Widget build(BuildContext context) {
@@ -571,7 +601,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             itemCount: _monthWeekItemCount,
             itemBuilder: (context, index) {
               final weekStart = _weekStartForIndex(index);
-              final days = [for (var i = 0; i < 7; i++) weekStart.add(Duration(days: i))];
+              final days = [for (var i = 0; i < 7; i++) _dateOnly(weekStart.add(Duration(days: i)))];
               return Row(children: [for (final d in days) Expanded(child: _buildMonthCell(d))]);
             },
           ),
@@ -674,7 +704,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _buildWeek() {
     final start = _weekStart(_anchor);
-    final days = [for (var i = 0; i < 7; i++) start.add(Duration(days: i))];
+    final days = [for (var i = 0; i < 7; i++) _dateOnly(start.add(Duration(days: i)))];
     return Row(
       children: [
         for (final day in days)

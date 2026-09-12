@@ -28,11 +28,21 @@ class ViewSwitcherBar extends StatefulWidget implements PreferredSizeWidget {
     required this.tableName,
     required this.currentViewId,
     required this.onViewSelected,
+    this.onFilterSetSelected,
   });
 
   final String tableName;
   final int? currentViewId;
   final ValueChanged<ViewDefinition?> onViewSelected;
+
+  /// Non-null only from [GenericListScreen]'s own bar -- a saved Filter Set
+  /// (`view_type = 'filter'`) is fundamentally a Grid-only concept (it
+  /// applies a `TrinaGridStateManager` filter, which only `GenericListScreen`
+  /// has), unlike List/Kanban views, which are real navigable screens any
+  /// of this bar's three hosts can switch to. `null` here (List/Kanban
+  /// screens) means this bar simply never renders any Filter Set chips at
+  /// all, rather than rendering something with nothing to call.
+  final ValueChanged<ViewDefinition>? onFilterSetSelected;
 
   @override
   Size get preferredSize => const Size.fromHeight(48);
@@ -227,7 +237,17 @@ class _ViewSwitcherBarState extends State<ViewSwitcherBar> {
       child: FutureBuilder<List<ViewDefinition>>(
         future: _viewsFuture,
         builder: (context, snapshot) {
-          final views = snapshot.data ?? const [];
+          final allViews = snapshot.data ?? const [];
+          // Filter Sets (`view_type == 'filter'`) are a completely
+          // different kind of button from Grid/List/Kanban -- tapping one
+          // *applies* a saved filter to whatever's showing, it never
+          // navigates -- so they're rendered separately below, never mixed
+          // into the navigable `views` this bar's existing selection logic
+          // already handles.
+          final views = [for (final v in allViews) if (v.viewType != 'filter') v];
+          final filterSets = widget.onFilterSetSelected == null
+              ? const <ViewDefinition>[]
+              : [for (final v in allViews) if (v.viewType == 'filter') v];
           return SizedBox(
             height: 48,
             child: ListView(
@@ -272,6 +292,31 @@ class _ViewSwitcherBarState extends State<ViewSwitcherBar> {
                       onPressed: _openManageViews,
                     ),
                   ),
+                if (filterSets.isNotEmpty) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: VerticalDivider(width: 1, indent: 8, endIndent: 8),
+                  ),
+                  for (final filterSet in filterSets)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                      child: GestureDetector(
+                        onLongPress: () => _showViewMenu(filterSet),
+                        onSecondaryTap: () => _showViewMenu(filterSet),
+                        // ActionChip, not ChoiceChip -- applying a Filter
+                        // Set is a one-shot action (it stamps its saved
+                        // rows onto the grid's current filter), not a
+                        // persistent "this is the active thing" state the
+                        // way a Grid/List/Kanban tab is, so it's never
+                        // shown as "selected".
+                        child: ActionChip(
+                          avatar: const Icon(Icons.filter_alt_outlined, size: 16),
+                          label: Text(filterSet.displayName),
+                          onPressed: () => widget.onFilterSetSelected!(filterSet),
+                        ),
+                      ),
+                    ),
+                ],
               ],
             ),
           );

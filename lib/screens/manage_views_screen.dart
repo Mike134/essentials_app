@@ -177,9 +177,9 @@ class _ManageViewsScreenState extends State<ManageViewsScreen> {
                     for (final view in active)
                       ListTile(
                         key: ValueKey(view.viewId),
-                        leading: Icon(view.viewType == 'kanban' ? Icons.view_column_outlined : Icons.view_list_outlined),
+                        leading: Icon(_viewTypeIcon(view.viewType)),
                         title: Text(view.displayName),
-                        subtitle: Text(view.viewType == 'kanban' ? 'Kanban' : 'List'),
+                        subtitle: Text(_viewTypeLabel(view.viewType)),
                         onTap: () => _rename(view),
                         trailing: IconButton(
                           icon: const Icon(Icons.delete_outline),
@@ -199,7 +199,7 @@ class _ManageViewsScreenState extends State<ManageViewsScreen> {
                     for (final view in deleted)
                       ListTile(
                         title: Text(view.displayName),
-                        subtitle: Text(view.viewType == 'kanban' ? 'Kanban' : 'List'),
+                        subtitle: Text(_viewTypeLabel(view.viewType)),
                         trailing: TextButton(
                           onPressed: () => _restore(view),
                           child: const Text('Restore'),
@@ -215,3 +215,20 @@ class _ManageViewsScreenState extends State<ManageViewsScreen> {
     );
   }
 }
+
+/// Was a bare `view.viewType == 'kanban' ? Icons... : Icons...` ternary --
+/// silently mislabeled every non-Kanban view as "List", Filter Sets
+/// (`view_type == 'filter'`) included, once those existed. A real
+/// `switch` covers every current type explicitly rather than assuming
+/// "not Kanban" only ever means "List".
+IconData _viewTypeIcon(String viewType) => switch (viewType) {
+  'kanban' => Icons.view_column_outlined,
+  'filter' => Icons.filter_alt_outlined,
+  _ => Icons.view_list_outlined,
+};
+
+String _viewTypeLabel(String viewType) => switch (viewType) {
+  'kanban' => 'Kanban',
+  'filter' => 'Filter Set',
+  _ => 'List',
+};

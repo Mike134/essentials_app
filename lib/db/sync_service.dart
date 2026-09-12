@@ -158,6 +158,18 @@ class SyncService {
   static final _dataChangesController = StreamController<Set<String>>.broadcast();
   static Stream<Set<String>> get dataChanges => _dataChangesController.stream;
 
+  /// Manually fires [dataChanges] for a data change made **on this
+  /// device**, not received from a remote peer -- mirrors
+  /// [notifyLocalSchemaChange]'s own reasoning, just for row-data
+  /// listeners instead of schema ones. First real caller: saving a
+  /// Filter Set (a `view_definitions` row) from `filter_editor_dialog
+  /// .dart`, a widget with no direct reference to the `ViewSwitcherBar`
+  /// instance whose own [dataChanges] subscription needs to know about
+  /// it -- without this, the new Filter Set button wouldn't appear until
+  /// some unrelated reload happened to occur. Safe to call even while no
+  /// listener is attached.
+  static void notifyLocalDataChange(Set<String> tables) => _dataChangesController.add(tables);
+
   /// Resolves the server address (see [_resolveServerUri]) and connects.
   /// Safe to call once at app startup; [CrdtSyncClient] handles its own
   /// reconnection with exponential backoff after that.

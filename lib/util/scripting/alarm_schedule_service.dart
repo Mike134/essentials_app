@@ -3,6 +3,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../../db/event_definitions_dao.dart';
+import '../../db/recurring_reminder_service.dart';
 import '../../db/theme_settings_dao.dart';
 import '../device_id.dart';
 import 'background_schedule_service.dart';
@@ -91,6 +92,7 @@ String _lastRunKey(int eventDefinitionId) =>
 Future<DateTime?> computeNextDueTimeForDevice({
   required EventDefinitionsDao events,
   required ThemeSettingsDao settings,
+  RecurringReminderService? reminders,
   DateTime? now,
 }) async {
   // A binding this device isn't targeted at should never arm an alarm
@@ -105,7 +107,17 @@ Future<DateTime?> computeNextDueTimeForDevice({
     final text = await settings.loadDeviceSetting(_lastRunKey(binding.id));
     lastRunTimes[binding.id] = text == null ? null : DateTime.tryParse(text);
   }
-  return nextDueTime(bindings, lastRunTimes, now ?? DateTime.now());
+  final scheduledDue = nextDueTime(bindings, lastRunTimes, now ?? DateTime.now());
+
+  // Agenda-style recurring reminders contribute to the same single-alarm
+  // computation -- without this, a device with no `event_definitions`
+  // scheduled scripts at all would never arm an alarm and Agenda
+  // notifications would silently never fire on Android. See
+  // claude/essentials-v2-agenda-scheduling-design.md.
+  final reminderDue = await (reminders ?? RecurringReminderService()).nextDueFireTime();
+  if (scheduledDue == null) return reminderDue;
+  if (reminderDue == null) return scheduledDue;
+  return scheduledDue.isBefore(reminderDue) ? scheduledDue : reminderDue;
 }
 
 /// Recomputes the next due time across every enabled, non-`app_launch`

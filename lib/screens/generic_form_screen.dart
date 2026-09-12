@@ -25,6 +25,8 @@ import '../util/geo_location.dart';
 import '../util/link_record.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
+import '../util/scheduling/recurrence_when_field.dart';
+import '../util/scheduling/recurring_reminder_fields.dart';
 
 /// Add/edit form for a single row, entirely driven by [config]. Renders
 /// text/number/boolean fields directly, lookup fields (batch 2+) as a
@@ -126,6 +128,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   late final FieldConfig? _mapLocationField = mapLocationFieldOf(widget.config.fields);
   bool _capturingLocation = false;
 
+  /// Agenda-style recurring-reminder field group (Start/Timeframe/When/
+  /// Notify[/Remind]), detected the same by-name way as Geo Location above
+  /// -- see claude/essentials-v2-agenda-scheduling-design.md. `null` for
+  /// every table without all four required fields.
+  late final RecurringReminderFields? _recurringReminderFields = recurringReminderFieldsOf(
+    widget.config.fields,
+  );
+
   /// Image field support -- see claude/essentials-v2-image-field-ui-design.md.
   /// `_capturingImage` is keyed by `field.column`, same per-field-flag shape
   /// as everything else in this screen (a form can have more than one image
@@ -192,8 +202,17 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         _linkRecordValues[field.column] = parseLinkedIds(existingValue);
         _linkRecordOptions[field.column] = _dao.getLinkedRecordOptions(field.linkRecord!);
       } else {
-        _controllers[field.column] =
-            TextEditingController(text: existingValue?.toString() ?? '');
+        // A dateTime field displays/edits at minute precision only (see
+        // isoDateTimeMinutes's own doc comment) -- reformat an
+        // already-stored value with real seconds down to that on load, so
+        // a pre-existing row (an old manual entry, a CSV import) doesn't
+        // show stale seconds until its next edit. Falls back to the raw
+        // text if it doesn't parse as a real date, same defensive posture
+        // as every other lenient parse in this app.
+        final displayText = field.type == FieldType.dateTime
+            ? _dateTimeDisplayText(existingValue)
+            : existingValue?.toString() ?? '';
+        _controllers[field.column] = TextEditingController(text: displayText);
         // Recompute readOnly fields (e.g. yearly_cost) when the user tabs
         // off an editable field that might feed them -- only wired up when
         // this config actually has a preview formula (see computePreview's
@@ -302,6 +321,12 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
     _recomputePreview();
   }
 
+  static String _dateTimeDisplayText(Object? existingValue) {
+    if (existingValue == null) return '';
+    final parsed = DateTime.tryParse(existingValue.toString());
+    return parsed == null ? existingValue.toString() : isoDateTimeMinutes(parsed);
+  }
+
   /// Date-only field (schema.sql's `order_date`/`start_date`/etc.) --
   /// [DateTime.tryParse] happily parses the field's own `yyyy-MM-dd` text
   /// back for [initialDate], so re-opening the picker on an already-filled
@@ -323,9 +348,9 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   /// Combined date+time field (schema.sql's `journal.entry_time`, the only
   /// one so far) -- date first, then time, matching how Android/iOS's own
   /// native pickers sequence the two rather than a single custom combined
-  /// widget. Seconds aren't user-editable through either native picker, so
-  /// they're carried over from whatever [current] already had (0 for a
-  /// brand-new row) rather than always reset to 0 on every edit.
+  /// widget. Seconds aren't user-editable through either native picker (or
+  /// shown anywhere in the UI at all -- see [isoDateTimeMinutes]), so the
+  /// picked value is always written at minute precision.
   Future<void> _pickDateTimeForField(FieldConfig field) async {
     final controller = _controllers[field.column]!;
     final current = DateTime.tryParse(controller.text) ?? DateTime.now();
@@ -347,9 +372,8 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       pickedDate.day,
       pickedTime?.hour ?? current.hour,
       pickedTime?.minute ?? current.minute,
-      current.second,
     );
-    setState(() => controller.text = isoDateTime(combined));
+    setState(() => controller.text = isoDateTimeMinutes(combined));
     _recomputePreview();
   }
 
@@ -361,7 +385,7 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   void _setFieldToNow(FieldConfig field) {
     final controller = _controllers[field.column]!;
     final now = DateTime.now();
-    controller.text = field.type == FieldType.dateTime ? isoDateTime(now) : isoDate(now);
+    controller.text = field.type == FieldType.dateTime ? isoDateTimeMinutes(now) : isoDate(now);
     _recomputePreview();
   }
 
@@ -593,6 +617,61 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   /// the existing [FieldType]-based branches completely unchanged.
   FieldFormatHandler? _formatHandlerFor(FieldConfig field) =>
       FieldFormatRegistry.instance.handlerFor(field.format);
+
+  /// Resolves the sibling Timeframe field's current selection to its
+  /// lowercased display keyword (or `null` if unset/still loading), then
+  /// hands off to [RecurrenceWhenField] for the actual contextual UI --
+  /// see claude/essentials-v2-agenda-scheduling-design.md. Handled here,
+  /// not through [FieldFormatHandler], for the same reason `isLookup`/
+  /// `isLinkRecord` above are: it needs another field's live form state,
+  /// which that shared interface has no way to reach.
+  Widget _buildRecurrenceWhenField(RecurringReminderFields fields) {
+    final controller = _controllers[fields.when.column]!;
+    final timeframe = fields.timeframe;
+
+    if (timeframe.isInlineSelect) {
+      final key = _inlineSelectValues[timeframe.column];
+      String? keyword;
+      for (final option in timeframe.inlineOptions!) {
+        if (option.key == key) {
+          keyword = option.label.trim().toLowerCase();
+          break;
+        }
+      }
+      return RecurrenceWhenField(controller: controller, timeframeKeyword: keyword);
+    }
+
+    if (timeframe.isLookup) {
+      final lookup = timeframe.lookup!;
+      return FutureBuilder<List<Map<String, Object?>>>(
+        future: _lookupOptions[timeframe.column],
+        builder: (context, snapshot) {
+          final options = snapshot.data ?? const [];
+          final currentId = _lookupValues[timeframe.column];
+          String? keyword;
+          for (final option in options) {
+            if (option[lookup.valueColumn] == currentId) {
+              keyword = option[lookup.displayColumn]?.toString().trim().toLowerCase();
+              break;
+            }
+          }
+          return RecurrenceWhenField(controller: controller, timeframeKeyword: keyword);
+        },
+      );
+    }
+
+    // Timeframe isn't a recognized lookup/inline-select shape (shouldn't
+    // happen for a real recurring-reminder table, but degrade to a plain
+    // box rather than hide the field entirely).
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: fields.when.label,
+        floatingLabelBehavior: FloatingLabelBehavior.always,
+        floatingLabelStyle: formLabelFloatingStyle(context),
+      ),
+    );
+  }
 
   /// `button` is deliberately handled here, before the generic
   /// [FieldFormatHandler] dispatch below, rather than through
@@ -1074,6 +1153,14 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   Widget _buildField(FieldConfig field) {
     if (field.format == 'button') return _buildButtonField(field);
     if (field.format == 'image') return _buildImageField(field);
+
+    final reminderFields = _recurringReminderFields;
+    if (reminderFields != null && field.column == reminderFields.when.column) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: _buildRecurrenceWhenField(reminderFields),
+      );
+    }
 
     final handler = _formatHandlerFor(field);
     if (handler != null) {

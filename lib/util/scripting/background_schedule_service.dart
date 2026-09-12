@@ -1,5 +1,6 @@
 import '../../db/event_definitions_dao.dart';
 import '../../db/event_dispatch_service.dart';
+import '../../db/recurring_reminder_service.dart';
 import '../../db/script_definitions_dao.dart';
 import '../../db/theme_settings_dao.dart';
 import '../device_id.dart';
@@ -32,11 +33,13 @@ class BackgroundScheduleService {
     EventDefinitionsDao? events,
     EventDispatchService? dispatcher,
     ScriptDefinitionsDao? scripts,
+    RecurringReminderService? reminders,
     ThemeSettingsDao? settings,
     Future<void> Function(String message)? notify,
   }) : _events = events ?? EventDefinitionsDao(),
        _dispatcher = dispatcher ?? EventDispatchService(),
        _scripts = scripts ?? ScriptDefinitionsDao(),
+       _reminders = reminders ?? RecurringReminderService(),
        _settingsOverride = settings,
        // Injectable so tests can avoid touching the real
        // flutter_local_notifications platform channel -- that plugin has
@@ -52,6 +55,7 @@ class BackgroundScheduleService {
   final EventDefinitionsDao _events;
   final EventDispatchService _dispatcher;
   final ScriptDefinitionsDao _scripts;
+  final RecurringReminderService _reminders;
   final ThemeSettingsDao? _settingsOverride;
   final Future<void> Function(String message) _notify;
 
@@ -151,6 +155,17 @@ class BackgroundScheduleService {
           await _tryNotify('Scheduled script error: ${result.outcome.error}');
         }
       }
+
+      // Agenda-style recurring reminders (any table shaped like Geo
+      // Location's field-name convention, see
+      // recurring_reminder_fields.dart) -- a completely different "what's
+      // due" shape from the event_definitions bindings above (per-row
+      // table data, not a fixed set of scheduled scripts), checked in the
+      // same pass so it rides both platforms' existing triggers (Windows'
+      // 1-minute poll, Android's alarm chain) with no new background
+      // trigger of its own. See claude/essentials-v2-agenda-scheduling
+      // -design.md.
+      appliedCount += await _reminders.checkAndFireDueReminders(now: now, notify: _tryNotify);
 
       await _tryRecordStatus(settings, {
         statusLastResultKey: 'ok',
