@@ -20,6 +20,7 @@ import '../util/bool_value.dart';
 import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/field_formats/field_format_handler.dart';
+import '../util/form_label_style.dart';
 import '../util/geo_location.dart';
 import '../util/link_record.dart';
 import '../util/links.dart';
@@ -566,7 +567,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
                   initialValue: '${widget.existing!['id']}',
                   enabled: false,
                   maxLines: null,
-                  decoration: const InputDecoration(labelText: 'ID'),
+                  decoration: InputDecoration(
+                    labelText: 'ID',
+                    floatingLabelBehavior: FloatingLabelBehavior.always,
+                    floatingLabelStyle: formLabelFloatingStyle(context),
+                  ),
                 ),
               ),
             for (final entry in widget.config.fields.asMap().entries) ...[
@@ -690,6 +695,8 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           labelText: field.label,
           border: InputBorder.none,
           contentPadding: EdgeInsets.zero,
+          floatingLabelBehavior: FloatingLabelBehavior.always,
+          floatingLabelStyle: formLabelFloatingStyle(context),
         ),
         child: content,
       ),
@@ -1087,7 +1094,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           controller: _controllers[field.column],
           enabled: false,
           maxLines: null,
-          decoration: InputDecoration(labelText: field.label),
+          decoration: InputDecoration(
+            labelText: field.label,
+            floatingLabelBehavior: FloatingLabelBehavior.always,
+            floatingLabelStyle: formLabelFloatingStyle(context),
+          ),
         ),
       );
     }
@@ -1132,7 +1143,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             );
             return DropdownButtonFormField<int>(
               initialValue: hasCurrentValue ? currentValue : null,
-              decoration: InputDecoration(labelText: field.label),
+              decoration: InputDecoration(
+                labelText: field.label,
+                floatingLabelBehavior: FloatingLabelBehavior.always,
+                floatingLabelStyle: formLabelFloatingStyle(context),
+              ),
               items: [
                 if (!field.required)
                   const DropdownMenuItem<int>(child: Text('-')),
@@ -1184,7 +1199,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: DropdownButtonFormField<String>(
           initialValue: currentValue,
-          decoration: InputDecoration(labelText: field.label),
+          decoration: InputDecoration(
+            labelText: field.label,
+            floatingLabelBehavior: FloatingLabelBehavior.always,
+            floatingLabelStyle: formLabelFloatingStyle(context),
+          ),
           items: [
             if (!field.required) const DropdownMenuItem<String>(child: Text('-')),
             for (final option in field.inlineOptions!)
@@ -1230,6 +1249,8 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             : null,
         decoration: InputDecoration(
           labelText: field.label,
+          floatingLabelBehavior: FloatingLabelBehavior.always,
+          floatingLabelStyle: formLabelFloatingStyle(context),
           prefixIcon: field.isColor
               ? Padding(
                   padding: const EdgeInsets.all(12),
@@ -1341,7 +1362,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             final hasCurrentValue = options.any((o) => o['id'] == currentValue);
             return DropdownButtonFormField<int>(
               initialValue: hasCurrentValue ? currentValue : null,
-              decoration: InputDecoration(labelText: field.label),
+              decoration: InputDecoration(
+                labelText: field.label,
+                floatingLabelBehavior: FloatingLabelBehavior.always,
+                floatingLabelStyle: formLabelFloatingStyle(context),
+              ),
               items: [
                 if (!field.required) const DropdownMenuItem<int>(child: Text('-')),
                 for (final option in options)
@@ -1509,7 +1534,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
           return TextFormField(
             controller: fieldController,
             focusNode: fieldFocusNode,
-            decoration: InputDecoration(labelText: field.label),
+            decoration: InputDecoration(
+              labelText: field.label,
+              floatingLabelBehavior: FloatingLabelBehavior.always,
+              floatingLabelStyle: formLabelFloatingStyle(context),
+            ),
             keyboardType: TextInputType.text,
             onFieldSubmitted: (_) => onFieldSubmitted(),
             validator: field.required

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trina_grid/trina_grid.dart';
 
 import '../../models/table_config.dart';
+import '../form_label_style.dart';
 import 'field_format_handler.dart';
 
 /// `currency` -- Essentials v2 Phase 2 build order step 2 (see
@@ -66,7 +67,12 @@ class CurrencyFormatHandler implements FieldFormatHandler {
     return TextFormField(
       controller: controller,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      decoration: InputDecoration(labelText: field.label, prefixText: _symbol(field)),
+      decoration: InputDecoration(
+        labelText: field.label,
+        prefixText: _symbol(field),
+        floatingLabelBehavior: FloatingLabelBehavior.always,
+        floatingLabelStyle: formLabelFloatingStyle(context),
+      ),
       validator: field.required
           ? (value) => (value == null || value.trim().isEmpty) ? '${field.label} is required' : null
           : null,

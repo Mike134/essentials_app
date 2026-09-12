@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:trina_grid/trina_grid.dart';
 
 import '../../models/table_config.dart';
+import '../form_label_style.dart';
 import '../links.dart';
 import 'field_format_handler.dart';
 
@@ -76,6 +77,8 @@ class LinkFileFormatHandler implements FieldFormatHandler {
       style: const TextStyle(color: Colors.blue, decoration: TextDecoration.underline),
       decoration: InputDecoration(
         labelText: field.label,
+        floatingLabelBehavior: FloatingLabelBehavior.always,
+        floatingLabelStyle: formLabelFloatingStyle(context),
         suffixIcon: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

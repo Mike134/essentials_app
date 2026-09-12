@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trina_grid/trina_grid.dart';
 
 import '../../models/table_config.dart';
+import '../form_label_style.dart';
 import 'field_format_handler.dart';
 
 /// `percentage` -- Essentials v2 Phase 2 build order step 2 (see
@@ -162,7 +163,12 @@ class _PercentageFormFieldState extends State<_PercentageFormField> {
     return TextFormField(
       controller: _displayController,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      decoration: InputDecoration(labelText: widget.field.label, suffixText: '%'),
+      decoration: InputDecoration(
+        labelText: widget.field.label,
+        suffixText: '%',
+        floatingLabelBehavior: FloatingLabelBehavior.always,
+        floatingLabelStyle: formLabelFloatingStyle(context),
+      ),
       validator: widget.field.required
           ? (value) =>
                 (value == null || value.trim().isEmpty) ? '${widget.field.label} is required' : null

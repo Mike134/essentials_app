@@ -9094,3 +9094,98 @@ Mike-tested interactively -- next: set Priority's own "Sort by" to
 "Position" via Manage Tables on either device and confirm it takes effect
 in both that table's own grid and any dropdown pointing at it, then
 confirm the setting syncs to the other device.
+
+## Form label sizing: inconsistent-label-size bug fixed, then font-size-tracking verified (2026-09-11)
+
+Same session Mike caught a real, longstanding Material 3 quirk in the
+Add/Edit record form (`GenericFormScreen`): plain text field labels
+("Description", "Tag", ...) rendered at full size until the field had
+content or focus, while dropdown/lookup field labels ("Event Type",
+"Priority", ...) always rendered small/floated -- `DropdownButtonFormField`
+is treated as permanently "non-empty" by Flutter's `InputDecorator`, so
+its label never sits in the large, un-floated state a same-screen empty
+text field does. Fixed by adding `floatingLabelBehavior:
+FloatingLabelBehavior.always` to every `InputDecoration` in the record
+form -- `generic_form_screen.dart`'s eight decoration sites (ID, image,
+readOnly/computed, both dropdown variants, plain text, `link_record`
+dropdown, autocomplete) plus every field-format handler registered for
+the record form (`currency`/`percentage`/`rating`/`link_file`/`barcode`
+-- `button`/`image`'s own `buildFormField` are confirmed dead code per
+their own doc comments, `GenericFormScreen` never reaches them). Every
+label is now always in the small, floated position, consistently.
+
+**Mike's immediate follow-up: confirm label size still tracks the
+device's own "Font size" setting, not a fixed value** -- a reasonable
+thing to double-check given the fix touched every label's rendering.
+Verified empirically rather than assumed: a real regression test
+(`test/theme_form_label_font_scaling_test.dart`) renders an
+always-floating `TextFormField` under two different
+`ThemeController.fontSizeOverride` values and confirms the rendered
+label's actual font size scales proportionally (10/30 -> 3.0x, matching
+the ratio exactly). **No production code change was needed** -- this
+already worked correctly: Material 3's default label style is
+`Theme.of(context).textTheme.bodyLarge` (visually shrunk by a fixed
+0.75x transform when floated, not a separate smaller `TextStyle`), and
+`ThemeController.themeData` already scales every style in `textTheme`
+(`bodyLarge` included) by the configured `fontSize` -- the same
+mechanism that's driven grid/form text sizing since the original
+Settings & Persistence Architecture phase. The `floatingLabelBehavior
+.always` fix didn't touch `labelStyle`/`floatingLabelStyle` at all, so
+nothing in it could have broken this.
+
+`flutter analyze` clean project-wide; the new test passes; `flutter
+build windows`/`flutter build apk --debug` both clean (built for the
+label-consistency fix itself, before this verification pass -- no
+further rebuild needed since this pass added a test only, no lib/
+changes), debug APK already on MIKE-12R. Not yet Mike-tested
+interactively for either half (the label-consistency fix or the
+font-size-tracking confirmation) -- next: open the Agenda form on both
+platforms and confirm every label matches, then adjust the "Font size"
+slider in Settings and confirm every label (not just the input text)
+visibly grows/shrinks with it.
+
+## Form label sizing, follow-up: labels bumped from a flat 75% to 90% of the value's size (2026-09-11)
+
+Mike's own screenshot of the fixed (consistently-floated) form confirmed
+labels now matched each other, but flagged them as uniformly too small
+next to the (unshrunk) value text -- a real, expected side effect of the
+fix above: forcing every label into Flutter's always-floated state also
+means every label is now subject to Flutter's fixed, non-configurable
+0.75x floating-label shrink (`_kFinalLabelScale`, Flutter's own
+`input_decorator.dart`) for the first time, where plain text fields used
+to render at full (unshrunk) size until focused/filled.
+
+Asked Mike to pick a direction rather than guessing at a specific target
+size -- three options offered (bump to ~90% of value size, match value
+size exactly, or something else); he picked **~90%, labels still smaller
+than values but far less washed-out than the flat 75%.**
+
+**New shared helper, `lib/util/form_label_style.dart`'s
+`formLabelFloatingStyle(context, {visibleFraction = 0.9})`.** Since
+Flutter's 0.75x shrink is a fixed widget-level `Transform.scale` applied
+to whatever `floatingLabelStyle` renders at -- independent of the style's
+own font size, confirmed by reading Flutter's source (`_kFinalLabelScale`)
+and by a throwaway probe test before writing any production code -- the
+fix is to pre-compensate: feed Flutter a style sized at
+`bodyLarge.fontSize * visibleFraction / 0.75`, so that after Flutter's own
+fixed shrink, the *on-screen* label lands at exactly `visibleFraction` of
+the value's actual size instead of a flat 75%. Wired into every one of
+`generic_form_screen.dart`'s 8 decoration sites (via a `floatingLabelStyle:
+formLabelFloatingStyle(context)` added next to each existing
+`floatingLabelBehavior: FloatingLabelBehavior.always`) plus the same 5
+field-format handlers touched by the original fix
+(`currency`/`percentage`/`rating`/`link_file`/`barcode`).
+
+`test/theme_form_label_font_scaling_test.dart` extended with a second
+test proving the *combined* claim end to end, through the real
+`ThemeController.themeData` (not a synthetic `TextTheme`): at two
+different `fontSizeOverride` values, the rendered label-to-value ratio
+lands at 0.9 (accounting for Flutter's own 0.75x shrink) in both cases,
+while the label still scales 3x when the font-size setting itself scales
+3x -- both requirements (visible-fraction target, and tracking the
+font-size setting) proven together, not separately. `flutter analyze`
+clean project-wide, both tests pass, `flutter build windows`/`flutter
+build apk --debug` both clean, debug APK pushed to MIKE-12R. Not yet
+Mike-tested interactively -- next: open the Agenda form on both
+platforms and confirm labels now read clearly instead of washed-out,
+still visibly smaller than the value text.

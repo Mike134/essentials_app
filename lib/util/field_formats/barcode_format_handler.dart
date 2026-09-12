@@ -6,6 +6,7 @@ import 'package:trina_grid/trina_grid.dart';
 
 import '../../models/table_config.dart';
 import '../../screens/barcode_scanner_screen.dart';
+import '../form_label_style.dart';
 import 'field_format_handler.dart';
 
 /// `barcode` -- Essentials v2 Phase 2 build order step 7, the last of the
@@ -80,6 +81,8 @@ class BarcodeFormatHandler implements FieldFormatHandler {
       maxLines: null,
       decoration: InputDecoration(
         labelText: field.label,
+        floatingLabelBehavior: FloatingLabelBehavior.always,
+        floatingLabelStyle: formLabelFloatingStyle(context),
         // Android only -- no disabled/greyed-out icon on Windows, no
         // icon at all. A visible-but-broken control would be the
         // opposite of "degrades cleanly" the design doc asked for; the

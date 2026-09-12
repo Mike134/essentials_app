@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trina_grid/trina_grid.dart';
 
 import '../../models/table_config.dart';
+import '../form_label_style.dart';
 import 'field_format_handler.dart';
 
 /// `rating` -- Essentials v2 Phase 2 build order step 5 (see
@@ -112,6 +113,8 @@ class RatingFormatHandler implements FieldFormatHandler {
             errorText: state.errorText,
             border: InputBorder.none,
             contentPadding: EdgeInsets.zero,
+            floatingLabelBehavior: FloatingLabelBehavior.always,
+            floatingLabelStyle: formLabelFloatingStyle(context),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
