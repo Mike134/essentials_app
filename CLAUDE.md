@@ -9185,7 +9185,9 @@ while the label still scales 3x when the font-size setting itself scales
 3x -- both requirements (visible-fraction target, and tracking the
 font-size setting) proven together, not separately. `flutter analyze`
 clean project-wide, both tests pass, `flutter build windows`/`flutter
-build apk --debug` both clean, debug APK pushed to MIKE-12R. Not yet
-Mike-tested interactively -- next: open the Agenda form on both
-platforms and confirm labels now read clearly instead of washed-out,
-still visibly smaller than the value text.
+build apk --debug` both clean, debug APK pushed to MIKE-12R.
+
+**Mike's interactive verification: done, passed, on MIKE-12R** -- labels
+read clearly, consistently sized, still visibly smaller than the value
+text, matching the ~90% target. Both this fix and the underlying
+label-consistency fix above are confirmed working, not just build-verified.
