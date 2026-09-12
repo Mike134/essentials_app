@@ -24,6 +24,8 @@ import '../util/field_formats/field_format_handler.dart';
 import '../util/link_record.dart';
 import '../util/links.dart';
 import '../util/lookup_value.dart';
+import '../util/scheduling/recurrence_when.dart';
+import '../util/scheduling/recurring_reminder_fields.dart';
 import '../util/strings.dart';
 import 'csv_import_screen.dart';
 import 'filter_editor_dialog.dart';
@@ -113,6 +115,15 @@ class _GenericListScreenState extends State<GenericListScreen> {
 
   late GenericDao _dao;
   late Future<_ScreenData> _screenDataFuture;
+
+  /// Agenda-style recurring-reminder field group, detected the same
+  /// by-name way `GenericFormScreen` already does -- `null` for every
+  /// table without one. The only current use is [_buildFieldColumn]'s
+  /// dedicated "When" renderer (see claude/essentials-v2-agenda-scheduling
+  /// -design.md's "What's deliberately deferred" -- this closes that gap).
+  late final RecurringReminderFields? _recurringReminderFields = recurringReminderFieldsOf(
+    widget.config.fields,
+  );
 
   TrinaGridStateManager? _stateManager;
   Timer? _saveTimer;
@@ -1245,12 +1256,76 @@ class _GenericListScreenState extends State<GenericListScreen> {
   FieldFormatHandler? _formatHandlerFor(FieldConfig field) =>
       FieldFormatRegistry.instance.handlerFor(field.format);
 
+  /// Resolves the Timeframe field's current value, for *this row*, to its
+  /// lowercased display keyword (e.g. `"weekly"`) -- mirrors
+  /// `RecurringReminderService._resolveTimeframeKeyword`'s own resolution,
+  /// just against a live grid row's cells instead of a plain DB row map
+  /// (a linked-lookup field's grid cell already holds the resolved *id*
+  /// as a real `int`, per [_cellValueFor], so no re-parsing/DB query is
+  /// needed here -- [lookupMaps] already has the id -> display-text map
+  /// this screen loaded for rendering that field's own cell).
+  String? _timeframeKeywordForRow(
+    TrinaRow row,
+    FieldConfig timeframeField,
+    Map<String, Map<int, String>> lookupMaps,
+  ) {
+    final raw = row.cells[timeframeField.column]?.value;
+    if (timeframeField.isInlineSelect) {
+      for (final option in timeframeField.inlineOptions!) {
+        if (option.key == raw) return option.label.trim().toLowerCase();
+      }
+      return null;
+    }
+    if (timeframeField.isLookup && raw is int) {
+      return lookupMaps[timeframeField.column]?[raw]?.trim().toLowerCase();
+    }
+    return raw?.toString().trim().toLowerCase();
+  }
+
+  /// The "When" field's own grid column -- read-only *display* only (via
+  /// `renderer:`), never a change to what's actually stored or how it's
+  /// edited (still a plain text cell underneath, same as every other
+  /// `format: 'text'` field) -- closes the "grid shows raw JSON" gap
+  /// claude/essentials-v2-agenda-scheduling-design.md flagged as
+  /// deliberately deferred. Needs a full custom renderer, not a plain
+  /// `formatter:` -- [TrinaColumnValueFormatter] only ever receives the
+  /// cell's own value, with no way to read the sibling Timeframe/Start
+  /// cells this field's meaning depends on.
+  TrinaColumn _buildRecurrenceWhenColumn(
+    FieldConfig field,
+    RecurringReminderFields reminderFields,
+    Map<String, Map<int, String>> lookupMaps,
+  ) {
+    return TrinaColumn(
+      title: field.label,
+      field: field.column,
+      type: TrinaColumnType.text(),
+      renderer: (rendererContext) {
+        if (rendererContext.row.type.isGroup) return const SizedBox.shrink();
+        final keyword = _timeframeKeywordForRow(rendererContext.row, reminderFields.timeframe, lookupMaps);
+        final rule = RecurrenceWhenRule.decode(rendererContext.cell.value?.toString());
+        final start = DateTime.tryParse(
+          rendererContext.row.cells[reminderFields.start.column]?.value?.toString() ?? '',
+        );
+        return Text(
+          describeRecurrenceWhen(keyword, rule, start: start),
+          overflow: TextOverflow.ellipsis,
+        );
+      },
+    );
+  }
+
   TrinaColumn _buildFieldColumn(
     FieldConfig field,
     Map<String, Map<int, String>> lookupMaps,
     Map<String, Map<int, String>> linkRecordOptionMaps,
     ColumnSetting? setting,
   ) {
+    final reminderFields = _recurringReminderFields;
+    if (reminderFields != null && field.column == reminderFields.when.column) {
+      return _withColumnSetting(_buildRecurrenceWhenColumn(field, reminderFields, lookupMaps), setting);
+    }
+
     final handler = _formatHandlerFor(field);
     if (handler != null) {
       final column = handler.buildGridColumn(field);

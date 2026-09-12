@@ -240,4 +240,62 @@ void main() {
       expect(nextOccurrenceAfter(start: start, timeframeKeyword: 'fortnightly', after: null), isNull);
     });
   });
+
+  group('describeRecurrenceWhen', () {
+    test('blank for daily/yearly/hourly/once/unrecognized', () {
+      for (final keyword in ['daily', 'yearly', 'hourly', 'once', 'fortnightly', null, '']) {
+        expect(describeRecurrenceWhen(keyword, null), '', reason: 'keyword=$keyword');
+      }
+    });
+
+    test('weekly names the weekday', () {
+      expect(
+        describeRecurrenceWhen('weekly', const RecurrenceWhenRule(weekday: DateTime.wednesday)),
+        'Every Wednesday',
+      );
+    });
+
+    test('weekly with no rule falls back to Start\'s own weekday', () {
+      final start = DateTime(2026, 9, 16); // a real Wednesday
+      expect(describeRecurrenceWhen('weekly', null, start: start), 'Every Wednesday');
+    });
+
+    test('monthly day_of_month', () {
+      expect(
+        describeRecurrenceWhen(
+          'monthly',
+          const RecurrenceWhenRule(monthlyKind: MonthlyPatternKind.dayOfMonth, dayOfMonth: 15),
+        ),
+        'Day 15 of each month',
+      );
+    });
+
+    test('monthly day_of_month with no rule falls back to Start\'s own day', () {
+      expect(describeRecurrenceWhen('monthly', null, start: DateTime(2026, 9, 3)), 'Day 3 of each month');
+    });
+
+    test('monthly last_day', () {
+      expect(
+        describeRecurrenceWhen('monthly', const RecurrenceWhenRule(monthlyKind: MonthlyPatternKind.lastDay)),
+        'Last day of each month',
+      );
+    });
+
+    test('monthly nth_weekday, including "Last"', () {
+      expect(
+        describeRecurrenceWhen(
+          'monthly',
+          const RecurrenceWhenRule(monthlyKind: MonthlyPatternKind.nthWeekday, nth: 2, nthWeekday: DateTime.tuesday),
+        ),
+        '2nd Tuesday of each month',
+      );
+      expect(
+        describeRecurrenceWhen(
+          'monthly',
+          const RecurrenceWhenRule(monthlyKind: MonthlyPatternKind.nthWeekday, nth: -1, nthWeekday: DateTime.friday),
+        ),
+        'Last Friday of each month',
+      );
+    });
+  });
 }

@@ -191,14 +191,21 @@ Start forward via a real `GenericDao.update` call, confirms it fires
 again for the new time, confirms it doesn't fire a third time
 afterward. 9 tests total in `recurring_reminder_service_test.dart`.
 
-## What's deliberately deferred
+## Grid "When" column now shows a human-readable summary, not raw JSON
 
-- **The grid's "When" column shows raw JSON**, not a human-readable
-  summary ("Every Wednesday", "2nd Tuesday of each month") — a real UX
-  gap, but the primary ask was the recurrence engine and the form
-  experience, not grid polish. A `formatter`-only fix (display text only,
-  no change to the underlying stored value or edit behavior) is a
-  reasonable follow-up whenever it's worth the time.
+Fixed same week: `describeRecurrenceWhen` (`recurrence_when.dart`) turns
+a rule + Timeframe keyword into "Every Wednesday" / "Day 15 of each
+month" / "Last day of each month" / "2nd Tuesday of each month" (blank
+for daily/yearly/hourly/once, matching the form widget's own "not
+needed" treatment). Wired in via `GenericListScreen._buildRecurrenceWhenColumn`
+-- a real custom `renderer:`, not a plain `formatter:` (a formatter only
+ever receives the cell's own value, with no way to read the sibling
+Timeframe/Start cells this field's meaning depends on). Display only --
+the underlying stored value and edit behavior (a plain text cell,
+showing the raw JSON when actually edited) are unchanged. 7 new tests in
+`recurrence_when_test.dart`.
+
+## What's deliberately deferred
 - **No tap-to-navigate from the fired notification** — `ScriptNotifications
   .show` is a plain, un-actioned notification (same as every scheduled-
   script notification already is). Wiring a payload + navigation-on-tap

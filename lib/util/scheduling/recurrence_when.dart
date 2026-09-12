@@ -233,3 +233,59 @@ DateTime? nextOccurrenceAfter({
       return null;
   }
 }
+
+const _weekdayNames = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+];
+
+String? _weekdayName(int? weekday) =>
+    (weekday != null && weekday >= 1 && weekday <= 7) ? _weekdayNames[weekday - 1] : null;
+
+const _nthNames = {1: '1st', 2: '2nd', 3: '3rd', 4: '4th', -1: 'Last'};
+
+/// A human-readable summary of a recurrence -- e.g. "Every Wednesday",
+/// "Day 15 of each month", "Last day of each month", "2nd Tuesday of each
+/// month" -- for display only (the grid's own "When" column; see
+/// `GenericListScreen._buildFieldColumn`'s dedicated renderer for this
+/// field). Never used for the actual recurrence math, which always reads
+/// [RecurrenceWhenRule]/[nextOccurrenceAfter] directly -- this is purely a
+/// presentation layer on top of the exact same rule.
+///
+/// Blank for `daily`/`yearly`/`hourly`/`once`/unrecognized timeframes --
+/// [nextOccurrenceAfter] ignores [rule] for all of those, so there is
+/// nothing meaningful to summarize (matches the contextual form widget's
+/// own "Not needed for Daily." treatment, just as an empty string rather
+/// than a message, since a grid cell has no room for one). A `weekly`/
+/// `monthly` timeframe with no rule chosen yet falls back to the same
+/// default [nextOccurrenceAfter] itself would use (Start's own weekday
+/// for weekly; Start's own day-of-month for monthly) rather than showing
+/// nothing, so the column always reflects what will actually happen.
+String describeRecurrenceWhen(String? timeframeKeyword, RecurrenceWhenRule? rule, {DateTime? start}) {
+  final keyword = (timeframeKeyword ?? '').trim().toLowerCase();
+  switch (keyword) {
+    case 'weekly':
+      final weekday = _weekdayName(rule?.weekday) ?? _weekdayName(start?.weekday);
+      return weekday == null ? '' : 'Every $weekday';
+    case 'monthly':
+      switch (rule?.monthlyKind) {
+        case MonthlyPatternKind.lastDay:
+          return 'Last day of each month';
+        case MonthlyPatternKind.nthWeekday:
+          final nth = _nthNames[rule?.nth ?? 1] ?? '${rule?.nth ?? 1}';
+          final weekday = _weekdayName(rule?.nthWeekday) ?? _weekdayName(start?.weekday) ?? '';
+          return '$nth $weekday of each month'.trim();
+        case MonthlyPatternKind.dayOfMonth:
+        case null:
+          final day = rule?.dayOfMonth ?? start?.day;
+          return day == null ? '' : 'Day $day of each month';
+      }
+    default:
+      return '';
+  }
+}
