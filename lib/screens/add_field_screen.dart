@@ -245,7 +245,6 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
   bool get _canSubmit {
     if (_selectedTable == null) return false;
     if (_displayNameController.text.trim().isEmpty) return false;
-    if (_showsRequired && _required && _defaultValueController.text.trim().isEmpty) return false;
     if (_format == FieldFormatChoice.select && _linkedTable == null) return false;
     if (_format == FieldFormatChoice.linkRecord && _linkedTable == null) return false;
     if (_format == FieldFormatChoice.lookup) {
@@ -809,21 +808,21 @@ class _AddFieldScreenState extends State<AddFieldScreen> {
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
               title: const Text('Required'),
-              subtitle: const Text('Needs a default below -- existing rows must get a value.'),
+              subtitle: const Text('New records must have a value for this field to be saved.'),
               value: _required,
               onChanged: (value) => setState(() => _required = value ?? false),
             ),
             if (_format == FieldFormatChoice.color)
               ColorDefaultValueField(
                 controller: _defaultValueController,
-                labelText: _required ? 'Default (required)' : 'Default (optional)',
+                labelText: 'Default (optional)',
                 onChanged: () => setState(() {}),
               )
             else
               TextField(
                 controller: _defaultValueController,
-                decoration: InputDecoration(
-                  labelText: _required ? 'Default (required)' : 'Default (optional)',
+                decoration: const InputDecoration(
+                  labelText: 'Default (optional)',
                   hintText: 'Blank = no default, field starts empty on existing rows',
                 ),
                 onChanged: (_) => setState(() {}),

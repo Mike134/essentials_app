@@ -142,16 +142,25 @@ class SchemaEditorService {
     if (!await _discovery.tableExists(tableName)) {
       throw ArgumentError('No table named "$tableName" exists.');
     }
-    if (required && (defaultValue == null || defaultValue.trim().isEmpty)) {
-      throw ArgumentError('A required field needs a default value.');
-    }
+    final hasDefault = defaultValue != null && defaultValue.trim().isNotEmpty;
 
     final crdt = await _db;
     final fieldName = await _generateFieldIdentifier(crdt, tableName, trimmedDisplayName);
 
+    // `required` is an app-level form-validation flag (see
+    // GenericFormScreen's own validators) -- it never forces a default to
+    // be entered. A default is only reflected physically (as a real SQL
+    // DEFAULT, so existing rows get backfilled) when one is actually
+    // supplied; SQLite's own ADD COLUMN restriction means NOT NULL can only
+    // ever be paired with a real default, so a required field with no
+    // default stays a plain, physically-nullable column -- exactly like
+    // ManageFieldsScreen's own `updateField` already treats `required` as
+    // never touching the physical schema after creation.
     final buffer = StringBuffer('ALTER TABLE "$tableName" ADD COLUMN "$fieldName" TEXT');
-    if (required) {
-      buffer.write(" NOT NULL DEFAULT '${defaultValue!.trim().replaceAll("'", "''")}'");
+    if (required && hasDefault) {
+      buffer.write(" NOT NULL DEFAULT '${defaultValue.trim().replaceAll("'", "''")}'");
+    } else if (hasDefault) {
+      buffer.write(" DEFAULT '${defaultValue.trim().replaceAll("'", "''")}'");
     }
     final ddl = buffer.toString();
 

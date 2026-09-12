@@ -146,15 +146,44 @@ void main() {
     expect(fieldRows.first['required'], 0);
   });
 
-  test('addField on a required field with no default is rejected before any write happens', () async {
+  test('addField on a required field with no default succeeds as a plain nullable column', () async {
+    // `required` is a pure app-level form-validation flag (see
+    // GenericFormScreen's own validators) -- it never forces a default to
+    // be entered. SQLite's own ADD COLUMN restriction means NOT NULL can
+    // only ever be paired with a real default, so a required field with no
+    // default stays physically nullable; enforcement is left entirely to
+    // the form going forward, exactly like ManageFieldsScreen's own
+    // `updateField` already treats `required` post-creation.
     final tableName = await createTestTable('SETV2 Required No Default');
-    await expectLater(
-      () => editor.addField(tableName: tableName, displayName: 'Status', format: 'text', required: true),
-      throwsArgumentError,
+    await editor.addField(tableName: tableName, displayName: 'Status', format: 'text', required: true);
+
+    final columns = await db.query('PRAGMA table_info("$tableName")');
+    final statusColumn = columns.firstWhere((c) => c['name'] == 'status');
+    expect(statusColumn['notnull'], 0);
+    expect(statusColumn['dflt_value'], isNull);
+
+    final fieldRows = await db.query(
+      'SELECT * FROM field_definitions WHERE table_name = ?1 AND field_name = ?2 AND is_deleted = 0',
+      [tableName, 'status'],
+    );
+    expect(fieldRows.first['required'], 1);
+    expect(fieldRows.first['default_value'], isNull);
+  });
+
+  test('addField on a required field with a default applies a real physical DEFAULT', () async {
+    final tableName = await createTestTable('SETV2 Required With Default');
+    await editor.addField(
+      tableName: tableName,
+      displayName: 'Status',
+      format: 'text',
+      required: true,
+      defaultValue: 'Open',
     );
 
     final columns = await db.query('PRAGMA table_info("$tableName")');
-    expect(columns.any((c) => c['name'] == 'status'), isFalse);
+    final statusColumn = columns.firstWhere((c) => c['name'] == 'status');
+    expect(statusColumn['notnull'], 1);
+    expect(statusColumn['dflt_value'], "'Open'");
   });
 
   test('addField against a table that does not exist is rejected', () async {

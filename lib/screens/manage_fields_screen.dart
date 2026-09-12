@@ -584,7 +584,6 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
 
   bool get _canSave {
     if (_displayNameController.text.trim().isEmpty) return false;
-    if (_showsRequired && _required && _defaultValueController.text.trim().isEmpty) return false;
     if (_format == FieldFormatChoice.select && _linkedTable == null) return false;
     if (_format == FieldFormatChoice.linkRecord && _linkedTable == null) return false;
     if (_format == FieldFormatChoice.lookup) {
@@ -1014,15 +1013,13 @@ class _FieldEditorDialogState extends State<_FieldEditorDialog> {
                 if (_format == FieldFormatChoice.color)
                   ColorDefaultValueField(
                     controller: _defaultValueController,
-                    labelText: _required ? 'Default (required)' : 'Default (optional)',
+                    labelText: 'Default (optional)',
                     onChanged: () => setState(() {}),
                   )
                 else
                   TextField(
                     controller: _defaultValueController,
-                    decoration: InputDecoration(
-                      labelText: _required ? 'Default (required)' : 'Default (optional)',
-                    ),
+                    decoration: const InputDecoration(labelText: 'Default (optional)'),
                     onChanged: (_) => setState(() {}),
                   ),
               ],
