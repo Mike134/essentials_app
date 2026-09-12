@@ -9325,3 +9325,79 @@ question (whether anything beyond the already-working recurring-reminder
 engine is wanted -- e.g. a real design pass on top of Calendar/scripting/
 `link_record` for something more than reminders) is still open, unless
 Mike's own real usage of `Agenda` as-is turns out to be enough.
+
+## Calendar Filter Sets, finally built (2026-09-12)
+
+The very first task described at the top of this project's history --
+select/filter which records display on Calendar, per table, reusing the
+same Filter Sets already built for the Grid -- was decided and agreed
+back when Filter Sets themselves were first built (`af8a296`), but never
+actually landed before the Essentials v2 clean-slate wipe (`da6c39f`)
+deleted the whole v1 table set it would have filtered. Calendar itself
+was later rebuilt from zero in Phase 3 (`94c8d73`) with only the simpler
+table-level on/off "Lists" toggle -- the Filter Set piece of the original
+plan quietly never made it into that rebuild. Confirmed via git history,
+not assumed, once Mike pointed out the discrepancy between "I thought we
+scoped this" and Calendar's actual current code.
+
+**Built now, against the current schema-engine model, since nothing from
+before the wipe survived to reuse:**
+
+- **`lib/util/saved_view_filter.dart`** (new) -- `rowMatchesFilterSet`, the
+  standalone (non-`TrinaGrid`) evaluator the original design called for.
+  Reuses `savedViewDisplayText` (so a lookup/inline-select column compares
+  against its display text, not a raw id) and the existing
+  `displayAwareFilterTypes` for the actual comparisons -- including
+  numeric/date-aware ordering for the GreaterThan/LessThan family, via a
+  small placeholder `TrinaColumn` shaped from the field's own `FieldType`
+  (never a `TrinaColumnTypeSelect`, so `resolveFilterDisplayText` correctly
+  no-ops on it -- the real resolution already happened above). Confirmed
+  by reading `FilterHelper.convertRowsToFilter`'s own source that every
+  condition is **ANDed**, never OR'd, even multiple rows on the same
+  column -- this evaluator matches that exactly, so a saved Filter Set
+  behaves identically whether it's driving the Grid or Calendar.
+- **`calendar_screen.dart`** -- for a table checked in the "Lists" panel
+  that has at least one saved Filter Set, a "Filter" dropdown now offers
+  **None + every Filter Set for that table**, per Mike's own remembered
+  spec. Selection is per-device, per-table (`device_settings`, key
+  `calendar_filter:<table>`) -- "no filter chosen" always means show every
+  row, matching the confirmed design from the original discussion.
+- 7 new tests, `test/saved_view_filter_test.dart` -- Contains, a linked
+  -lookup Equals comparing display text (not the raw id), a numeric
+  Greater-than (proving real numeric ordering, not a string compare), AND
+  -combination across conditions, a stale/renamed column reference
+  degrading gracefully rather than failing hard, and the unrecognized
+  -filter-type fallback.
+
+**A real UX bug found immediately by Mike's own testing, fixed the same
+session: the Lists panel closed itself after every single checkbox or
+filter pick.** This was pre-existing behavior (`Navigator.pop(context)`
+on every `onChanged`, dating back to the panel's original build), not
+something this session's own filter-picker addition introduced -- just
+the first time it became genuinely painful, once picking a filter became
+a second action to take per table on top of the checkbox. Mike caught it
+via a real screen recording and described the fix precisely: "the dialog
+should stay open until you click an OK button or something."
+
+**Fix:** `_showListsPanel` rebuilt around a `StatefulBuilder` holding
+local, sheet-only copies of the selected-tables set and per-table filter
+choices -- each change still persists immediately (`_persistTableSelection`/
+`_persistFilterSetSelection`, both deliberately renamed from the old
+`_toggleTable`/`_selectFilterSet` to make clear they no longer trigger a
+reload themselves), but the sheet only closes on an explicit new "Done"
+button (top-right) or the usual tap-outside/back dismissal -- and the
+calendar itself reloads exactly once, when the sheet actually closes, not
+per toggle. `_load()` was also widened to compute Filter-Set data for
+*every* eligible table, not just already-selected ones, so a table
+checked mid-session inside the still-open sheet has its filter picker
+(if it has any Filter Sets) ready immediately, with no special-casing
+needed for "newly selected this sitting" vs. "was already selected."
+
+`flutter analyze` clean, all 7 new tests plus the existing v2 regression
+set (`schema_registry_test.dart`, `generic_dao_linked_fields_test.dart`,
+`schema_metadata_dao_test.dart`, `generic_dao_insert_id_test.dart`, each
+run individually per the standing rule) pass, both `flutter build
+windows`/`apk --debug` clean, debug APK pushed to MIKE-12R at each
+checkpoint. **Mike's interactive verification: done, passed** -- "It
+works much better now." List/Kanban remain deliberately out of scope,
+per the original plan (Calendar only, for now).

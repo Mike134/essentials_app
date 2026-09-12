@@ -3,12 +3,15 @@ import 'package:flutter/material.dart';
 import '../db/generic_dao.dart';
 import '../db/schema_metadata_dao.dart';
 import '../db/schema_registry.dart';
+import '../db/theme_settings_dao.dart';
 import '../db/view_definitions_dao.dart';
 import '../models/table_config.dart';
 import '../theme/theme_controller.dart';
 import '../util/calendar_field.dart';
+import '../util/device_id.dart';
 import '../util/layout.dart';
 import '../util/saved_view_data.dart';
+import '../util/saved_view_filter.dart';
 import 'generic_form_screen.dart';
 
 /// Essentials v2 Phase 3, build order step 5 (the last one) -- the one
@@ -81,6 +84,29 @@ class _CalendarScreenState extends State<CalendarScreen> {
   List<_CalendarEntry> _entries = const [];
   bool _loading = true;
   String? _error;
+
+  ThemeSettingsDao? _settings;
+
+  /// Every selected table's own Filter Sets (`view_type == 'filter'`),
+  /// keyed by table name -- only ever populated for a table currently
+  /// checked in the "Lists" panel (an unselected table's rows are never
+  /// loaded at all, so there's nothing to filter). Backs both the Lists
+  /// panel's "does this table even offer a filter picker" check and the
+  /// picker's own dropdown items.
+  Map<String, List<ViewDefinition>> _filterSetsByTable = const {};
+
+  /// This device's current Filter Set choice per table -- `null` (or an id
+  /// no longer present in [_filterSetsByTable]) means "None", i.e. show
+  /// every row, matching the confirmed design: "If a table is chosen for
+  /// display and no filter is chosen then no filtering would occur,
+  /// otherwise the filter would control what is displayed." Persisted
+  /// per-device (`device_settings`, key [_filterSetKey]) -- a stable
+  /// choice deliberately independent of whatever the Grid's own ad hoc
+  /// filter happens to be at any moment, same reasoning that ruled out
+  /// "just show whatever the Grid currently shows" when this was designed.
+  Map<String, int?> _selectedFilterSetByTable = const {};
+
+  static String _filterSetKey(String tableName) => 'calendar_filter:$tableName';
 
   /// Deliberately **UTC-flavored**, not a plain local `DateTime(y, m, d)`
   /// -- a real, more serious bug than the "hour or so off midnight" this
@@ -185,6 +211,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
       view ??= await _createCalendarView();
       _view = view;
 
+      final settings = _settings ??= ThemeSettingsDao(deviceId: await DeviceId.resolve());
+
       final tables = await _metadata.loadActiveTables();
       final eligible = <_EligibleTable>[];
       for (final table in tables) {
@@ -197,10 +225,44 @@ class _CalendarScreenState extends State<CalendarScreen> {
       _eligible = eligible;
 
       final selectedIds = (view.config['table_ids'] as List?)?.cast<String>().toSet() ?? const <String>{};
+
+      // Filter Sets/selection are loaded for every eligible table, not just
+      // a currently-selected one -- the Lists panel now stays open across
+      // several checkbox toggles in one sitting (Mike's ask, see the
+      // "stays open until Done" rework below), so a table checked mid
+      // -session needs its Filter Set picker ready immediately, without
+      // waiting for a full reload to notice it's newly selected.
+      final filterSetsByTable = <String, List<ViewDefinition>>{};
+      final selectedFilterSetByTable = <String, int?>{};
+      for (final table in eligible) {
+        final filterSets = [
+          for (final v in await _viewsDao.loadViewsForTable(table.config.tableName))
+            if (v.viewType == 'filter') v,
+        ];
+        filterSetsByTable[table.config.tableName] = filterSets;
+
+        final savedId = await settings.loadDeviceSetting(_filterSetKey(table.config.tableName));
+        final selectedId = savedId == null ? null : int.tryParse(savedId);
+        ViewDefinition? filterSet;
+        for (final fs in filterSets) {
+          if (fs.viewId == selectedId) {
+            filterSet = fs;
+            break;
+          }
+        }
+        selectedFilterSetByTable[table.config.tableName] = filterSet?.viewId;
+      }
+      _filterSetsByTable = filterSetsByTable;
+      _selectedFilterSetByTable = selectedFilterSetByTable;
+
       final entries = <_CalendarEntry>[];
       for (final table in eligible) {
         if (!selectedIds.contains(table.config.tableName)) continue;
-        entries.addAll(await _loadEntriesFor(table));
+        final filterSetId = selectedFilterSetByTable[table.config.tableName];
+        final filterSet = filterSetId == null
+            ? null
+            : filterSetsByTable[table.config.tableName]!.firstWhere((fs) => fs.viewId == filterSetId);
+        entries.addAll(await _loadEntriesFor(table, filterSet: filterSet));
       }
 
       if (!mounted) return;
@@ -227,9 +289,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return view ?? (throw StateError('Failed to create the calendar view.'));
   }
 
-  Future<List<_CalendarEntry>> _loadEntriesFor(_EligibleTable table) async {
+  Future<List<_CalendarEntry>> _loadEntriesFor(_EligibleTable table, {ViewDefinition? filterSet}) async {
     final dao = GenericDao(table.config);
     final data = await loadSavedViewData(dao, table.config);
+    final filterRows = filterSet?.config['rows'] as List<dynamic>?;
     final colorField = _colorField(table.config);
     // Falls back to the first real field by position when the table's own
     // displayColumn heuristic lands on the bare "id" (no NOT NULL/UNIQUE
@@ -243,6 +306,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
     final entries = <_CalendarEntry>[];
     for (final row in data.rows) {
+      if (filterRows != null && !rowMatchesFilterSet(table.config, data, row, filterRows)) continue;
       final DateTime? start;
       final DateTime? end;
       if (table.calendarField.isRange) {
@@ -283,17 +347,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return null;
   }
 
-  Future<void> _toggleTable(String tableName, bool selected) async {
-    final view = _view;
-    if (view == null) return;
-    final current = (view.config['table_ids'] as List?)?.cast<String>().toSet() ?? <String>{};
-    if (selected) {
-      current.add(tableName);
-    } else {
-      current.remove(tableName);
-    }
-    await _viewsDao.updateViewConfig(view.viewId, {'table_ids': current.toList()});
-    _load();
+  /// Persists this one toggle only -- deliberately does **not** reload the
+  /// calendar itself. The Lists panel stays open across several toggles in
+  /// one sitting now (see [_showListsPanel]'s own doc comment for why),
+  /// so a full `_load()` per checkbox would be wasted work mid-session;
+  /// the panel reloads exactly once, when it actually closes.
+  Future<void> _persistTableSelection(int viewId, Set<String> tableIds) =>
+      _viewsDao.updateViewConfig(viewId, {'table_ids': tableIds.toList()});
+
+  /// `viewId: null` means "None" -- no filtering, show every row, per the
+  /// confirmed design. Per-device, per-table, via the same generic
+  /// `device_settings` key/value accessor every other per-device choice in
+  /// this app already uses (font size, grid row heights, ...) -- no new
+  /// dao needed. Same "persist only, the panel reloads once on close"
+  /// reasoning as [_persistTableSelection].
+  Future<void> _persistFilterSetSelection(String tableName, int? viewId) async {
+    final settings = _settings ??= ThemeSettingsDao(deviceId: await DeviceId.resolve());
+    await settings.setDeviceSetting(_filterSetKey(tableName), viewId?.toString());
   }
 
   void _shift(int amount) {
@@ -345,7 +415,30 @@ class _CalendarScreenState extends State<CalendarScreen> {
     _load();
   }
 
+  /// Stays open across as many checkbox/filter changes as Mike wants to
+  /// make in one sitting, closing only on an explicit "Done" (or the usual
+  /// tap-outside/back dismissal) -- **not** on every single toggle, which
+  /// is what it used to do. Found live, via a real screen recording: with
+  /// several tables to select, closing and having to reopen the panel for
+  /// every one checkbox (then again for every filter picked) was
+  /// genuinely tedious, not just a minor rough edge.
+  ///
+  /// Local, sheet-only mutable copies ([localSelectedIds]/
+  /// [localFilterSelections]) drive what's actually displayed -- each
+  /// change still persists immediately (so nothing is lost if the sheet
+  /// gets dismissed some other way, e.g. the Android back button), but the
+  /// *calendar itself* only reloads once, when the sheet actually closes
+  /// ([_load] at the very end) -- reloading on every single toggle would
+  /// be wasted work while the panel is still open and more changes are
+  /// likely coming.
   Future<void> _showListsPanel() async {
+    final view = _view;
+    if (view == null) return;
+
+    final localSelectedIds =
+        (view.config['table_ids'] as List?)?.cast<String>().toSet() ?? <String>{};
+    final localFilterSelections = Map<String, int?>.from(_selectedFilterSetByTable);
+
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -361,50 +454,99 @@ class _CalendarScreenState extends State<CalendarScreen> {
       // on screen with a real scrollbar for anything that doesn't.
       constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.6),
       builder: (context) {
-        final selectedIds = (_view?.config['table_ids'] as List?)?.cast<String>().toSet() ?? const <String>{};
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            // Deliberately no `mainAxisSize: MainAxisSize.min` here --
-            // that would conflict with the `Expanded` list below (a flex
-            // child needs the Column to actually claim the full bounded
-            // height the `constraints:` above gives it, not shrink-wrap
-            // to content). The empty-state branch below wastes a little
-            // vertical space as a result, an acceptable trade-off for a
-            // rare edge case (a personal db with zero date-bearing tables).
-            child: Column(
-              children: [
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: Text('Lists', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                if (_eligible.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Text('No tables have a date/dateTime field yet.'),
-                  )
-                else
-                  Expanded(
-                    child: ListView(
-                      children: [
-                        for (final table in _eligible)
-                          CheckboxListTile(
-                            title: Text(table.config.displayName),
-                            value: selectedIds.contains(table.config.tableName),
-                            onChanged: (v) {
-                              Navigator.pop(context);
-                              _toggleTable(table.config.tableName, v ?? false);
-                            },
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                // Deliberately no `mainAxisSize: MainAxisSize.min` here --
+                // that would conflict with the `Expanded` list below (a
+                // flex child needs the Column to actually claim the full
+                // bounded height the `constraints:` above gives it, not
+                // shrink-wrap to content). The empty-state branch below
+                // wastes a little vertical space as a result, an
+                // acceptable trade-off for a rare edge case (a personal db
+                // with zero date-bearing tables).
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Lists', style: TextStyle(fontWeight: FontWeight.bold)),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Done'),
                           ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-              ],
-            ),
-          ),
+                    if (_eligible.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text('No tables have a date/dateTime field yet.'),
+                      )
+                    else
+                      Expanded(
+                        child: ListView(
+                          children: [
+                            for (final table in _eligible) ...[
+                              CheckboxListTile(
+                                title: Text(table.config.displayName),
+                                value: localSelectedIds.contains(table.config.tableName),
+                                onChanged: (v) {
+                                  setSheetState(() {
+                                    if (v ?? false) {
+                                      localSelectedIds.add(table.config.tableName);
+                                    } else {
+                                      localSelectedIds.remove(table.config.tableName);
+                                    }
+                                  });
+                                  _persistTableSelection(view.viewId, localSelectedIds);
+                                },
+                              ),
+                              // Only offered for a table that's both
+                              // currently checked *and* has at least one
+                              // saved Filter Set -- "eligibility, not
+                              // error states," same as the outer
+                              // date/dateTime-field check the whole Lists
+                              // panel already applies to which tables show
+                              // up here at all.
+                              if (localSelectedIds.contains(table.config.tableName) &&
+                                  (_filterSetsByTable[table.config.tableName]?.isNotEmpty ?? false))
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 32, right: 16, bottom: 8),
+                                  child: DropdownButtonFormField<int?>(
+                                    initialValue: localFilterSelections[table.config.tableName],
+                                    decoration: const InputDecoration(labelText: 'Filter', isDense: true),
+                                    items: [
+                                      const DropdownMenuItem<int?>(value: null, child: Text('None')),
+                                      for (final filterSet in _filterSetsByTable[table.config.tableName]!)
+                                        DropdownMenuItem<int?>(
+                                          value: filterSet.viewId,
+                                          child: Text(filterSet.displayName),
+                                        ),
+                                    ],
+                                    onChanged: (viewId) {
+                                      setSheetState(() => localFilterSelections[table.config.tableName] = viewId);
+                                      _persistFilterSetSelection(table.config.tableName, viewId);
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
+    _load();
   }
 
   Future<void> _showDayDetail(DateTime day, List<_CalendarEntry> entries) async {
