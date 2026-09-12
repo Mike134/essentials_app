@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../db/view_definitions_dao.dart';
+import '../util/view_type_style.dart';
 
 /// Essentials v2 Phase 3, build order step 4 -- view management polish:
 /// drag-to-reorder the tabs [ViewSwitcherBar] shows, plus rename/delete/
@@ -177,9 +178,9 @@ class _ManageViewsScreenState extends State<ManageViewsScreen> {
                     for (final view in active)
                       ListTile(
                         key: ValueKey(view.viewId),
-                        leading: Icon(_viewTypeIcon(view.viewType)),
+                        leading: Icon(viewTypeIcon(view.viewType)),
                         title: Text(view.displayName),
-                        subtitle: Text(_viewTypeLabel(view.viewType)),
+                        subtitle: Text(viewTypeLabel(view.viewType)),
                         onTap: () => _rename(view),
                         trailing: IconButton(
                           icon: const Icon(Icons.delete_outline),
@@ -199,7 +200,7 @@ class _ManageViewsScreenState extends State<ManageViewsScreen> {
                     for (final view in deleted)
                       ListTile(
                         title: Text(view.displayName),
-                        subtitle: Text(_viewTypeLabel(view.viewType)),
+                        subtitle: Text(viewTypeLabel(view.viewType)),
                         trailing: TextButton(
                           onPressed: () => _restore(view),
                           child: const Text('Restore'),
@@ -215,20 +216,3 @@ class _ManageViewsScreenState extends State<ManageViewsScreen> {
     );
   }
 }
-
-/// Was a bare `view.viewType == 'kanban' ? Icons... : Icons...` ternary --
-/// silently mislabeled every non-Kanban view as "List", Filter Sets
-/// (`view_type == 'filter'`) included, once those existed. A real
-/// `switch` covers every current type explicitly rather than assuming
-/// "not Kanban" only ever means "List".
-IconData _viewTypeIcon(String viewType) => switch (viewType) {
-  'kanban' => Icons.view_column_outlined,
-  'filter' => Icons.filter_alt_outlined,
-  _ => Icons.view_list_outlined,
-};
-
-String _viewTypeLabel(String viewType) => switch (viewType) {
-  'kanban' => 'Kanban',
-  'filter' => 'Filter Set',
-  _ => 'List',
-};

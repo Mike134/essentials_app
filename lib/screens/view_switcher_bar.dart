@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../db/sync_service.dart';
 import '../db/view_definitions_dao.dart';
+import '../util/view_type_style.dart';
 import 'manage_views_screen.dart';
 
 /// Shared chrome rendered as each per-table screen's own `AppBar.bottom`
@@ -269,6 +270,7 @@ class _ViewSwitcherBarState extends State<ViewSwitcherBar> {
                       onLongPress: () => _showViewMenu(view),
                       onSecondaryTap: () => _showViewMenu(view),
                       child: ChoiceChip(
+                        avatar: Icon(viewTypeIcon(view.viewType), size: 16),
                         label: Text(view.displayName),
                         selected: widget.currentViewId == view.viewId,
                         onSelected: (_) => widget.onViewSelected(view),
@@ -310,7 +312,7 @@ class _ViewSwitcherBarState extends State<ViewSwitcherBar> {
                         // way a Grid/List/Kanban tab is, so it's never
                         // shown as "selected".
                         child: ActionChip(
-                          avatar: const Icon(Icons.filter_alt_outlined, size: 16),
+                          avatar: Icon(viewTypeIcon(filterSet.viewType), size: 16),
                           label: Text(filterSet.displayName),
                           onPressed: () => widget.onFilterSetSelected!(filterSet),
                         ),
