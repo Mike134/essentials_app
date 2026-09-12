@@ -9191,3 +9191,137 @@ build apk --debug` both clean, debug APK pushed to MIKE-12R.
 read clearly, consistently sized, still visibly smaller than the value
 text, matching the ~90% target. Both this fix and the underlying
 label-consistency fix above are confirmed working, not just build-verified.
+
+## Light scheduling session (2026-09-12): Agenda's recurring-reminder engine confirmed live on both platforms -- and a real, serious sync bug found and fixed along the way
+
+Mike's own framing to start the session: see what the app's current state
+(schema engine, Calendar view, scripting/scheduled-events, the real
+`Agenda` table he's already been using as a live test bed) already gives
+for free, before designing anything new.
+
+**Correction to the note this section originally carried:** `Agenda` has
+no separate free-form "Period" field -- that was Code's own misreading of
+`field_name` (the physical column, `period`) instead of `display_name`
+("When"). The real, live shape already has all four fields
+`RecurringReminderFields`/`recurring_reminder_fields.dart` looks for --
+`Start` (dateTime), `Timeframe` (linked), `When` (physical column
+`period`), `Notify` (boolean) -- plus the optional `Remind (Minutes
+Before)`. **The recurring-reminder engine (`RecurringReminderService`,
+built in an earlier v2 session, `claude/essentials-v2-agenda-scheduling-
+design.md`) was already fully wired and had already fired correctly for
+both of Mike's two real Agenda rows on MIKE-CU** the very morning this
+session started -- "light scheduling" turned out to mean *verifying* an
+already-built feature, not building one.
+
+### The real bug: MIKE-12R (and `hub.db`) were 220 migrations stuck behind CU, and `Agenda` had silently vanished from 12R's nav because of it
+
+Mike reported "Agenda doesn't even show up on 12R" mid-session -- root
+cause confirmed directly via `adb pull` + `PRAGMA table_info`, not
+guessed: 12R's physical `agenda` table was missing the `notify`/
+`remind_minutes_before` columns entirely, even though `field_definitions`
+declared both. `SchemaRegistry.buildConfig` correctly refuses to render a
+table with this exact drift (`SchemaValidationException`, confirmed live
+in logcat: `field_definitions declares "agenda.notify" but no matching
+physical column exists on this device`) -- so `Agenda` wasn't broken, it
+was just entirely, silently skipped from nav, exactly the behavior
+`table_registry.dart`'s own doc comment says it should do for one broken
+table (this just happened to be the one table Mike was actively using).
+
+**Root cause: the same `crdt_sync` batch-atomicity bug this project has
+hit repeatedly (Phase 3, Phase 4, Phase 6, Phase 7's own write-ups all
+document earlier occurrences) -- confirmed this time to have genuinely
+stalled the hub, not just one device.** The batch containing the `Notify`/
+`Remind (Minutes Before)` `ADD COLUMN` migrations (and the real Agenda
+row data referencing those columns, bundled in the same all-or-nothing
+merge transaction) failed against `hub.db` and rolled back entirely --
+taking the migration_log rows down with it and permanently stalling
+**every** migration authored after that point, not just the two that
+actually caused it. By the time this was found, CU had continued
+authoring 220 more migrations locally (mostly harmless `RecurringReminder
+Service` unit-test residue -- `rrsvc_*` throwaway tables -- plus some real
+schema work), none of which had ever reached `hub.db` or MIKE-12R.
+Confirmed directly: both `hub.db` and 12R's own local copy were stuck at
+the exact same `migration_log.id` tip, matching exactly.
+
+**Fix, using the existing recovery playbook (`tool/adopt_migrations
+.dart`), not a new mechanism:** stopped the server (the full process
+tree -- `tray_host.ps1` and its `server.exe` child both, per this
+project's own documented `taskkill`-leaks-the-tray-icon gotcha), replayed
+all 222 stuck migrations (`notify`/`remind_minutes_before`'s own two,
+plus the 220 that piled up behind them) directly onto both `hub.db`
+(device identity `server`) and a pulled copy of 12R's `essentials.db`
+(device identity `MIKE-12R`), pushed the corrected file back to 12R
+(force-stopped first, stale `-wal`/`-shm` cleared, pulled back and
+byte-diffed identical before trusting it), and restarted the server.
+Confirmed clean afterward: `PRAGMA integrity_check: ok` on both copies,
+`hub.db`'s migration tip now matches CU's exactly, both real Agenda rows'
+row data merged correctly once CU reconnected, and 12R's own logcat no
+longer shows the `SchemaValidationException` for `agenda` at all.
+
+**One originally-real diagnostic mistake, corrected mid-recovery:** the
+first migration-id range picked for adoption (`id > <remind_minutes
+_before's own id>`) accidentally excluded the two root-cause migrations
+themselves (a boundary-off-by-one), so the first replay pass left `hub
+.db` still missing the `notify`/`remind_minutes_before` columns even
+after "successfully" adopting 220 migrations. Caught immediately by
+re-checking `PRAGMA table_info(agenda)` after the first pass rather than
+assuming success from the tool's own clean exit -- fixed by adopting
+those two ids explicitly afterward, in the same run's spirit.
+
+**A second, transient false alarm during verification, root-caused before
+reacting to it:** a `PRAGMA integrity_check` against a pulled copy of
+12R's live db returned "database disk image is malformed" twice in a
+row, with the file's own header declaring more pages than the physical
+file actually contained. Concerning at first, but re-tested properly
+before assuming real corruption: force-stopping the app, quiescing it,
+and re-pulling **main file + `-wal` + `-shm` together** (rather than the
+main file alone) came back with a clean `integrity_check: ok` and
+correct data both times afterward. Conclusion: a race between `adb pull`
+and the app's own live WAL-checkpoint activity on a scoped-storage FUSE
+path -- a main-file-only pull mid-checkpoint isn't a safe, atomic
+snapshot on this device, matching a risk this project's own "WAL
+interaction" section (further above) has already flagged in the abstract
+("the discipline still very much applies to anything that reads the file
+directly instead of through SQL") but hadn't previously hit this
+concretely. **Worth remembering for any future live-device db pull done
+while the app is actively running:** always pull `-wal`/`-shm` alongside
+the main file, and don't trust a main-file-only integrity check taken
+mid-session as proof of real corruption -- reproduce it with the full
+three-file set, or with the app fully quiesced, before treating it as
+anything more than a snapshot race.
+
+### Separate finding: the alarm never actually arms without a live device recheck of the exact-alarm permission
+
+Even after the schema fix, the very next relaunch on 12R armed no alarm
+at all for either overdue Agenda reminder -- `adb shell dumpsys alarm`
+showed nothing for the package, and `adb shell dumpsys alarm`'s own
+`Last OP_SCHEDULE_EXACT_ALARM` table showed 12R's uid at `default`, not
+`allow`. Rather than trust that ambiguous CLI signal, opened the real
+system settings screen directly via `adb shell am start -a android
+.settings.REQUEST_SCHEDULE_EXACT_ALARM -d package:<app>` and had Mike
+confirm on-device: the "Alarms & reminders" toggle was genuinely on. A
+plain relaunch after that (no code change, no toggle change from Mike)
+armed a real `Alarm clock:` entry immediately and fired both overdue
+reminders correctly within seconds -- confirmed by Mike getting the two
+real notifications, and by `device_settings` recording both occurrences
+at their exact correct times (`08:30:00`/`09:51:00`) plus a fresh, healthy
+`bg_check:last_success_at`. **Not fully root-caused** -- whether this was
+a stale/cached `appops` read on Code's side, or something about the
+settings screen itself needing to be opened once to "wake up" the grant
+for this app, is unclear and wasn't chased further given the toggle was
+confirmed genuinely on the whole time. Worth remembering if a future
+device's alarm silently never arms despite the settings toggle looking
+correct: try relaunching the app immediately after visiting that same
+system settings screen, not just confirming the toggle from a distance.
+
+**Session outcome:** both real Agenda rows (weekly `{"weekday":6}` and
+daily) are confirmed firing correctly, independently, on both MIKE-CU and
+MIKE-12R, with `hub.db` and 12R's own database fully caught up to CU's
+migration tip. No code changes were needed -- this was entirely a data-
+recovery session plus one on-device permission check, not a build.
+
+**Next session:** not yet decided. The original "light scheduling" design
+question (whether anything beyond the already-working recurring-reminder
+engine is wanted -- e.g. a real design pass on top of Calendar/scripting/
+`link_record` for something more than reminders) is still open, unless
+Mike's own real usage of `Agenda` as-is turns out to be enough.
