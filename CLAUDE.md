@@ -9535,10 +9535,9 @@ fired normally. Editing a filter is unaffected -- still reached via the
 column's own "≡"/right-click menu -> `filter_editor_dialog.dart`, exactly
 as before.
 
-`flutter analyze` clean, `flutter build windows`/`apk --debug` both
-clean, debug APK pushed to MIKE-12R. Not yet Mike-tested interactively --
-next: confirm a filtered column now shows the small filter icon on both
-platforms, and confirm tapping directly on that icon does nothing (no
-stock TrinaGrid popup), while the column's own menu still opens this
-app's filter editor correctly.
-Month/Year math lands where expected.
+`flutter analyze` clean, `flutter build windows`/`apk --debug` both clean,
+debug APK pushed to MIKE-12R.
+
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R** -- a filtered column shows the small filter icon again, and
+tapping it does nothing (no stock TrinaGrid popup reappeared).
