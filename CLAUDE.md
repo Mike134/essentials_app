@@ -10238,9 +10238,6 @@ of labor as every other UI-level grid feature in this project.
 `flutter analyze` clean, `flutter build windows`/`apk --debug` both
 clean, debug APK pushed to MIKE-12R.
 
-**Build-verified only -- not yet Mike-tested interactively.** Next:
-confirm on Agenda's grid that the "Next" button appears (bigger than the
-link icon, centered), that clicking it runs the script exactly like the
-form's button does (including the duplicate-abort message), and that the
-newly-created row shows up in the grid immediately via the existing
-live-refresh fix.
+**Mike's interactive verification on MIKE-CU: done, passed.** "Very
+nice!!" -- the button appears correctly sized and centered, and works
+exactly like the form's version.
