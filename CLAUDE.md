@@ -9620,6 +9620,33 @@ test's own tagged rows are present only as tombstones (`is_deleted = 1`),
 `PRAGMA integrity_check: ok`.
 
 **Mike's interactive verification on MIKE-CU: done, passed** -- both
-"Sort groups A-Z" and drag-reordering work. MIKE-12R not yet re-checked --
-next: F5/relaunch there to confirm the schema change and the group order
-itself both sync correctly.
+"Sort groups A-Z" and drag-reordering work.
+
+**MIKE-12R hit the recurring `crdt_sync` batch-atomicity bug, recovered
+via the existing playbook -- the fourth documented occurrence, not a new
+one.** `table_group_order`'s own `migration_log` row and its first row of
+real data (the "Ungrouped" position) arrived at both the server and
+MIKE-12R bundled in one all-or-nothing changeset. Neither peer had the
+physical table yet at that instant, so `sql_crdt`'s merge threw
+`ON CONFLICT ()` (no cached PK info for a table it doesn't have) and
+rolled back the *entire* batch, migration row included -- confirmed
+directly via the server's own log, not guessed. MIKE-12R surfaced this as
+a hard crash on launch (`SqfliteFfiException ... no such table:
+table_group_order`) from `SidebarGroupingDao.loadGroupOrder()`, since
+nothing gates that call on the table actually existing yet.
+
+**Recovered with `tool/adopt_migrations.dart`, exactly as documented for
+the three prior occurrences (Phase 3's `view_definitions`/`kanban_test`/
+`calendar_test`) -- no code fix needed, the existing recovery tool
+handled it.** Stopped the server (full process tree -- tray host +
+`server.exe`, per the project's own documented `taskkill`-leaks-the-tray-
+icon gotcha), adopted the migration directly onto `hub.db` under device
+id `server` (confirmed the physical table then existed there with the
+correct schema), restarted the server, then pulled MIKE-12R's own
+`essentials.db`, adopted the same migration onto it under device id
+`MIKE-12R`, pushed it back, and confirmed the round-trip landed
+byte-identical before relaunching the app there.
+
+**Mike's interactive verification on MIKE-12R: done, passed** -- launches
+clean, group order synced correctly. Both platforms now confirmed
+end-to-end.
