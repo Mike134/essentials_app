@@ -10170,9 +10170,8 @@ is healthy again -- resetting restart streak," streak correctly reset to
 registration), so the alert during the crash test would have shown a
 real toast, not just the Event Log fallback.
 
-**Not yet registered as a running scheduled task** -- `register_hub_
-watchdog.ps1` needs a one-time elevated run, same as the existing
-watchdog's own registration script, before this actually runs
-unattended. Everything up to that point (the script's own logic, all
-three states) is confirmed working; registration itself just hasn't been
-done yet.
+**Registered and running.** Mike ran `register_hub_watchdog.ps1`
+(elevated) -- `EssentialsAppHubWatchdog` is now a live Scheduled Task,
+checking every 5 minutes, unattended. All three follow-ups from this
+incident (the race fix, the watchdog script itself, and getting it
+actually registered) are done.
