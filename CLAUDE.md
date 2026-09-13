@@ -10250,4 +10250,10 @@ below it, by 100%. Both copies (`_buildRailChildren`'s rail divider and
 `_buildDrawer`'s drawer divider, `home_shell.dart`) went from `height: 1`
 to `height: 2` -- a literal doubling of `Divider`'s own space-allocation
 property. `flutter analyze` clean, both builds clean, debug APK pushed to
-MIKE-12R. Not yet Mike-tested interactively.
+MIKE-12R.
+
+**Mike's interactive verification on MIKE-CU: done, passed** -- then
+asked for "an additional 200%" on top of that (2 -> 6, i.e. `height: 2`
+plus 200% of itself). Both copies updated again, same reasoning,
+`flutter analyze`/both builds clean, debug APK pushed to MIKE-12R. Not
+yet Mike-tested interactively at this new size.
