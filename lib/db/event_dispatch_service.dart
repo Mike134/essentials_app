@@ -9,6 +9,7 @@ import '../util/scripting/script_api_runtime.dart';
 import 'database_helper.dart';
 import 'generic_dao.dart';
 import 'schema_registry.dart';
+import 'sync_service.dart';
 
 /// Essentials v2 Phase 5 build order step 4 -- the foreground, in-app
 /// event wiring: finds every enabled `event_definitions` row matching a
@@ -163,6 +164,9 @@ class EventDispatchService {
       recordId: recordId,
     );
     for (final result in results) {
+      if (result.touchedTables.isNotEmpty) {
+        SyncService.notifyLocalDataChange(result.touchedTables);
+      }
       if (!context.mounted) return;
       for (final message in result.effects.notifications) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));

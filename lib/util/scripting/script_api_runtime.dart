@@ -75,10 +75,25 @@ class ScriptEffects {
 /// timed out partway through (whatever ran before the failure still
 /// happened).
 class ScriptRunResult {
-  const ScriptRunResult({required this.outcome, this.effects = const ScriptEffects()});
+  const ScriptRunResult({
+    required this.outcome,
+    this.effects = const ScriptEffects(),
+    this.touchedTables = const {},
+  });
 
   final JsExecutionOutcome outcome;
   final ScriptEffects effects;
+
+  /// Every table a successful write (`record.save()`/`.delete()`,
+  /// `table().create()`) actually landed in -- empty if the script made no
+  /// writes, or if the writes failed (nothing to report as changed).
+  /// [EventDispatchService] uses this to tell an already-open Grid/List/
+  /// Kanban screen to reload, the same way it already does for a change
+  /// synced in from another device (`SyncService.dataChanges`) -- a
+  /// script-driven local write was never wired into that signal before,
+  /// so a button-created record only ever showed up after leaving and
+  /// returning to the table (found live: Mike's own "Next" button test).
+  final Set<String> touchedTables;
 }
 
 /// Essentials v2 Phase 5 build order step 3 -- the real `record`/`table`/
@@ -177,7 +192,7 @@ class ScriptApiRuntime {
           : reply.error != null
           ? JsExecutionOutcome.failure(reply.error!)
           : JsExecutionOutcome.ok(reply.value);
-      return ScriptRunResult(outcome: outcome, effects: reply.effects);
+      return ScriptRunResult(outcome: outcome, effects: reply.effects, touchedTables: reply.touchedTables);
     } on TimeoutException {
       return ScriptRunResult(outcome: JsExecutionOutcome.timeout());
     } finally {
@@ -198,17 +213,27 @@ class _ScriptIsolateRequest {
 }
 
 class _ScriptIsolateReply {
-  const _ScriptIsolateReply({this.value, this.error, this.timedOut = false, this.effects = const ScriptEffects()});
+  const _ScriptIsolateReply({
+    this.value,
+    this.error,
+    this.timedOut = false,
+    this.effects = const ScriptEffects(),
+    this.touchedTables = const {},
+  });
   final String? value;
   final String? error;
   final bool timedOut;
   final ScriptEffects effects;
+  final Set<String> touchedTables;
 }
 
-abstract class _PendingWrite {}
+abstract class _PendingWrite {
+  String get table;
+}
 
 class _SaveRecord implements _PendingWrite {
   _SaveRecord(this.table, this.id, this.fields);
+  @override
   final String table;
   final int id;
   final Map<String, Object?> fields;
@@ -216,12 +241,14 @@ class _SaveRecord implements _PendingWrite {
 
 class _DeleteRecord implements _PendingWrite {
   _DeleteRecord(this.table, this.id);
+  @override
   final String table;
   final int id;
 }
 
 class _CreateRow implements _PendingWrite {
   _CreateRow(this.table, this.fields);
+  @override
   final String table;
   final Map<String, Object?> fields;
 }
@@ -239,13 +266,14 @@ void _runInIsolate(_ScriptIsolateRequest request) async {
   final recordTable = request.context.recordTable;
   final recordId = request.context.recordId;
 
-  void reply({String? value, String? error, bool timedOut = false}) {
+  void reply({String? value, String? error, bool timedOut = false, Set<String> touchedTables = const {}}) {
     request.replyTo.send(
       _ScriptIsolateReply(
         value: value,
         error: error,
         timedOut: timedOut,
         effects: ScriptEffects(notifications: notifications, navigations: navigations),
+        touchedTables: touchedTables,
       ),
     );
   }
@@ -286,7 +314,10 @@ void _runInIsolate(_ScriptIsolateRequest request) async {
       }
     }
 
-    reply(value: result.stringResult);
+    reply(
+      value: result.stringResult,
+      touchedTables: {for (final write in pendingWrites) write.table},
+    );
   } catch (e) {
     reply(error: e.toString());
   } finally {

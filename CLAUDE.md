@@ -9887,3 +9887,58 @@ real on a live Agenda record, including the duplicate-abort path (press
 Next twice in a row on the same record without deleting the first result,
 confirm the second press aborts with the expected message rather than
 creating a second duplicate).
+
+### Real bug, found by Mike's own live test: a script-created row never showed up in an already-open Grid until leaving and returning
+
+Mike wired the script up and confirmed it works correctly, duplicate-abort
+message included -- but the new row created by `table('Agenda').create()`
+never appeared in the Grid sitting behind the still-open form until he
+navigated away from Agenda and back.
+
+**Root cause:** `GenericListScreen` already has a live-refresh
+subscription to `SyncService.dataChanges` (built during Phase 4's own
+findings -- "Grids didn't refresh live when another device changed the
+same table's data"), but that stream is deliberately fed *only* by
+changesets received from a remote peer (`EventDispatchService`'s own doc
+comment already states this explicitly, as a considered decision, not an
+oversight -- wiring foreground data events to it would misfire for every
+row a reconnect happens to pull in). A script-driven local write
+(`record.save()`/`.delete()`, `table().create()`) never went through that
+path at all, so nothing ever told an already-open Grid/List/Kanban screen
+showing the same table that its data had changed underneath it -- the
+"sync itself works, this screen's own reactivity doesn't" gap already
+found and fixed for remote changes, just never extended to a *local*
+script-driven write.
+
+**Fix, not a new mechanism -- wiring an existing one that was already
+built for exactly this shape of problem.** `SyncService
+.notifyLocalDataChange(Set<String>)` already existed (built for a
+different local-write case -- saving a Filter Set from a widget with no
+direct reference to the screen that needed to know). `ScriptRunResult`
+gained a new `touchedTables` field -- every table a script's writes
+actually landed in, computed from each queued `_PendingWrite`'s own
+`table` (each of `_SaveRecord`/`_DeleteRecord`/`_CreateRow` already carries
+it, now exposed via a shared `_PendingWrite.table` getter), populated only
+after `_applyPendingWrites` succeeds (empty, correctly, when writes fail
+or when the script made none at all). `EventDispatchService
+.dispatchAndApplyEffects` now calls `SyncService.notifyLocalDataChange`
+with each result's `touchedTables` -- `GenericListScreen`'s *existing*
+subscription picks this up with zero changes to that screen at all, since
+`notifyLocalDataChange` feeds the exact same stream a remote change
+already does.
+
+6 new/extended tests in `test/script_api_runtime_test.dart` (23 total) --
+`touchedTables` populated for `record.save()`/`.delete()`/
+`table().create()` individually, empty for a script with no writes,
+and (the actual motivating shape) a single script that both saves its
+own bound record *and* creates a row in a *different* table via
+`table().create()`, confirming both distinct tables are reported, not
+just the bound record's own. `event_dispatch_service_test.dart` (6
+tests) re-confirmed unaffected. `flutter analyze` clean, `flutter build
+windows`/`apk --debug` both clean, debug APK pushed to MIKE-12R. Live db
+confirmed clean afterward -- `PRAGMA integrity_check: ok`, zero leaked
+test tables.
+
+**Build-verified only -- not yet Mike-tested interactively.** Next:
+confirm the same "Next" button test on MIKE-CU now shows the new row in
+the Grid immediately, with no need to leave and return to the table.

@@ -67,6 +67,7 @@ void main() {
     expect(result.outcome.succeeded, isTrue);
     final rows = await db.query('SELECT "$notesField" AS v FROM "$tableName" WHERE id = ?1', [id]);
     expect(rows.single['v'], 'from script');
+    expect(result.touchedTables, {tableName});
   });
 
   test('record.delete soft-deletes the real row', () async {
@@ -85,6 +86,7 @@ void main() {
     expect(result.outcome.succeeded, isTrue);
     final rows = await db.query('SELECT is_deleted FROM "$tableName" WHERE id = ?1', [id]);
     expect(rows.single['is_deleted'], 1);
+    expect(result.touchedTables, {tableName});
   });
 
   test('table(x).all()/.find() see real, currently-committed rows', () async {
@@ -153,6 +155,41 @@ void main() {
     final rows = await db.query('SELECT "$labelField" AS v FROM "$tableName" WHERE is_deleted = 0');
     expect(rows, hasLength(1));
     expect(rows.single['v'], 'created by script');
+    expect(result.touchedTables, {tableName});
+  });
+
+  test('touchedTables is empty when a script makes no writes at all', () async {
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run("notify('hi');", databasePath: databasePath);
+
+    expect(result.outcome.succeeded, isTrue);
+    expect(result.touchedTables, isEmpty);
+  });
+
+  test('touchedTables covers every distinct table a script writes to, not just the bound record\'s own', () async {
+    // The real motivating case: EventDispatchService.dispatchAndApplyEffects
+    // uses this to tell an already-open Grid to reload -- found live, Mike's
+    // own "Next" button test: a script bound to one table's button field
+    // created a row in that same table via table().create(), and the Grid
+    // behind the still-open form never refreshed until leaving and
+    // returning. Covers both the bound-record write path (record.save) and
+    // the table().create() path in one script, on two different tables.
+    final boundTable = await createTestTable('Script Touched Bound');
+    final otherTable = await createTestTable('Script Touched Other');
+    await editor.addField(tableName: boundTable, displayName: 'Notes', format: 'text');
+    final notesField = await physicalFieldName(boundTable, 'Notes');
+    final config = await registry.buildConfig(boundTable);
+    final id = await GenericDao(config).insert({notesField: 'original'});
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "record.set('$notesField', 'changed'); record.save(); table('$otherTable').create({});",
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: boundTable, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    expect(result.touchedTables, {boundTable, otherTable});
   });
 
   test('notify/navigate calls are captured as effects, not dispatched', () async {
