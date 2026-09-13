@@ -68,11 +68,20 @@ FutureOr<CrdtChangeset> safeChangesetBuilder(
   Hlc? modifiedOn,
   Hlc? modifiedAfter,
 }) {
-  return crdt.getChangeset(
-    onlyTables: onlyTables,
-    onlyNodeId: onlyNodeId,
-    exceptNodeId: exceptNodeId,
-    modifiedOn: modifiedOn,
+  // Shares MigrationService.schemaLock with applyPending() -- the real
+  // fix for a genuine server crash found live, 2026-09-13 (CLAUDE.md
+  // "Incident: the sync server crash-looped for real"). See that lock's
+  // own doc comment: Crdt.getChangeset() lists tables then queries each
+  // one separately, not atomically, so a concurrent DROP TABLE from this
+  // server's own migration-apply DDL could make a table vanish between
+  // those two steps and crash the process outright.
+  return MigrationService.schemaLock.synchronized(
+    () => crdt.getChangeset(
+      onlyTables: onlyTables,
+      onlyNodeId: onlyNodeId,
+      exceptNodeId: exceptNodeId,
+      modifiedOn: modifiedOn,
+    ),
   );
 }
 

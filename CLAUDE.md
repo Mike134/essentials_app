@@ -10044,3 +10044,135 @@ earlier (script works, duplicate-abort works, Grid live-refresh works);
 **MIKE-12R now confirmed too** -- the Next button is visible and
 functional there as well. The whole recurrence-advancement feature (this
 session's original ask) is done and working end-to-end on both devices.
+
+## Both follow-ups from the crash incident, done for real: the race itself fixed at the code level, plus a real hub-liveness watchdog
+
+Mike's own two asks, same session: fix the `applyPending`/`getChangeset`
+race properly (not just drain the backlog that triggered it once), and
+he specifically recalled expecting a process that already monitors the
+hub for a crash -- confirmed by search that no such thing existed;
+`background_check_watchdog.ps1` only ever monitored *scheduled-script*
+health (`bg_check:*` device_settings), never the sync server's own
+process liveness. Both built this pass.
+
+### The race, root-caused for real by reading `sql_crdt`'s own source
+
+`SqliteCrdt.getTables()` (confirmed by reading the package directly, not
+guessed) queries `sqlite_schema` **fresh, live, uncached** on every call
+-- ruling out the "stale in-memory cache" theory the `table_group_order`
+incident earlier this session had trained toward. The real mechanism:
+`Crdt.getChangeset()` calls `getTables()` (one query), then issues a
+**separate** `SELECT * FROM` for each table returned -- two steps, not
+one atomic snapshot. If `MigrationService.applyPending()`'s own
+CREATE-then-DROP DDL sequence drops a table in the gap between those two
+steps, the per-table query throws `no such table` -- and since nothing
+in `crdt_sync`'s own connection handling catches a failure from the
+`changesetBuilder` callback itself (unlike a failed *merge*, which it
+does catch and silently swallow), that's an **unhandled exception,
+killing the whole process**. A genuine time-of-check-to-time-of-use race,
+confirmed against real timestamps (`migration_status.attempted_at` for
+the crashing table's CREATE/DROP pair, both freshly applied the same
+session, milliseconds apart) rather than assumed.
+
+**A different bug from the earlier `table_group_order` incident this
+same session**, worth keeping distinct even though both involve
+`sql_crdt`/schema-change races: that one was the already-documented
+batch-atomicity gap (new table + its first row bundled in one changeset,
+rolled back when the peer doesn't have the physical table yet --
+`tool/adopt_migrations.dart`'s own doc comment). This one is
+`MigrationService`'s own DDL racing `getChangeset()`'s two-step read --
+a mirror image of the *already-fixed* "database is locked" race between
+`MigrationService` and `crdt_sync`'s own incoming merge (`_attempt`'s
+lock-retry logic, "Real-device final verification pass") -- same general
+family (the live-apply trigger creating concurrency surfaces a 5-minute
+periodic check never had reason to hit), a genuinely different specific
+instance, not covered by that existing fix (which only catches "database
+is locked," never "no such table" from a real TOCTOU gap).
+
+**Fix: a plain async mutex (`AsyncLock`, no new package dependency --
+just the standard ~10-line chained-future pattern) shared between
+`MigrationService.applyPending()`'s DDL and `safeChangesetBuilder`'s call
+to `crdt.getChangeset()`.** Correct because both racing operations are
+*this app's own code* -- `applyPending`'s DDL and `safeChangesetBuilder`
+are the only two places in this codebase that touch `getTables()`-then-
+per-table-query-shaped work, so wrapping both in the same lock is a
+complete fix, not a partial one. Doesn't require intercepting anything
+inside `crdt_sync`'s own internal scheduling (which isn't interceptable
+at all -- it decides on its own when to invoke our `changesetBuilder`
+callback), since we already own both call sites that can actually race.
+Correct for the real failure mode too: this is async *interleaving*
+within one isolate's event loop (not a separate-thread data race), so a
+plain in-process mutex is a genuine complete fix, not a mitigation.
+
+**Duplicated in both places this project always duplicates such things**
+(`lib/db/migration_service.dart`/`lib/db/sync_service.dart` on the
+client; `server/bin/migration_service.dart`/`server/bin/server.dart` on
+the server -- separate Dart packages, same reasoning as
+`safeChangesetBuilder`/`schemaStatements` already being duplicated). The
+client side needed the identical fix even though the crash was only ever
+*observed* on the server -- the client's own `SyncService` builds
+outgoing changesets too (real-time push works identically on every
+device, per this project's own architecture), so the same race is
+structurally possible there, just far less likely to trigger without a
+large stale migration backlog like the one that hit the server.
+
+New test, `test/async_lock_test.dart` (3 tests, pure Dart, no database) --
+proves the one guarantee the whole fix depends on: two calls through the
+same lock never run concurrently (a deliberate mid-critical-section
+`await` would let a second call slip in if the lock didn't actually
+serialize), an exception inside the locked action still releases the
+lock for the next caller, and two *different* lock instances correctly
+don't serialize each other (confirming the lock is doing real
+serialization, not accidentally succeeding by chance). Existing
+`migration_service_already_exists_test.dart`/`_already_gone_test.dart`
+reconfirmed passing, unaffected. `flutter analyze` clean on both the
+`essentials_app` and `server` packages, `flutter build windows`/`apk
+--debug` both clean, server rebuilt (`dart build cli
+--target=bin/server.dart`) and redeployed, debug APK pushed to MIKE-12R.
+
+### A real hub-liveness watchdog -- confirmed nothing like it existed, built one, tested both the healthy and crashed paths live
+
+New `windows/hub_watchdog.ps1` (+ `launch_hub_watchdog_hidden.vbs` +
+`register_hub_watchdog.ps1`, same three-file shape as the existing
+schedule-health watchdog) -- checks whether `server.exe` is running
+**and** actually accepting a TCP connection on port 1340 (catches a
+process that's alive but hung, not just a fully-dead one, though this
+project's own crash always fully exits the process). On failure: stops
+any orphaned `tray_host.ps1` wrapper (the exact leftover this session hit
+repeatedly by hand -- the tray icon survives a `server.exe` crash with no
+child left to serve anything), relaunches cleanly via the existing
+`launch_tray_hidden.vbs`, and alerts via the same BurntToast/Event-Log
+mechanism the schedule watchdog already uses (reusing its
+`EssentialsAppWatchdog` event source rather than registering a second
+one). Re-alerts on a 4-hour cooldown, same shape as the existing
+watchdog's own state file (`.hub_watchdog_state.json`, next to
+`essentials.db`) -- but gives up attempting further restarts (alerting
+instead) after 5 consecutive restarts with no lasting recovery, so a
+genuinely broken state (e.g. a corrupted `hub.db`) can't restart-loop
+forever. Runs every 5 minutes -- tighter than the schedule watchdog's 30,
+deliberately: the hub being down is far more impactful (nothing syncs
+for any device the whole time) than one scheduled script running late.
+Registered as its own separate Scheduled Task
+(`EssentialsAppHubWatchdog`), so a bug in this watchdog, the schedule
+watchdog, or the background-check task itself can never silence either
+of the others.
+
+**Verified live, all three states, not just written and trusted:**
+ran it once against the (fixed, currently healthy) server -- silent,
+exit clean, state file shows `consecutiveRestarts: 0`. Manually killed
+`server.exe` to simulate a real crash, ran it again -- correctly detected
+both signals failing, found and stopped the orphaned tray host,
+relaunched, confirmed the server actually came back up (`server.log`
+showed a fresh "Listening on 0.0.0.0:1340"), and recorded the restart in
+its state file. Ran it a third time with the now-healthy server -- "Hub
+is healthy again -- resetting restart streak," streak correctly reset to
+0. BurntToast was already installed (from the earlier schedule-watchdog
+registration), so the alert during the crash test would have shown a
+real toast, not just the Event Log fallback.
+
+**Not yet registered as a running scheduled task** -- `register_hub_
+watchdog.ps1` needs a one-time elevated run, same as the existing
+watchdog's own registration script, before this actually runs
+unattended. Everything up to that point (the script's own logic, all
+three states) is confirmed working; registration itself just hasn't been
+done yet.

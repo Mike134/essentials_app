@@ -28,12 +28,55 @@ const String serverDeviceId = 'server';
 /// `main()`) since `schema_admin` can write a new `migration_log` row
 /// directly into `hub.db` at any time while this process keeps running --
 /// there's no push notification for that, only re-checking.
+/// A plain chained-future mutex -- no new package dependency, just a
+/// standard ~10-line pattern: each call waits for the previous one's
+/// completer before running, so calls through the same [AsyncLock]
+/// instance can never execute concurrently on this isolate's event loop.
+/// Duplicated from the client's identical copy (`essentials_app/lib/db
+/// /migration_service.dart`) -- separate Dart package, same reasoning as
+/// every other duplicated helper in this file's own doc comment.
+class AsyncLock {
+  Future<void> _tail = Future.value();
+
+  Future<T> synchronized<T>(FutureOr<T> Function() action) {
+    final previous = _tail;
+    final completer = Completer<void>();
+    _tail = completer.future;
+    return previous.then((_) async {
+      try {
+        return await action();
+      } finally {
+        completer.complete();
+      }
+    });
+  }
+}
+
 class MigrationService {
   MigrationService(this._crdt);
 
   final SqliteCrdt _crdt;
 
-  Future<void> applyPending() async {
+  /// Guards [applyPending]'s DDL execution against `server.dart`'s own
+  /// `safeChangesetBuilder` -- **the real, root-cause fix for a genuine
+  /// server crash found live, 2026-09-13** (see CLAUDE.md "Incident: the
+  /// sync server crash-looped for real"). Same lock, same reasoning as the
+  /// client's identical `MigrationService.schemaLock` -- see that copy's
+  /// own doc comment for the full incident write-up: `SqlCrdt
+  /// .getChangeset()` lists tables then queries each one separately, not
+  /// atomically, so a concurrent DROP TABLE from [applyPending]'s own
+  /// CREATE-then-DROP DDL sequence can make a table vanish between those
+  /// two steps -- an *unhandled* exception, since crdt_sync's own
+  /// connection handling doesn't catch a failure from the
+  /// `changesetBuilder` callback itself. Different from, and not fixed by,
+  /// [_attempt]'s existing "database is locked" retry (that one guards
+  /// against racing crdt_sync's own incoming *merge*; this guards against
+  /// racing this app's own *outgoing changeset* builder).
+  static final schemaLock = AsyncLock();
+
+  Future<void> applyPending() => schemaLock.synchronized(_applyPending);
+
+  Future<void> _applyPending() async {
     final logRows = await _crdt.query(
       'SELECT id, sql_text FROM migration_log WHERE is_deleted = 0 ORDER BY id ASC',
     );

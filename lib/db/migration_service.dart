@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -39,8 +40,63 @@ import 'sync_service.dart';
 /// connection. By the time the schema-dependent merge happens, this
 /// device's schema already matches, so the failure mode above can't occur
 /// on this path anymore.
+/// A plain chained-future mutex -- no new package dependency, just a
+/// standard ~10-line pattern: each call waits for the previous one's
+/// completer before running, so calls through the same [AsyncLock]
+/// instance can never execute concurrently on this isolate's event loop.
+/// Correct for this project's actual race (see [MigrationService
+/// .schemaLock]'s own doc comment) -- that race is async *interleaving*
+/// within one isolate, not a separate-thread data race, so this is a
+/// complete fix, not a partial mitigation.
+class AsyncLock {
+  Future<void> _tail = Future.value();
+
+  Future<T> synchronized<T>(FutureOr<T> Function() action) {
+    final previous = _tail;
+    final completer = Completer<void>();
+    _tail = completer.future;
+    return previous.then((_) async {
+      try {
+        return await action();
+      } finally {
+        completer.complete();
+      }
+    });
+  }
+}
+
 class MigrationService {
   Future<SqliteCrdt> get _crdt async => DatabaseHelper.instance.crdt;
+
+  /// Guards [applyPending]'s DDL execution against [SyncService]'s own
+  /// `safeChangesetBuilder` -- **the real, root-cause fix for a genuine
+  /// server crash found live, 2026-09-13** (see CLAUDE.md "Incident: the
+  /// sync server crash-looped for real"): `SqlCrdt.getChangeset()`'s own
+  /// implementation does `getTables()` (a fresh, live `sqlite_schema`
+  /// query) and then a *separate* `SELECT * FROM` for each table returned
+  /// -- not one atomic snapshot. If [applyPending]'s own CREATE-then-DROP
+  /// DDL sequence runs a table's DROP in the gap between those two steps
+  /// (a real time-of-check-to-time-of-use race, confirmed by reading
+  /// `sql_crdt`'s source directly, not guessed), the per-table query
+  /// throws `no such table` -- an *unhandled* exception on the server,
+  /// since nothing in `crdt_sync`'s own connection-handling catches a
+  /// failure from the `changesetBuilder` callback itself (unlike a failed
+  /// *merge*, which crdt_sync does catch and silently swallow -- see this
+  /// file's own history for that already-documented, different failure
+  /// mode). This is a *different* race from the already-fixed "database is
+  /// locked" one [_attempt] guards against (that one is `applyPending`
+  /// racing crdt_sync's own incoming *merge*; this one is `applyPending`
+  /// racing this app's own *outgoing changeset* builder) -- both are real,
+  /// both needed their own fix, neither one's fix covers the other.
+  ///
+  /// Shared with `safeChangesetBuilder` (`sync_service.dart`) precisely
+  /// because both operations are *this app's own code* -- `applyPending`'s
+  /// DDL and `safeChangesetBuilder`'s call to `crdt.getChangeset()` are the
+  /// only two places in this codebase that can race this way, so wrapping
+  /// both in the same lock is a complete fix, not a partial one; nothing
+  /// about crdt_sync's own internal scheduling needs to be interceptable
+  /// for this to work, since we already own both racing call sites.
+  static final schemaLock = AsyncLock();
 
   /// Fetches every live `migration_log` row from the server's plain-HTTP
   /// side-channel and inserts any this device doesn't already have --
@@ -93,7 +149,9 @@ class MigrationService {
   /// device, in strict `id` order. Stops at the first migration that's
   /// already recorded `failed` for this device (stays halted, no silent
   /// retry) or that fails on this attempt.
-  Future<void> applyPending() async {
+  Future<void> applyPending() => schemaLock.synchronized(_applyPending);
+
+  Future<void> _applyPending() async {
     final crdt = await _crdt;
     final deviceId = await DeviceId.resolve();
 
