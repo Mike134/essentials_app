@@ -741,7 +741,7 @@ class _HomeShellState extends State<HomeShell> {
         if (!_collapsedGroups.contains(group.name))
           for (final table in group.tables) _railItem(table, groups),
       ],
-      const Divider(height: 1),
+      const Divider(height: 2),
       _railSearchItem(),
       _railCalendarItem(),
       _railScriptsItem(),
@@ -1009,7 +1009,7 @@ class _HomeShellState extends State<HomeShell> {
               onTap: () => _sortGroupsAlphabetically(groups),
             ),
           for (final group in groups) ..._drawerGroupChildren(group, groups),
-          const Divider(height: 1),
+          const Divider(height: 2),
           ListTile(
             leading: const Icon(Icons.search),
             title: const Text('Search'),

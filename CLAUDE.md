@@ -10241,3 +10241,13 @@ clean, debug APK pushed to MIKE-12R.
 **Mike's interactive verification: done, passed, on both MIKE-CU and
 MIKE-12R.** "Very nice!!" -- the button appears correctly sized and
 centered, and works exactly like the form's version, on both platforms.
+
+## Small polish: the sidebar's table/group vs. Search/Calendar/Scripts/Settings divider, doubled
+
+Mike's ask: increase the vertical size of the `Divider` separating the
+grouped table list from the fixed Search/Calendar/Scripts/Settings items
+below it, by 100%. Both copies (`_buildRailChildren`'s rail divider and
+`_buildDrawer`'s drawer divider, `home_shell.dart`) went from `height: 1`
+to `height: 2` -- a literal doubling of `Divider`'s own space-allocation
+property. `flutter analyze` clean, both builds clean, debug APK pushed to
+MIKE-12R. Not yet Mike-tested interactively.
