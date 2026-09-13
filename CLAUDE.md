@@ -9619,9 +9619,7 @@ debug APK pushed to MIKE-12R. Confirmed via direct query afterward: the
 test's own tagged rows are present only as tombstones (`is_deleted = 1`),
 `PRAGMA integrity_check: ok`.
 
-**Build-verified only -- not yet Mike-tested interactively.** Next: on
-MIKE-CU, long-press-drag one group header onto another to reorder them,
-confirm "Sort groups A-Z" sorts every group (Ungrouped included)
-alphabetically, confirm the new order persists across a restart, then
-F5/relaunch MIKE-12R to confirm both the schema change and the group
-order itself sync there too.
+**Mike's interactive verification on MIKE-CU: done, passed** -- both
+"Sort groups A-Z" and drag-reordering work. MIKE-12R not yet re-checked --
+next: F5/relaunch there to confirm the schema change and the group order
+itself both sync correctly.
