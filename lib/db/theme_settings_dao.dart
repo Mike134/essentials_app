@@ -19,6 +19,8 @@ class ThemeSettingsDao {
   static const String fontSizeKey = 'font_size';
   static const String noWrapRowHeightKey = 'no_wrap_row_height';
   static const String wrapRowHeightKey = 'wrap_row_height';
+  static const String sidebarDividerHeightKey = 'sidebar_divider_height';
+  static const String sidebarDividerThicknessKey = 'sidebar_divider_thickness';
 
   Future<SqliteCrdt> get _db async => DatabaseHelper.instance.crdt;
 

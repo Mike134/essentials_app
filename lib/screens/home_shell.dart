@@ -741,7 +741,10 @@ class _HomeShellState extends State<HomeShell> {
         if (!_collapsedGroups.contains(group.name))
           for (final table in group.tables) _railItem(table, groups),
       ],
-      const Divider(height: 16, thickness: 11),
+      Divider(
+        height: ThemeController.instance.sidebarDividerHeight,
+        thickness: ThemeController.instance.sidebarDividerThickness,
+      ),
       _railSearchItem(),
       _railCalendarItem(),
       _railScriptsItem(),
@@ -1009,7 +1012,10 @@ class _HomeShellState extends State<HomeShell> {
               onTap: () => _sortGroupsAlphabetically(groups),
             ),
           for (final group in groups) ..._drawerGroupChildren(group, groups),
-          const Divider(height: 16, thickness: 11),
+          Divider(
+            height: ThemeController.instance.sidebarDividerHeight,
+            thickness: ThemeController.instance.sidebarDividerThickness,
+          ),
           ListTile(
             leading: const Icon(Icons.search),
             title: const Text('Search'),

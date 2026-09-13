@@ -10268,5 +10268,41 @@ Mike was actually looking at. Fixed properly this time, both copies:
 `Divider(height: 16, thickness: 11)` -- a real 1000% increase on
 `thickness`'s ~1px default, with `height` bumped just enough to contain
 the now-much-thicker line without clipping it. `flutter analyze`/both
-builds clean, debug APK pushed to MIKE-12R. Not yet Mike-tested
-interactively.
+builds clean, debug APK pushed to MIKE-12R.
+
+**Mike's interactive verification on MIKE-CU: done, passed** -- settled
+on `thickness: 6, height: 11` as the actual values he wanted, then
+flagged the real underlying problem: this had taken several rebuild-
+and-redeploy round trips for what should have been a live, no-recompile
+adjustment. Asked for a real Settings entry for both values instead.
+
+**Built as a genuine per-device setting, not just the two hardcoded
+literals.** `ThemeController` gained `sidebarDividerHeight`/
+`sidebarDividerThickness` (defaults 11/6 -- Mike's own settled-on
+values, so the new setting starts exactly where he left off, not some
+other baseline) plus override fields/setters, mirroring `rowHeight`/
+`wrapRowHeight`'s exact existing shape (per-device via `ThemeSettingsDao
+.loadDeviceSetting`/`setDeviceSetting`, not the shared `app_settings`
+theme attributes use -- same governing rule as row height: a nav-bar
+sizing preference, not an organizational look). Two new
+`ThemeSettingsDao` key constants
+(`sidebarDividerHeightKey`/`sidebarDividerThicknessKey`). `home_shell
+.dart`'s two `Divider` literals (rail + drawer) now read
+`ThemeController.instance.sidebarDividerHeight`/`.sidebarDividerThickness`
+instead of hardcoded numbers -- picks up a live change immediately via
+the same `ListenableBuilder` in `main.dart` that already rebuilds the
+whole tree on any `ThemeController.notifyListeners()`, no new
+subscription needed in `HomeShell` itself.
+
+**Settings screen** gained a "Sidebar divider (this device)" section
+(`settings_screen.dart`), right after the existing row-height sliders --
+two sliders (height 1-60px, thickness 1-40px, 1px steps) with the same
+"Reset to default" pattern every other per-device override already uses.
+No dedicated test added -- matches the existing, already-untested
+`rowHeightOverride`/`wrapRowHeightOverride` coverage level for this exact
+class of plain device-settings key/value round-trip. `flutter analyze`
+clean, both builds clean, debug APK pushed to MIKE-12R.
+
+**Build-verified only -- not yet Mike-tested interactively.** Next:
+confirm the new Settings sliders actually move the sidebar divider live,
+with no rebuild needed, on both platforms.

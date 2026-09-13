@@ -493,6 +493,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => controller.setWrapRowHeightOverride(value),
               ),
               const SizedBox(height: 24),
+              const Text(
+                'Sidebar divider (this device)',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const Text(
+                'The bar separating your tables/groups from Search, Calendar, '
+                'Scripts, and Settings below it.',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Height: ${controller.sidebarDividerHeight.toStringAsFixed(0)}px'),
+                  if (controller.sidebarDividerHeightOverride != null)
+                    TextButton(
+                      onPressed: () => controller.setSidebarDividerHeightOverride(null),
+                      child: const Text('Reset to default'),
+                    ),
+                ],
+              ),
+              Slider(
+                value: controller.sidebarDividerHeight,
+                min: 1,
+                max: 60,
+                divisions: 59, // 1px steps -- (max - min) / divisions
+                label: controller.sidebarDividerHeight.toStringAsFixed(0),
+                onChanged: (value) => controller.setSidebarDividerHeightOverride(value),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Thickness: ${controller.sidebarDividerThickness.toStringAsFixed(0)}px'),
+                  if (controller.sidebarDividerThicknessOverride != null)
+                    TextButton(
+                      onPressed: () => controller.setSidebarDividerThicknessOverride(null),
+                      child: const Text('Reset to default'),
+                    ),
+                ],
+              ),
+              Slider(
+                value: controller.sidebarDividerThickness,
+                min: 1,
+                max: 40,
+                divisions: 39, // 1px steps -- (max - min) / divisions
+                label: controller.sidebarDividerThickness.toStringAsFixed(0),
+                onChanged: (value) => controller.setSidebarDividerThicknessOverride(value),
+              ),
+              const SizedBox(height: 24),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [

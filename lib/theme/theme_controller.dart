@@ -43,6 +43,22 @@ class ThemeController extends ChangeNotifier {
   double get rowHeight => rowHeightOverride ?? defaultRowHeight;
   double get wrapRowHeight => wrapRowHeightOverride ?? defaultWrapRowHeight;
 
+  /// The sidebar's own table/group-vs-Search/Calendar/Scripts/Settings
+  /// `Divider` (`home_shell.dart`) -- per-device, same reasoning as row
+  /// height above (a nav-bar sizing preference, not an organizational
+  /// look). Defaults match the values Mike settled on after iterating live
+  /// in the running app -- built as an actual setting specifically because
+  /// getting there required several rebuild-and-redeploy round trips for
+  /// what should have been a live, no-recompile adjustment.
+  static const double defaultSidebarDividerHeight = 11.0;
+  static const double defaultSidebarDividerThickness = 6.0;
+
+  double? sidebarDividerHeightOverride;
+  double? sidebarDividerThicknessOverride;
+
+  double get sidebarDividerHeight => sidebarDividerHeightOverride ?? defaultSidebarDividerHeight;
+  double get sidebarDividerThickness => sidebarDividerThicknessOverride ?? defaultSidebarDividerThickness;
+
   /// Alternating row stripes -- Grid and List each get their own on/off
   /// toggle and color, shared across devices (same governing rule as every
   /// other visual setting here: an organizational look, not a per-screen
@@ -121,6 +137,12 @@ class ThemeController extends ChangeNotifier {
     final wrapRowHeightText = await dao.loadDeviceSetting(ThemeSettingsDao.wrapRowHeightKey);
     wrapRowHeightOverride = wrapRowHeightText == null ? null : double.tryParse(wrapRowHeightText);
 
+    final dividerHeightText = await dao.loadDeviceSetting(ThemeSettingsDao.sidebarDividerHeightKey);
+    sidebarDividerHeightOverride = dividerHeightText == null ? null : double.tryParse(dividerHeightText);
+
+    final dividerThicknessText = await dao.loadDeviceSetting(ThemeSettingsDao.sidebarDividerThicknessKey);
+    sidebarDividerThicknessOverride = dividerThicknessText == null ? null : double.tryParse(dividerThicknessText);
+
     _loaded = true;
     notifyListeners();
   }
@@ -167,6 +189,18 @@ class ThemeController extends ChangeNotifier {
   Future<void> setWrapRowHeightOverride(double? height) async {
     wrapRowHeightOverride = height;
     await _dao?.setDeviceSetting(ThemeSettingsDao.wrapRowHeightKey, height?.toString());
+    notifyListeners();
+  }
+
+  Future<void> setSidebarDividerHeightOverride(double? height) async {
+    sidebarDividerHeightOverride = height;
+    await _dao?.setDeviceSetting(ThemeSettingsDao.sidebarDividerHeightKey, height?.toString());
+    notifyListeners();
+  }
+
+  Future<void> setSidebarDividerThicknessOverride(double? thickness) async {
+    sidebarDividerThicknessOverride = thickness;
+    await _dao?.setDeviceSetting(ThemeSettingsDao.sidebarDividerThicknessKey, thickness?.toString());
     notifyListeners();
   }
 
