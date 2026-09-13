@@ -2149,24 +2149,52 @@ class _GenericListScreenState extends State<GenericListScreen> {
       rowHeight: _wrapTextColumns.values.any((wrapped) => wrapped)
           ? _wrappedRowHeight
           : ThemeController.instance.rowHeight,
-      // Suppresses the small filter icon TrinaGrid shows next to an
-      // already-filtered column's own title -- that icon calls
-      // `stateManager.showFilterPopup` directly
-      // (`trina_column_title.dart`, hardcoded, no override hook), opening
-      // TrinaGrid's own bare icon-toolbar popup instead of this app's
-      // filter_editor_dialog.dart replacement. Mike's own call: one filter
-      // -building UI, not two. Can't null out `style.filterIcon` itself --
-      // `TrinaGridStyleConfig.copyWith`'s own `filterIcon ?? this.filterIcon`
-      // means an explicit `null` there is indistinguishable from "not
-      // passed" and always falls back to the non-null default -- but the
-      // render check is `filterIconWidget != null || filterIcon != null`,
-      // and `filterIconWidget` *does* support being explicitly set via
-      // `TrinaOptional`, so a real (non-null) but zero-size widget here
-      // wins that check and replaces the tappable IconButton with
-      // something with no hit-test area at all, same net effect as hiding
-      // it, without needing to reconstruct this whole style config from
-      // scratch just to work around one field's copyWith bug.
-      filterIconWidget: const TrinaOptional(SizedBox.shrink()),
+      // A visible-but-not-tappable filter indicator, replacing TrinaGrid's
+      // own tappable filter icon -- that stock icon calls
+      // `stateManager.showFilterPopup` directly (`trina_column_title.dart`,
+      // hardcoded, no override hook), opening TrinaGrid's own bare
+      // icon-toolbar popup instead of this app's filter_editor_dialog.dart
+      // replacement. Mike's own call: one filter-building UI, not two.
+      //
+      // The first version of this fix (`SizedBox.shrink()`) suppressed the
+      // popup by making the icon zero-size -- but that also made it
+      // invisible, leaving a filtered column with *no* visual indicator at
+      // all (found live: Mike filtering Agenda's "Event Type" column with
+      // nothing on screen to show it was filtered). Fixed by keeping a
+      // real, visible icon but wrapping it in `IgnorePointer` instead of
+      // shrinking it to nothing -- `IgnorePointer` makes its subtree
+      // invisible to hit testing while still painting and occupying real
+      // layout space, so the enclosing `GestureDetector` (added by
+      // TrinaGrid around whatever non-null `filterIconWidget` is supplied,
+      // wired unconditionally to its own `showFilterPopup`) never sees a
+      // hit at that position and its `onTap` never fires. Confirmed this is
+      // exactly `IgnorePointer`'s documented purpose ("this widget and its
+      // subtree become invisible to hit testing... it still consumes space
+      // during layout and paints its child as usual"), not something
+      // inferred from behavior. Editing a filter still goes through the
+      // column's own "≡"/right-click menu -> filter_editor_dialog.dart,
+      // unchanged.
+      //
+      // Can't null out `style.filterIcon` itself -- `TrinaGridStyleConfig
+      // .copyWith`'s own `filterIcon ?? this.filterIcon` means an explicit
+      // `null` there is indistinguishable from "not passed" and always
+      // falls back to the non-null default -- but the render check is
+      // `filterIconWidget != null || filterIcon != null`, and
+      // `filterIconWidget` *does* support being explicitly set via
+      // `TrinaOptional`, so supplying a real widget here wins that check
+      // and replaces the default tappable `IconButton` entirely.
+      filterIconWidget: TrinaOptional(
+        IgnorePointer(
+          child: Padding(
+            padding: const EdgeInsets.only(left: 2),
+            child: Icon(
+              Icons.filter_alt,
+              size: 14,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+        ),
+      ),
     );
   }
 

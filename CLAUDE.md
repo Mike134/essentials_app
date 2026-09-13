@@ -9501,4 +9501,44 @@ reproduces Status's exact 11-position shape and asserts the correct
 **Mike's interactive verification: done, passed, on both MIKE-CU and
 MIKE-12R** -- Status's dropdown (grid and form) now shows the correct
 1-11 order.
+
+## A filtered grid column had no visual indicator at all (2026-09-13)
+
+Mike screenshotted Agenda's grid with a filter set on "Event Type" -- no
+difference from an unfiltered column's header anywhere on screen. Traced
+to a deliberate earlier decision, not a new bug: `_trinaGridStyle` in
+`generic_list_screen.dart` sets `filterIconWidget:
+TrinaOptional(SizedBox.shrink())` specifically to *suppress* TrinaGrid's
+own filter icon, because that stock icon is hardcoded (`trina_column
+_title.dart`, no override hook) to open TrinaGrid's own bare filter
+popup, not this app's `filter_editor_dialog.dart` replacement -- "one
+filter-building UI, not two," Mike's own earlier call. That fix correctly
+solved the two-UIs problem but went one step too far: a zero-size widget
+is both invisible *and* unhittable, so it also erased the only visual
+signal a column was filtered at all.
+
+**Fix: keep the icon visible, but not tappable, instead of removing it
+entirely.** `filterIconWidget` now supplies a real, visible
+`Icon(Icons.filter_alt, ...)` wrapped in `IgnorePointer` rather than a
+`SizedBox.shrink()`. `IgnorePointer` makes its subtree invisible to hit
+testing while still painting and occupying real layout space -- since
+TrinaGrid always wraps a non-null `filterIconWidget` in its own
+`GestureDetector(onTap: stateManager.showFilterPopup, child:
+filterIconWidget)` with no way to change what the tap does, this is the
+only way to show something real there without also reopening the stock
+popup on tap. **Verified empirically, not assumed:** a throwaway widget
+test (`GestureDetector(onTap: ...) > IgnorePointer > Icon`, tapped via
+`tester.tap`) confirmed the tap never reaches the `GestureDetector` --
+Flutter's hit-test harness reported the tap literally missing the target
+render object -- while the same structure *without* `IgnorePointer`
+fired normally. Editing a filter is unaffected -- still reached via the
+column's own "≡"/right-click menu -> `filter_editor_dialog.dart`, exactly
+as before.
+
+`flutter analyze` clean, `flutter build windows`/`apk --debug` both
+clean, debug APK pushed to MIKE-12R. Not yet Mike-tested interactively --
+next: confirm a filtered column now shows the small filter icon on both
+platforms, and confirm tapping directly on that icon does nothing (no
+stock TrinaGrid popup), while the column's own menu still opens this
+app's filter editor correctly.
 Month/Year math lands where expected.
