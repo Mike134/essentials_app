@@ -10303,6 +10303,7 @@ No dedicated test added -- matches the existing, already-untested
 class of plain device-settings key/value round-trip. `flutter analyze`
 clean, both builds clean, debug APK pushed to MIKE-12R.
 
-**Build-verified only -- not yet Mike-tested interactively.** Next:
-confirm the new Settings sliders actually move the sidebar divider live,
-with no rebuild needed, on both platforms.
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R** -- the sliders move the divider live, no rebuild needed.
+Confirmed with Mike it's genuinely per-device (each device keeps its own
+independent value, same as font size/row height), not shared.
