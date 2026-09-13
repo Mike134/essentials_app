@@ -7,9 +7,19 @@ import 'package:sqlite3/sqlite3.dart' as sqlite3;
 import 'package:sqlite_crdt/sqlite_crdt.dart';
 
 import '../date_format.dart';
+import '../field_options.dart';
+import '../scheduling/recurrence_when.dart';
 import '../sql_identifiers.dart';
 import 'js_engine.dart';
 import 'file_io.dart';
+
+/// The four CRDT bookkeeping columns every physical table carries (see
+/// CLAUDE.md "Syncing at the Record Level") -- never meaningful to a
+/// script, so [_installBridge]'s `record.fields()` filters them out rather
+/// than handing a script author internal plumbing they'd have to remember
+/// to strip themselves before e.g. passing the result straight to
+/// `table().create()`.
+const _crdtBookkeepingColumns = {'is_deleted', 'hlc', 'node_id', 'modified'};
 
 /// Which record (if any) a script run is bound to -- see
 /// claude/essentials-v2-phase5-design.md's Script API section: `record`
@@ -312,6 +322,77 @@ void _installBridge(
     recordFields[field] = value?.toString();
     return null;
   });
+  // Every field currently on this record, minus the CRDT bookkeeping
+  // columns -- the generic building block behind "duplicate this record"
+  // -style scripts (Mike's own "Next" recurrence button, the first real
+  // use), so a script never has to hardcode/maintain a field list by hand
+  // just to copy a row. `id` is deliberately kept (still useful to read),
+  // unlike the four bookkeeping columns which are never meaningful to a
+  // script at all -- a caller building a new row still needs to `delete
+  // copy.id` itself, same as it must decide what to overwrite.
+  install('__bridge_record_fields', () {
+    final fields = {
+      for (final entry in recordFields.entries)
+        if (!_crdtBookkeepingColumns.contains(entry.key)) entry.key: entry.value,
+    };
+    return jsonEncode(fields);
+  });
+  // Essentials v2 Agenda scheduling's recurrence math
+  // (`recurrence_when.dart`), exposed to scripts rather than asked to be
+  // reimplemented in JavaScript -- built for Mike's own "Next" button
+  // design (CLAUDE.md, "Manual per-record recurrence advancement"): a
+  // script-driven alternative to the always-on `RecurringReminderService`
+  // engine, running alongside it, not replacing it. Reimplementing
+  // "every Wednesday"/"2nd Tuesday of the month"/etc. by hand in JS would
+  // duplicate exactly the complicated part this whole feature exists to
+  // avoid -- so this hands back the *result* of that existing, already-
+  // correct logic instead. [endField] is optional: when given and this
+  // record has a value there, the new End is computed by shifting it by
+  // the *same* delta as Start (preserving duration), not derived from
+  // Start+duration another way -- e.g. a 1-hour appointment stays 1 hour
+  // every time "Next" is pressed, rather than stretching (an earlier,
+  // wrong version of the plan would have made it +1hr longer each press).
+  // Synchronous against [readDb] directly (same as `table().find()`/
+  // `.all()`), mirroring `RecurringReminderService._resolveTimeframeKeyword`
+  // /`nextOccurrenceAfter`'s own resolution but without that class's
+  // async `sqlite_crdt` dependency, which isn't available to a bridge
+  // function. Returns `null` (not an error) when there's no next
+  // occurrence at all -- a `once` timeframe already past its single
+  // occurrence, or an unresolvable/unrecognized Timeframe value -- a
+  // script should treat that as "nothing to do," not a failure.
+  install(
+    '__bridge_record_next_occurrence',
+    (String startField, String timeframeField, String whenField, String? endField) {
+      if (recordTable == null) {
+        throw StateError('No record is bound to this script -- record.nextOccurrence() has nothing to compute from.');
+      }
+      final startRaw = recordFields[startField]?.toString();
+      final start = startRaw == null ? null : DateTime.tryParse(startRaw);
+      if (start == null) return null;
+
+      final keyword = _resolveTimeframeKeyword(
+        readDb,
+        recordTable,
+        timeframeField,
+        recordFields[timeframeField],
+      );
+      final rule = RecurrenceWhenRule.decode(recordFields[whenField]?.toString());
+
+      final next = nextOccurrenceAfter(start: start, timeframeKeyword: keyword, rule: rule, after: start);
+      if (next == null) return null;
+
+      String? newEndIso;
+      if (endField != null) {
+        final endRaw = recordFields[endField]?.toString();
+        final end = (endRaw == null || endRaw.isEmpty) ? null : DateTime.tryParse(endRaw);
+        if (end != null) {
+          newEndIso = isoDateTimeMinutes(end.add(next.difference(start)));
+        }
+      }
+
+      return jsonEncode({'start': isoDateTimeMinutes(next), 'end': newEndIso});
+    },
+  );
   install('__bridge_record_save', () {
     if (recordTable == null || recordId == null) {
       throw StateError('No record is bound to this script -- record.save() has nothing to save.');
@@ -399,6 +480,21 @@ void _installBridge(
       record.set = function(field, value) { return __bridge_record_set(field, value); };
       record.save = function() { return __bridge_record_save(); };
       record.delete = function() { return __bridge_record_delete(); };
+      record.fields = function() { return JSON.parse(__bridge_record_fields()); };
+      record.nextOccurrence = function(startField, timeframeField, whenField, endField) {
+        var raw = __bridge_record_next_occurrence(
+          startField, timeframeField, whenField, endField === undefined ? null : endField
+        );
+        // A Dart `null` return crosses the bridge as JS `undefined`, not
+        // `null` -- confirmed live (JSON.parse(undefined) coerces its
+        // argument to the literal 4-character string "undefined" first,
+        // which then fails to parse as JSON, throwing a SyntaxError
+        // rather than the intended "no next occurrence" `null`). Checking
+        // both, not just `=== null`, is what actually fixes it -- a bare
+        // `!raw` would also work (both are falsy) but this is explicit
+        // about exactly which two values are being guarded against.
+        return (raw === null || raw === undefined) ? null : JSON.parse(raw);
+      };
     }
     function table(name) {
       return {
@@ -445,6 +541,63 @@ String _formatLocalTimeDisplay(DateTime time) {
   final minute = time.minute.toString().padLeft(2, '0');
   final second = time.second.toString().padLeft(2, '0');
   return '$hour12:$minute:$second $period';
+}
+
+/// Resolves a Timeframe-shaped field's raw stored value to its lowercase
+/// display keyword (`"weekly"`, `"once"`, ...) -- the same resolution
+/// [RecurringReminderService._resolveTimeframeKeyword] already does for
+/// the always-on background engine, just synchronous and against
+/// [readDb] directly (a plain `sqlite3.Database`, not `sqlite_crdt`) since
+/// a bridge function has no async story available to it. Handles both
+/// `select`/`options.mode` shapes a Timeframe field can actually be:
+/// inline (matches the stored option key, returns its label) or linked
+/// (looks up the target row's own configured display column). Returns
+/// `null` for anything else -- absent field metadata, an unrecognized
+/// shape, a linked row that's since been deleted -- so the caller
+/// degrades to "no recognized timeframe" rather than throwing.
+String? _resolveTimeframeKeyword(
+  sqlite3.Database readDb,
+  String table,
+  String fieldName,
+  Object? rawValue,
+) {
+  if (rawValue == null) return null;
+  final fieldRows = readDb.select(
+    'SELECT format, options FROM field_definitions '
+    'WHERE table_name = ? AND field_name = ? AND is_deleted = 0',
+    [table, fieldName],
+  );
+  if (fieldRows.isEmpty) return null;
+  final format = fieldRows.first['format'] as String?;
+  if (format != 'select') return null;
+  final options = parseFieldOptions(fieldRows.first['options'] as String?);
+
+  if (options['mode'] == 'inline') {
+    final list = options['options'];
+    if (list is! List) return null;
+    for (final entry in list) {
+      if (entry is Map && entry['key']?.toString() == rawValue.toString()) {
+        return entry['label']?.toString().trim().toLowerCase();
+      }
+    }
+    return null;
+  }
+
+  if (options['mode'] == 'linked') {
+    final targetTable = options['table'] as String?;
+    final displayField = (options['displayField'] as String?) ?? 'name';
+    if (targetTable == null || !isSafeSqlIdentifier(targetTable) || !isSafeSqlIdentifier(displayField)) {
+      return null;
+    }
+    final rows = readDb.select(
+      'SELECT "$displayField" AS display_value FROM "$targetTable" WHERE id = ? AND is_deleted = 0',
+      [rawValue],
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['display_value']?.toString().trim().toLowerCase();
+  }
+
+  return null;
 }
 
 List<Map<String, Object?>> _rowsToJson(String table, List<Map<String, Object?>> rows) {

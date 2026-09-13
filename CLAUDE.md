@@ -9661,3 +9661,151 @@ byte-identical before relaunching the app there.
 **Mike's interactive verification on MIKE-12R: done, passed** -- launches
 clean, group order synced correctly. Both platforms now confirmed
 end-to-end.
+
+## Manual per-record recurrence advancement: `record.nextOccurrence()`/`record.fields()` (2026-09-13)
+
+Mike's own call, after using `RecurringReminderService`/`recurrence_when
+.dart` for real: the always-on "compute the next occurrence live, forever,
+from one eternal row" model isn't going to hold up -- real recurring-item
+apps get genuinely complicated here (exceptions, per-instance history,
+editing one occurrence without touching future ones), and he'd rather not
+chase that down the notification-firing engine's own throat right now.
+**Proposed and built instead: a manual "Next" button on a record's own
+form** (Agenda's `next` field, already added by Mike as a plain `button`
+-format field before this session's own work started, format
+`{"label":"Next"}`) **running a regular user script** that copies the
+current record into a brand-new one, advancing Start (and End, if set) by
+one real recurrence step. This runs **alongside** the existing engine, not
+in place of it -- confirmed with Mike explicitly: "at some point we may
+want to roll what we are doing in a user script into the engine, but not
+today."
+
+**Two real corrections made to Mike's own proposal before building
+anything, both confirmed with him first (`AskUserQuestion`):**
+
+1. **The End-date math as originally proposed was wrong.** "New End =
+   current End + (current End − current Start)" stretches the appointment
+   longer every time "Next" is pressed, rather than shifting it forward --
+   a 1-hour meeting would become 2 hours after one press, 3 hours after
+   the next. The actual fix: **shift End by the exact same delta Start
+   moved by** (`new End = old End + (new Start − old Start)`), preserving
+   duration. Mike confirmed: "Use your end calculation."
+2. **Don't reimplement the recurrence rules in JavaScript.** "Every
+   Wednesday"/"2nd Tuesday of the month"/"last day of the month" already
+   exist, correctly, in `recurrence_when.dart` -- recreating that in a
+   script would duplicate exactly the complicated part this whole
+   redesign exists to get away from, just in JS instead of Dart. Exposed
+   the existing engine to scripts as a new bridge function instead (see
+   below).
+
+**Confirmed with Mike, not assumed:** auto-advance-on-fire was explicitly
+rejected ("You could really run into issues if every time a reminder was
+hit a new record was created. The potential for duplication is pretty
+high. Let's just stick to manual.") -- this is a **manual button only**,
+no automatic advancement anywhere. The old row is also left **completely
+untouched** once "Next" creates the new one -- no Notify change, no
+soft-delete, nothing -- Mike manages old rows himself via filtering/manual
+deletion, and some are meant to stay as a permanent record of a past
+event.
+
+### `record.nextOccurrence(startField, timeframeField, whenField, endField?)`
+
+New in `script_api_runtime.dart`, alongside the existing `record`/`table()`
+bridge. Synchronous against the script's own `readDb` (a plain
+`sqlite3.Database`, not `sqlite_crdt` -- no async story is available to a
+bridge function), mirroring `RecurringReminderService
+._resolveTimeframeKeyword`'s exact resolution logic (inline-select label,
+or a linked-lookup row's configured display column) but reimplemented
+locally rather than reusing that class directly, since it depends on
+`sqlite_crdt`/async. Returns `null` (not an error) when there's genuinely
+no next occurrence -- a `once` timeframe already past its single
+occurrence, or an unresolvable/unrecognized Timeframe value -- a script
+should treat that as "nothing to do."
+
+**A real, confirmed-live marshalling gotcha, not assumed from
+documentation:** a Dart `null` return from an `install()`-registered
+bridge function crosses into JS as `undefined`, **not** `null`. The first
+version of `record.nextOccurrence`'s own JS wrapper checked
+`raw === null` only, which never matched -- `JSON.parse(undefined)`
+coerces its argument to the literal string `"undefined"` first, then
+fails to parse it as JSON, throwing `SyntaxError: unexpected token:
+'undefined'` instead of returning the intended `null`. Confirmed via a
+failing test (`record.nextOccurrence returns null once a Once timeframe
+has already occurred`) before being traced and fixed -- the wrapper now
+checks both `raw === null || raw === undefined`. **Worth remembering for
+any future bridge function that can legitimately return "nothing":** a
+JS-side `=== null` check alone is not sufficient to catch a Dart `null`
+return through this bridge.
+
+### `record.fields()`
+
+Every field currently on the bound record, as a plain JS object, minus
+the four CRDT bookkeeping columns (`is_deleted`/`hlc`/`node_id`/
+`modified`) -- the generic building block behind any "duplicate this
+record" script, not just the Next button, so a script never has to
+hardcode/maintain a full field list by hand just to copy a row (which
+would need updating by hand every time a field is added/renamed).
+Deliberately keeps `id` (still useful to read) -- a caller building a new
+row still has to `delete copy.id` itself, matching every other field it
+might also want to overwrite before calling `table().create()`.
+
+### Real toolchain gotcha hit writing this session's tests, not a code bug
+
+`flutter test` on Windows failed every `ScriptApiRuntime`-based test with
+`Invalid argument(s): Failed to load dynamic library 'quickjs_c_bridge
+.dll': The specified module could not be found. (error code: 126)` --
+`flutter_js`'s native QuickJS binding calls `DynamicLibrary.open
+('quickjs_c_bridge.dll')` (a bare filename, OS DLL search path only), and
+`flutter test` doesn't run inside a full Windows app build the way
+`flutter run`/the built exe does, so the DLL was never on that process's
+search path. Fixed for this session by adding
+`build\windows\x64\runner\Release` (already populated by an earlier
+`flutter build windows` this session) to `PATH` before running these
+tests -- not a code fix, a local environment quirk. **Worth remembering
+for any future session running these tests fresh:** if every
+`ScriptApiRuntime` test fails with this exact DLL error, that's the cause,
+not a real regression -- add the Release (or Debug) runner folder to PATH
+and retry, no need to re-investigate from scratch.
+
+### The actual "Next" script, real physical field names
+
+Not yet wired up in the app -- Mike still needs to create this script via
+the Scripts screen and bind it to Agenda's `next` field's `button_clicked`
+event himself, same as every other script in this app. Text handed off,
+using Agenda's real physical column names (`start`/`timeframe`/`period`
+["When"]/`end_2` ["End"]/`description` ["Activity"]):
+
+```javascript
+var next = record.nextOccurrence('start', 'timeframe', 'period', 'end_2');
+
+if (next === null) {
+  notify('No further occurrences for "' + record.get('description') + '".');
+} else {
+  var copy = record.fields();
+  delete copy.id;
+  copy.start = next.start;
+  copy.end_2 = next.end;
+
+  table('Agenda').create(copy);
+  notify('Created next occurrence: ' + next.start);
+}
+```
+
+15 tests in `test/script_api_runtime_test.dart` (up from 8) -- covering
+`record.fields()`'s bookkeeping-column exclusion, `nextOccurrence` for a
+daily timeframe with no When needed, End-shifting with a real 1-hour
+appointment (the exact case the original wrong proposal would have
+gotten wrong), the `once`-already-occurred null case, inline-select
+Timeframe resolution (not just the linked-lookup path the other tests
+exercise), and a full end-to-end run of the actual planned script text
+above against a real throwaway table -- confirming the original row
+survives completely untouched alongside the new one. `flutter analyze`
+clean, `flutter build windows`/`apk --debug` both clean, debug APK pushed
+to MIKE-12R. Live db confirmed clean afterward -- `PRAGMA
+integrity_check: ok`, zero leaked physical test tables.
+
+**Build-verified only -- not yet Mike-tested interactively.** Next: Mike
+creates the script above via the Scripts screen, binds it to `next`'s
+`button_clicked` event via Manage events, and confirms pressing "Next" on
+a real Agenda record (Guava Updates or similar) creates a correct new
+occurrence while leaving the original row exactly as it was.

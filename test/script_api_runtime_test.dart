@@ -6,11 +6,14 @@
 // Run this file on its own, never chained with another
 // SchemaEditorService.createTable-using test file in the same `flutter
 // test` invocation.
+import 'dart:convert';
+
 import 'package:essentials_app/db/database_helper.dart';
 import 'package:essentials_app/db/generic_dao.dart';
 import 'package:essentials_app/db/schema_editor_service.dart';
 import 'package:essentials_app/db/schema_metadata_dao.dart';
 import 'package:essentials_app/db/schema_registry.dart';
+import 'package:essentials_app/util/scheduling/recurrence_when.dart';
 import 'package:essentials_app/util/scripting/script_api_runtime.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite_crdt/sqlite_crdt.dart';
@@ -190,5 +193,232 @@ void main() {
     expect(result.outcome.succeeded, isFalse);
     expect(result.outcome.timedOut, isFalse);
     expect(result.outcome.error, isNotNull);
+  });
+
+  test('record.fields() returns every real field, id included, minus the CRDT bookkeeping columns', () async {
+    final tableName = await createTestTable('Script Record Fields');
+    await editor.addField(tableName: tableName, displayName: 'Notes', format: 'text');
+    final notesField = await physicalFieldName(tableName, 'Notes');
+    final config = await registry.buildConfig(tableName);
+    final id = await GenericDao(config).insert({notesField: 'hi'});
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "var f = record.fields(); notify(JSON.stringify(Object.keys(f).sort()));",
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: tableName, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    final keys = jsonDecode(result.effects.notifications.single) as List;
+    expect(keys, contains('id'));
+    expect(keys, contains(notesField));
+    for (final bookkeeping in ['is_deleted', 'hlc', 'node_id', 'modified']) {
+      expect(keys, isNot(contains(bookkeeping)), reason: '$bookkeeping should never reach a script');
+    }
+  });
+
+  /// A throwaway table shaped like Agenda's own recurring-reminder group
+  /// (Start/Timeframe/When, plus an optional End) -- mirrors
+  /// `recurring_reminder_service_test.dart`'s own `createReminderTable`
+  /// helper, kept local to this file rather than shared/imported since
+  /// each schema-engine test file stays self-contained per this project's
+  /// established convention.
+  Future<(String table, String startField, String timeframeField, String whenField, String? endField)>
+  createRecurrenceShapedTable({
+    required String timeframeTable,
+    bool withEnd = false,
+    bool inlineTimeframe = false,
+  }) async {
+    final tableName = await editor.createTable(displayName: 'Script Recurrence $runTag ${DateTime.now().microsecondsSinceEpoch}');
+    addTearDown(() => dropTestTable(editor, metadata, tableName));
+    await editor.addField(tableName: tableName, displayName: 'Start', format: 'dateTime');
+    if (withEnd) {
+      await editor.addField(tableName: tableName, displayName: 'End', format: 'dateTime');
+    }
+    await editor.addField(
+      tableName: tableName,
+      displayName: 'Timeframe',
+      format: 'select',
+      optionsJson: inlineTimeframe
+          ? jsonEncode({
+              'mode': 'inline',
+              'options': [
+                for (final keyword in recurrenceTimeframeKeywords) {'key': keyword, 'label': keyword},
+              ],
+            })
+          : jsonEncode({'mode': 'linked', 'table': timeframeTable, 'displayField': 'name'}),
+    );
+    await editor.addField(tableName: tableName, displayName: 'When', format: 'text');
+
+    return (
+      tableName,
+      await physicalFieldName(tableName, 'Start'),
+      await physicalFieldName(tableName, 'Timeframe'),
+      await physicalFieldName(tableName, 'When'),
+      withEnd ? await physicalFieldName(tableName, 'End') : null,
+    );
+  }
+
+  Future<(String table, Map<String, int> ids)> createTimeframeLookupTable() async {
+    final tableName = await editor.createTable(displayName: 'Script Timeframe $runTag');
+    addTearDown(() => dropTestTable(editor, metadata, tableName));
+    await editor.addField(tableName: tableName, displayName: 'Name', format: 'text');
+    final config = await registry.buildConfig(tableName);
+    final dao = GenericDao(config);
+    final ids = <String, int>{};
+    for (final keyword in recurrenceTimeframeKeywords) {
+      ids[keyword] = await dao.insert({'name': keyword});
+    }
+    return (tableName, ids);
+  }
+
+  test('record.nextOccurrence advances Start by one day for a daily timeframe', () async {
+    final (timeframeTable, ids) = await createTimeframeLookupTable();
+    final (tableName, startField, timeframeField, whenField, _) =
+        await createRecurrenceShapedTable(timeframeTable: timeframeTable);
+    final config = await registry.buildConfig(tableName);
+    final id = await GenericDao(config).insert({
+      startField: '2026-09-14 09:00',
+      timeframeField: ids['daily'],
+    });
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "var n = record.nextOccurrence('$startField', '$timeframeField', '$whenField'); notify(JSON.stringify(n));",
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: tableName, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    final decoded = jsonDecode(result.effects.notifications.single) as Map;
+    expect(decoded['start'], '2026-09-15 09:00');
+    expect(decoded['end'], isNull);
+  });
+
+  test('record.nextOccurrence shifts End by the same delta as Start, preserving duration', () async {
+    // The exact case the original "current End + (End - Start)" proposal
+    // would have gotten wrong -- a 1-hour appointment must stay 1 hour,
+    // not grow, after advancing.
+    final (timeframeTable, ids) = await createTimeframeLookupTable();
+    final (tableName, startField, timeframeField, whenField, endField) =
+        await createRecurrenceShapedTable(timeframeTable: timeframeTable, withEnd: true);
+    final config = await registry.buildConfig(tableName);
+    final id = await GenericDao(config).insert({
+      startField: '2026-09-15 09:00',
+      endField!: '2026-09-15 10:00',
+      timeframeField: ids['weekly'],
+    });
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "var n = record.nextOccurrence('$startField', '$timeframeField', '$whenField', '$endField'); "
+      "notify(JSON.stringify(n));",
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: tableName, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    final decoded = jsonDecode(result.effects.notifications.single) as Map;
+    expect(decoded['start'], '2026-09-22 09:00');
+    expect(decoded['end'], '2026-09-22 10:00');
+  });
+
+  test('record.nextOccurrence returns null once a Once timeframe has already occurred', () async {
+    final (timeframeTable, ids) = await createTimeframeLookupTable();
+    final (tableName, startField, timeframeField, whenField, _) =
+        await createRecurrenceShapedTable(timeframeTable: timeframeTable);
+    final config = await registry.buildConfig(tableName);
+    final id = await GenericDao(config).insert({
+      startField: '2026-09-15 09:00',
+      timeframeField: ids['once'],
+    });
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "notify(String(record.nextOccurrence('$startField', '$timeframeField', '$whenField')));",
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: tableName, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    expect(result.effects.notifications, ['null']);
+  });
+
+  test('record.nextOccurrence resolves an inline-select Timeframe field too, not just a linked one', () async {
+    final (tableName, startField, timeframeField, whenField, _) = await createRecurrenceShapedTable(
+      timeframeTable: '', // unused for inline mode
+      inlineTimeframe: true,
+    );
+    final config = await registry.buildConfig(tableName);
+    final id = await GenericDao(config).insert({
+      startField: '2026-09-14 09:00',
+      timeframeField: 'daily',
+    });
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      "notify(record.nextOccurrence('$startField', '$timeframeField', '$whenField').start);",
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: tableName, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    expect(result.effects.notifications, ['2026-09-15 09:00']);
+  });
+
+  test('a real "Next" button-style script copies the record forward, leaving the original untouched', () async {
+    // End-to-end proof of the actual planned Agenda usage: read the
+    // current record, compute the next occurrence, copy every field
+    // (minus id) into a brand-new row with Start/End advanced -- all
+    // through the real bridge, not a hand-simplified version of it.
+    final (timeframeTable, ids) = await createTimeframeLookupTable();
+    final (tableName, startField, timeframeField, whenField, endField) =
+        await createRecurrenceShapedTable(timeframeTable: timeframeTable, withEnd: true);
+    await editor.addField(tableName: tableName, displayName: 'Activity', format: 'text');
+    final activityField = await physicalFieldName(tableName, 'Activity');
+
+    final config = await registry.buildConfig(tableName);
+    final dao = GenericDao(config);
+    final id = await dao.insert({
+      startField: '2026-09-14 09:00',
+      endField!: '2026-09-14 09:30',
+      timeframeField: ids['weekly'],
+      activityField: 'Guava Updates',
+    });
+
+    final runtime = ScriptApiRuntime();
+    final result = await runtime.run(
+      '''
+      var next = record.nextOccurrence('$startField', '$timeframeField', '$whenField', '$endField');
+      if (next === null) {
+        notify('no more occurrences');
+      } else {
+        var copy = record.fields();
+        delete copy.id;
+        copy.$startField = next.start;
+        copy.$endField = next.end;
+        table('$tableName').create(copy);
+        notify('created: ' + next.start);
+      }
+      ''',
+      databasePath: databasePath,
+      context: ScriptRunContext(recordTable: tableName, recordId: id),
+    );
+
+    expect(result.outcome.succeeded, isTrue);
+    expect(result.effects.notifications, ['created: 2026-09-21 09:00']);
+
+    final rows = await db.query(
+      'SELECT "$startField" AS start, "$endField" AS end, "$activityField" AS activity '
+      'FROM "$tableName" WHERE is_deleted = 0 ORDER BY "$startField"',
+    );
+    expect(rows, hasLength(2), reason: 'the original row must survive untouched, alongside the new one');
+    expect(rows[0]['start'], '2026-09-14 09:00');
+    expect(rows[0]['end'], '2026-09-14 09:30');
+    expect(rows[0]['activity'], 'Guava Updates');
+    expect(rows[1]['start'], '2026-09-21 09:00');
+    expect(rows[1]['end'], '2026-09-21 09:30');
+    expect(rows[1]['activity'], 'Guava Updates');
   });
 }
