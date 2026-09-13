@@ -10175,3 +10175,72 @@ real toast, not just the Event Log fallback.
 checking every 5 minutes, unattended. All three follow-ups from this
 incident (the race fix, the watchdog script itself, and getting it
 actually registered) are done.
+
+## Button fields are now clickable in the Grid too, not just the form -- the "deferred" reasoning didn't actually hold up
+
+Mike pushed back on the Known Gaps entry ("Button fields render blank in
+the grid") with the right question: doesn't every other custom cell
+renderer in this grid (the actions column's edit/delete icons, the
+boolean checkbox, the color swatch) already read its own row's `id`
+directly from `rendererContext.row`, with zero reliance on grid
+selection at all? Checked the actual code rather than re-asserting the
+old reasoning -- he was right, and the original "no way to pass a record
+id" justification (`ButtonFormatHandler`'s own doc comment,
+`GenericFormScreen._buildButtonField`'s doc comment) conflated two
+different things: the *shared* `FieldFormatHandler.buildGridColumn
+(FieldConfig field)` interface genuinely has no way to see a row's id
+(it only ever sees the field) -- but that was never actually a
+constraint here, since a button column (like the actions column, boolean,
+and color columns before it) was always free to bypass that shared
+interface entirely and build its own `TrinaColumn` by hand, exactly the
+way those three already do.
+
+**Confirmed the fix would give the script everything it needs before
+building it, not after** -- walked through `record`/`table()`/`notify()`
+one at a time: `record`'s context is just `widget.config.tableName`
+(fixed for the whole screen) + the row's own `id` (already available via
+`rendererContext.row.cells['id']`), identical to what the form's button
+already passes. `table()`/`notify()` don't depend on the triggering
+record at all. And the Grid's own live-refresh fix (`touchedTables` ->
+`SyncService.notifyLocalDataChange`, "Refresh an already-open Grid..."
+above) already covers a script writing back to the *same* grid it was
+clicked from -- no additional wiring needed there, a genuine bonus of
+having already fixed that this session.
+
+**Built as a real, visible button, per Mike's own spec ("somewhat bigger
+than the link icon, resemble a button, centered in the cell")** -- a
+compact `ElevatedButton` (36px tall, horizontal padding, not a bare icon)
+wrapped in `Center`, in a new `field.format == 'button'` branch at the
+top of `GenericListScreen._buildFieldColumn` -- same special-casing
+pattern the form's own button already uses, for the identical reason
+(needs table name + record id, which the shared `FieldFormatHandler`
+interface can't provide). No "record doesn't exist yet" gating needed
+here unlike the form's version -- every row a grid ever renders already
+came from the database, so it always has a real id.
+
+**`buttonLabelFor(FieldConfig)` extracted as a small shared helper**
+(`button_format_handler.dart`) -- the `options.label` / `'Run script'`
+fallback logic, previously duplicated (slightly differently) between
+`ButtonFormatHandler`'s own dead `buildFormField` and
+`GenericFormScreen._buildButtonField`. Both, plus the new grid button,
+now call the same function. `ButtonFormatHandler.buildGridColumn`/
+`buildFormField` stay as dead code (interface requires an implementation)
+with updated doc comments explaining the real reason they're unreachable
+now -- not "no way to know the row," but "the real implementation lives
+in the screen that actually has table-name-plus-record-id context,"
+matching the form's own precedent exactly.
+
+New test file, `test/button_format_handler_test.dart` (3 tests, pure
+Dart, no database) -- `buttonLabelFor`'s default/explicit/blank-or-wrong-
+type fallback behavior. The grid-rendering/tap-dispatch behavior itself
+is left to build+verify plus Mike's own interactive pass, same division
+of labor as every other UI-level grid feature in this project.
+`flutter analyze` clean, `flutter build windows`/`apk --debug` both
+clean, debug APK pushed to MIKE-12R.
+
+**Build-verified only -- not yet Mike-tested interactively.** Next:
+confirm on Agenda's grid that the "Next" button appears (bigger than the
+link icon, centered), that clicking it runs the script exactly like the
+form's button does (including the duplicate-abort message), and that the
+newly-created row shows up in the grid immediately via the existing
+live-refresh fix.

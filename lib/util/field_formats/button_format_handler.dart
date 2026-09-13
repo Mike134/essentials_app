@@ -24,25 +24,26 @@ import 'field_format_handler.dart';
 /// special-cases `field.format == 'button'` before the generic handler
 /// dispatch ever reaches it.
 ///
-/// **Grid affordance deliberately deferred, per the design doc's own
-/// "TBD during build" note.** [buildGridColumn] renders a plain,
-/// always-blank read-only column for now -- consistent with `barcode`'s
-/// precedent (its scan affordance is form-only too, confirmed as the
-/// right call by Mike during Phase 2's real-device pass) rather than
-/// guessing at a grid button's interaction model before any script can
-/// actually run from it. This handler stays registered for that grid
-/// column alone.
+/// **Grid affordance: the real, clickable button now lives in
+/// `GenericListScreen._buildFieldColumn`, not [buildGridColumn] below --
+/// same reasoning as the form's own button.** Originally deferred (per
+/// the design doc's "TBD during build" note, and `barcode`'s precedent of
+/// a form-only affordance) until Mike confirmed a grid button genuinely
+/// needs nothing [buildGridColumn]'s shared interface can't already
+/// provide: every custom cell renderer in this app (the actions column's
+/// edit/delete icons, the boolean checkbox, the color swatch) already
+/// reads its own row's `id` directly from `rendererContext.row`, with no
+/// reliance on grid selection at all -- so a button cell needs exactly
+/// the same table name (already known, fixed for the whole screen) plus
+/// that same per-row `id`, neither of which requires extending this
+/// shared interface. [buildGridColumn] here is dead code for the same
+/// reason [buildFormField] below already was -- kept only because the
+/// interface requires an implementation.
 class ButtonFormatHandler implements FieldFormatHandler {
   const ButtonFormatHandler();
 
   @override
   String get format => 'button';
-
-  String _labelFor(FieldConfig field) {
-    final raw = field.options['label'];
-    if (raw is String && raw.trim().isNotEmpty) return raw.trim();
-    return 'Run script';
-  }
 
   @override
   TrinaColumn buildGridColumn(FieldConfig field) {
@@ -67,6 +68,19 @@ class ButtonFormatHandler implements FieldFormatHandler {
     // Kept functional (not a throw) purely as a safe fallback in case
     // some future caller other than GenericFormScreen ever queries the
     // registry directly for a `button` field.
-    return ElevatedButton(onPressed: null, child: Text(_labelFor(field)));
+    return ElevatedButton(onPressed: null, child: Text(buttonLabelFor(field)));
   }
+}
+
+/// The label a `button` field's own form/grid widget should show --
+/// `options.label`, trimmed, falling back to `'Run script'` when unset
+/// or blank. Shared by `GenericFormScreen._buildButtonField`,
+/// `GenericListScreen`'s own grid button column, and this class's dead
+/// [ButtonFormatHandler.buildFormField] fallback, so all three agree on
+/// exactly the same rule rather than three near-identical copies
+/// drifting apart.
+String buttonLabelFor(FieldConfig field) {
+  final raw = field.options['label'];
+  if (raw is String && raw.trim().isNotEmpty) return raw.trim();
+  return 'Run script';
 }

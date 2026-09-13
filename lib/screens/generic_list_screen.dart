@@ -20,6 +20,7 @@ import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
 import '../util/device_id.dart';
 import '../util/display_aware_filters.dart';
+import '../util/field_formats/button_format_handler.dart';
 import '../util/field_formats/field_format_handler.dart';
 import '../util/link_record.dart';
 import '../util/links.dart';
@@ -1324,6 +1325,51 @@ class _GenericListScreenState extends State<GenericListScreen> {
     final reminderFields = _recurringReminderFields;
     if (reminderFields != null && field.column == reminderFields.when.column) {
       return _withColumnSetting(_buildRecurrenceWhenColumn(field, reminderFields, lookupMaps), setting);
+    }
+
+    // Handled here, before the generic FieldFormatHandler dispatch below,
+    // for the identical reason GenericFormScreen._buildButtonField
+    // special-cases it: running a real button_clicked script needs a
+    // table name and record id, which the shared handler interface has
+    // no way to pass. Unlike the form, no "record doesn't exist yet"
+    // gating is needed -- every row a grid ever renders already came
+    // from the database, so it always has a real id. Every other custom
+    // cell renderer in this screen (the actions column's edit/delete
+    // icons, the boolean checkbox, the color swatch) already reads its
+    // own row's id straight from rendererContext.row with no reliance on
+    // grid selection at all -- this is the same pattern, just triggering
+    // a script instead of an in-place edit.
+    if (field.format == 'button') {
+      return _withColumnSetting(
+        TrinaColumn(
+          title: field.label,
+          field: field.column,
+          type: TrinaColumnType.text(),
+          readOnly: true,
+          width: 140,
+          renderer: (rendererContext) {
+            if (rendererContext.row.type.isGroup) return const SizedBox.shrink();
+            final id = rendererContext.row.cells['id']!.value as int;
+            return Center(
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(0, 36),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                ),
+                onPressed: () => EventDispatchService().dispatchAndApplyEffects(
+                  context,
+                  tableName: widget.config.tableName,
+                  eventType: 'button_clicked',
+                  fieldName: field.column,
+                  recordId: id,
+                ),
+                child: Text(buttonLabelFor(field)),
+              ),
+            );
+          },
+        ),
+        setting,
+      );
     }
 
     final handler = _formatHandlerFor(field);

@@ -19,6 +19,7 @@ import '../util/color_picker.dart';
 import '../util/bool_value.dart';
 import '../util/column_autocomplete.dart';
 import '../util/date_format.dart';
+import '../util/field_formats/button_format_handler.dart';
 import '../util/field_formats/field_format_handler.dart';
 import '../util/form_label_style.dart';
 import '../util/geo_location.dart';
@@ -679,11 +680,11 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   /// way to pass a table name or record id, which running a real
   /// `button_clicked` script genuinely needs (unlike every other Phase 2
   /// format, none of which need anything beyond their own field's value).
-  /// `ButtonFormatHandler` stays registered for [GenericListScreen]'s
-  /// grid column only, where no click-dispatch happens at all (see that
-  /// handler's own doc comment).
+  /// [GenericListScreen]'s own grid button column needs the identical
+  /// table-name-plus-record-id context and is special-cased there for the
+  /// same reason -- see that screen's own doc comment.
   Widget _buildButtonField(FieldConfig field) {
-    final label = field.options['label'] as String? ?? 'Run script';
+    final label = buttonLabelFor(field);
     final id = widget.isEditing ? widget.existing!['id'] as int : null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
