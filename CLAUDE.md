@@ -9939,6 +9939,6 @@ windows`/`apk --debug` both clean, debug APK pushed to MIKE-12R. Live db
 confirmed clean afterward -- `PRAGMA integrity_check: ok`, zero leaked
 test tables.
 
-**Build-verified only -- not yet Mike-tested interactively.** Next:
-confirm the same "Next" button test on MIKE-CU now shows the new row in
-the Grid immediately, with no need to leave and return to the table.
+**Mike's interactive verification on MIKE-CU: done, passed** -- the new
+row now appears in the Grid immediately, no need to leave and return to
+the table.
