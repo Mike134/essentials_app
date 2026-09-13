@@ -2178,6 +2178,17 @@ all three. `flutter test`/`flutter analyze` clean on `essentials_app` and
   reload constraint" above for the one real limit on this — Code verifies
   and builds, VS Code runs the live hot-reload loop.)
 - Python here is 3.14.6, managed via `pymanager` (`py install --update`).
+- **Standing rule (2026-09-13): any user-facing addition or behavior
+  change to the app must update the Guide** (`Essentials User Guide.md`,
+  in the Obsidian vault -- see "`USER_GUIDE.md` moved out of the repo"
+  above for its real path and why it's not git-tracked) **in the same
+  session**, not just `CLAUDE.md`. `CLAUDE.md`/`claude/*.md` are Claude's
+  own design/history record for *this* project's development; the Guide
+  is what Mike actually reads to remember how to use the app day to day,
+  and it goes stale fast if a feature only ever gets written up here.
+  Applies to new features, changed behavior, and a bug fix that corrects
+  previously-wrong documented behavior alike -- if a user could notice it
+  by using the app, it belongs in the Guide, not just this file.
 
 ## Working across Claude Desktop's Chat and Code tabs
 
