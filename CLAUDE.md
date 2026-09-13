@@ -9452,3 +9452,53 @@ after the schema change.
 "Week" isn't needed as its own unit (7 Day(s) covers it). Next: try it on
 a real record (the birthday, or Agenda generally) and confirm the
 Month/Year math lands where expected.
+
+## Real bug: lookup dropdowns sorted `order_by` lexicographically, not numerically, once positions reached double digits (2026-09-13)
+
+Mike reported Agenda's `Status` dropdown (grid and form) not honoring its
+own "Sort by" -> Position setting, while `Priority`'s identical setup
+sorted correctly. Confirmed directly against the live `essentials.db`,
+not guessed: both tables had `table_definitions.order_by = 'position'`
+set correctly, and both had a real physical `position` column -- the
+setting itself (added in "New feature: 'Sort by'" above, 2026-09-11) was
+working exactly as designed.
+
+**Root cause: every v2 field is physically `TEXT`** (Essentials v2 Phase
+1's own design), so `GenericDao.getLookupOptions`/`getLinkedRecordOptions`'s
+plain `ORDER BY "position"` sorted as text, not numbers. `Status` has 11
+rows (positions 1-11); text sort puts `"10"`/`"11"` before `"2"`-`"9"`,
+producing exactly the wrong order Mike saw:
+`idea, closed, none, someday, research, attention, working, waiting,
+delayed, problem, cancelled` (1, 10, 11, 2, 3, ...). `Priority` has only 5
+rows (1-5) -- single digits sort identically as text or numbers, which is
+why it looked correct and masked the bug entirely.
+
+**Fix, in `GenericDao`'s new `_orderByExpression` helper** (used by both
+`getLookupOptions` and `getLinkedRecordOptions`, alongside the existing
+`_resolveOrderBy`): rather than sampling every row's value to guess
+numeric-ness (the first draft, corrected on Mike's own suggestion --
+"Position is defined as a whole number, can't you queue off the type
+definition rather than inspecting every value?"), it queries the sort
+column's own declared `field_definitions.format` and wraps the column in
+`CAST(... AS REAL)` when that format is `integer`/`real`/`currency`/
+`percentage`/`rating` -- mirroring `FormulaService.isNumericField`'s
+numeric-format set (minus `formula`, since a `readOnly` field is never
+offered by `ManageTablesScreen`'s "Sort by" picker in the first place, so
+a computed column can never reach this method). A column with no matching
+`field_definitions` row (the structural `id` fallback, a real `INTEGER`
+column needing no cast) correctly falls through to plain text ordering.
+Trusting the declared type instead of the data is both cheaper (no extra
+query per distinct value) and correct regardless of which specific values
+happen to exist -- doesn't depend on the table already having "enough"
+rows to expose the bug the way value-sampling would have.
+
+New regression test, `test/generic_dao_linked_fields_test.dart` --
+reproduces Status's exact 11-position shape and asserts the correct
+1-through-11 numeric order, run alongside the existing `order_by` tests
+(10/10 pass). `flutter analyze` clean, `flutter build windows`/`apk
+--debug` both clean, debug APK pushed to MIKE-12R.
+
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R** -- Status's dropdown (grid and form) now shows the correct
+1-11 order.
+Month/Year math lands where expected.

@@ -577,6 +577,7 @@ class GenericDao {
     assertSafeSqlIdentifier(lookup.displayColumn);
     final displayColumn = await _resolveDisplayColumn(crdt, lookup.table, lookup.displayColumn);
     final orderBy = await _resolveOrderBy(crdt, lookup.table, displayColumn);
+    final orderByExpr = await _orderByExpression(crdt, lookup.table, orderBy);
     // Aliased back onto the *configured* key when it had to fall back --
     // every consumer (this screen's lookupMaps, the form's dropdown) reads
     // `option[lookup.displayColumn]`, the original key, so without this a
@@ -587,7 +588,7 @@ class GenericDao {
         : ', $displayColumn AS ${lookup.displayColumn}';
     return crdt.query(
       'SELECT *$alias FROM ${lookup.table} '
-      'WHERE is_deleted = 0 ORDER BY $orderBy',
+      'WHERE is_deleted = 0 ORDER BY $orderByExpr',
     );
   }
 
@@ -605,13 +606,14 @@ class GenericDao {
       linkRecord.displayColumn,
     );
     final orderBy = await _resolveOrderBy(crdt, linkRecord.table, displayColumn);
+    final orderByExpr = await _orderByExpression(crdt, linkRecord.table, orderBy);
     // Same aliasing-on-fallback reasoning as getLookupOptions above.
     final alias = displayColumn == linkRecord.displayColumn
         ? ''
         : ', "$displayColumn" AS "${linkRecord.displayColumn}"';
     return crdt.query(
       'SELECT *$alias FROM "${linkRecord.table}" '
-      'WHERE is_deleted = 0 ORDER BY "$orderBy"',
+      'WHERE is_deleted = 0 ORDER BY $orderByExpr',
     );
   }
 
@@ -669,6 +671,42 @@ class GenericDao {
     final columns = await crdt.query('PRAGMA table_info("$table")');
     final exists = columns.any((c) => c['name'] == configured);
     return exists ? configured : fallback;
+  }
+
+  /// A real `ORDER BY` expression for [column] on [table] -- a numeric cast
+  /// (`CAST("col" AS REAL)`) when [column]'s own declared `field_definitions
+  /// .format` is a numeric one, plain text otherwise.
+  ///
+  /// Found 2026-09-13: every v2 column is physically `TEXT` (Essentials v2
+  /// Phase 1's own design -- see `SchemaEditorService.addField`), so a plain
+  /// `ORDER BY "position"` sorts lexicographically, not numerically. That's
+  /// invisible for a lookup table with single-digit positions (Priority: 1-5
+  /// sorts identically either way) but silently wrong the moment a table's
+  /// positions reach double digits (Status: 1, 10, 11, 2, 3, ... -- "10"/"11"
+  /// sort before "2" as plain text).
+  ///
+  /// Trusts the field's own declared type rather than sampling row data --
+  /// "Position" is defined as a whole number, so that declaration is the
+  /// correct signal, not something to re-derive from the values on every
+  /// call. Mirrors `FormulaService.isNumericField`'s numeric-format set
+  /// (integer/real/currency/percentage/rating), minus `formula` -- a
+  /// `readOnly` field is never eligible as a sort column in the first place
+  /// (`ManageTablesScreen`'s "Sort by" picker only offers writable fields),
+  /// so a computed column never reaches this method. [column] here is
+  /// already whatever [_resolveOrderBy]/[_resolveDisplayColumn] resolved --
+  /// a validated, existing physical column -- so it's safe to interpolate
+  /// directly. A column with no matching `field_definitions` row (e.g. the
+  /// structural `id` fallback, a real `INTEGER` column that needs no cast)
+  /// falls through to plain text ordering, which is correct for `id` too.
+  Future<String> _orderByExpression(CrdtApi crdt, String table, String column) async {
+    final rows = await crdt.query(
+      'SELECT format FROM field_definitions '
+      'WHERE table_name = ?1 AND field_name = ?2 AND is_deleted = 0',
+      [table, column],
+    );
+    final format = rows.isEmpty ? null : rows.first['format'] as String?;
+    const numericFormats = {'integer', 'real', 'currency', 'percentage', 'rating'};
+    return numericFormats.contains(format) ? 'CAST("$column" AS REAL)' : '"$column"';
   }
 
   /// Every other-table record whose own `link_record` field points back at

@@ -183,6 +183,48 @@ void main() {
     },
   );
 
+  test(
+    'getLookupOptions sorts order_by numerically, not lexicographically, once positions reach double digits',
+    () async {
+      // Found 2026-09-13, live: every v2 column is physically TEXT, so a
+      // plain ORDER BY "position" sorts "10"/"11" before "2"..."9" as text.
+      // Invisible for a small table (Priority: 1-5, single digits sort the
+      // same either way) but real and wrong for a table like Status with
+      // 11 rows -- reproduced here with the exact same 11-position shape.
+      final pair = await createLinkedPair('GDL Lookup OrderBy Double Digit');
+      await editor.addField(tableName: pair.parent, displayName: 'Name', format: 'text');
+      await editor.addField(tableName: pair.parent, displayName: 'Position', format: 'integer');
+
+      final byPosition = {
+        1: 'idea',
+        2: 'someday',
+        3: 'research',
+        4: 'attention',
+        5: 'working',
+        6: 'waiting',
+        7: 'delayed',
+        8: 'problem',
+        9: 'cancelled',
+        10: 'closed',
+        11: 'none',
+      };
+      for (final entry in byPosition.entries) {
+        await insertRow(pair.parent, {'name': entry.value, 'position': entry.key});
+      }
+      await metadata.updateSortField(pair.parent, 'position');
+
+      final childConfig = await registry.buildConfig(pair.child);
+      final lookup = childConfig.fields.firstWhere((f) => f.column == pair.linkField).lookup!;
+      final names = [for (final o in await GenericDao(childConfig).getLookupOptions(lookup)) o['name']];
+
+      expect(
+        names,
+        [for (var i = 1; i <= 11; i++) byPosition[i]],
+        reason: 'must sort 1, 2, 3, ..., 10, 11 numerically, not "1", "10", "11", "2", ...',
+      );
+    },
+  );
+
   test('getLinkedRecordOptions sorts by the target table\'s order_by too, same as getLookupOptions', () async {
     final parent = await createTestTable('GDL LinkRecord OrderBy Parent');
     await editor.addField(tableName: parent, displayName: 'Name', format: 'text');
