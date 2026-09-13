@@ -143,6 +143,12 @@ const infraSchemaStatements = <String>[
       "group_position" INTEGER
     )
   ''',
+  '''
+    CREATE TABLE "table_group_order" (
+      "group_name" TEXT PRIMARY KEY,
+      "position"   INTEGER NOT NULL
+    )
+  ''',
 
   // ---------- Views (Essentials v2 Phase 3) ----------
   // Saved List/Kanban (per-table, table_name set) / Calendar (aggregate,

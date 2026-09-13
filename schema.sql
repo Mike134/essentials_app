@@ -221,6 +221,22 @@ CREATE TABLE "table_group" (
     "group_position" INTEGER
 );
 
+-- The sidebar *groups themselves* (not the tables within one) -- shared,
+-- keyed purely by `group_name`, deliberately its own tiny table rather than
+-- a column bolted onto `table_group` (whose rows are per-table; a group with
+-- zero members -- impossible today, since a group only exists once a table's
+-- been dropped into it, but this keeps the two concepts cleanly separable
+-- regardless). A group with no row here falls back to first-appearance order
+-- among the nav's tables, exactly the behavior every group had before this
+-- table existed -- see `home_shell.dart`'s `_buildGroups`. The synthetic
+-- "Ungrouped" bucket can have a real row here too, same as any other
+-- `group_name` string -- it has no `table_group` membership rows, but
+-- ordering is a separate concern this table doesn't care about.
+CREATE TABLE "table_group_order" (
+    "group_name" TEXT PRIMARY KEY,
+    "position"   INTEGER NOT NULL
+);
+
 -- ===================== VIEWS (Essentials v2 Phase 3) =====================
 -- Saved List/Kanban (per-table) and Calendar (aggregate) views -- shared/
 -- synced, same bucket as table_definitions/field_definitions, NOT per-device

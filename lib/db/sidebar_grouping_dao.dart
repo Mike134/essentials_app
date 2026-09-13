@@ -101,6 +101,47 @@ class SidebarGroupingDao {
     await db.deleteWhere('table_group', {'table_name': tableName});
   }
 
+  /// The sidebar's own group-level display order (`table_group_order`,
+  /// keyed purely by `group_name`) -- shared, same sync scope as
+  /// [loadMembership]/[setGroupOrder] above, not per-device. Absence of a
+  /// group's key means "never explicitly ordered" -- `home_shell.dart`'s
+  /// `_buildGroups` falls back to first-appearance order for those, exactly
+  /// as if this table didn't exist at all.
+  Future<Map<String, int>> loadGroupOrder() async {
+    final db = await _db;
+    final rows = await db.query('SELECT * FROM table_group_order WHERE is_deleted = 0');
+    return {for (final row in rows) row['group_name'] as String: row['position'] as int};
+  }
+
+  /// Replaces the sidebar's group ordering wholesale -- every name in
+  /// [orderedGroupNames] (including, if present, the synthetic "Ungrouped"
+  /// bucket -- it's just a `group_name` string to this table, which has no
+  /// concept of real vs. synthetic groups) gets `position` set to its
+  /// index. Same whole-set-replace reasoning as [setGroupOrder]: the caller
+  /// always has the complete desired order on hand already (it's what's on
+  /// screen), so there's no partial-update case to support.
+  Future<void> setGroupDisplayOrder(List<String> orderedGroupNames) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      for (var i = 0; i < orderedGroupNames.length; i++) {
+        await txn.execute(
+          'INSERT OR REPLACE INTO table_group_order (group_name, position) VALUES (?1, ?2)',
+          [orderedGroupNames[i], i],
+        );
+      }
+    });
+  }
+
+  /// Tombstones [groupName]'s `table_group_order` row, if any -- there's no
+  /// "delete a group" concept in the UI today (a group just stops existing
+  /// once its last table leaves it, same as before this table existed),
+  /// but this exists for test cleanup, matching every other DAO's own
+  /// dedicated removal method (e.g. [removeFromGroup] above).
+  Future<void> removeGroupOrder(String groupName) async {
+    final db = await _db;
+    await db.deleteWhere('table_group_order', {'group_name': groupName});
+  }
+
   Future<Set<String>> loadCollapsedGroups() async {
     final db = await _db;
     final rows = await db.query(

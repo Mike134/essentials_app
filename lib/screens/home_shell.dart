@@ -60,10 +60,12 @@ const String _ungroupedGroupName = 'Ungrouped';
 /// has no way to represent a group with zero members, so a group only
 /// exists once a
 /// table's been moved into it.
-/// Group *display* order isn't a stored field either -- derived from
-/// first-appearance order among [_tables], which keeps every table visible
-/// even before it's ever been moved anywhere, and gives a stable,
-/// deterministic order without a schema column dedicated to it.
+/// Group *display* order (which group appears first, second, ...) is a
+/// separate, real, stored field -- `table_group_order`, keyed purely by
+/// group name (see schema.sql's own doc comment on that table). A group
+/// with no explicit entry there falls back to first-appearance order among
+/// [_tables], the same deterministic default every group had before that
+/// table existed -- see [_buildGroups].
 ///
 /// **Ordering tables within a group** (Mike's follow-up ask once Step 4
 /// was otherwise done): every table item is *also* a `DragTarget` now, not
@@ -75,6 +77,17 @@ const String _ungroupedGroupName = 'Ungrouped';
 /// when manual dragging isn't worth it. Neither applies to the synthetic
 /// "Ungrouped" bucket -- there's no `table_group` row to set a position
 /// on for something that isn't a real group.
+///
+/// **Ordering the groups themselves** (a later follow-up, same shape):
+/// each group header is now *also* a `LongPressDraggable`/`DragTarget`
+/// pair (see [_railGroupHeader]/[_drawerGroupChildren]) -- dropping one
+/// group onto another calls [_reorderGroup], which reorders via
+/// [SidebarGroupingDao.setGroupDisplayOrder]. A "Sort groups A-Z" action
+/// ([_sortGroupsAlphabetically]) sits above the group list in both the
+/// rail and the drawer. Unlike per-table ordering, this *does* apply to
+/// "Ungrouped" -- `table_group_order` has no concept of a synthetic
+/// bucket, it's just another `group_name` string, so there's nothing to
+/// special-case here.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -97,6 +110,13 @@ class _HomeShellState extends State<HomeShell> {
 
   SidebarGroupingDao? _groupingDao;
   Set<String> _collapsedGroups = {};
+
+  /// The sidebar's own group-level display order (`table_group_order`),
+  /// keyed by `group_name` -- shared across devices, same sync scope as
+  /// [_reloadGroups]' membership reload, not per-device like
+  /// [_collapsedGroups]. A group with no entry here falls back to
+  /// first-appearance order among [_tables] in [_buildGroups].
+  Map<String, int> _groupOrder = {};
   late Future<List<_SidebarGroup>> _groupsFuture;
 
   /// Essentials v2 Phase 3 -- which saved view (if any) is currently active
@@ -303,7 +323,8 @@ class _HomeShellState extends State<HomeShell> {
 
     final membership = await dao.loadMembership();
     _collapsedGroups = await dao.loadCollapsedGroups();
-    return _buildGroups(tables, membership);
+    _groupOrder = await dao.loadGroupOrder();
+    return _buildGroups(tables, membership, _groupOrder);
   }
 
   /// Only re-derives *grouping* state (membership/collapse), not the table
@@ -337,7 +358,8 @@ class _HomeShellState extends State<HomeShell> {
     if (dao == null) return _loadGroups();
     final membership = await dao.loadMembership();
     _collapsedGroups = await dao.loadCollapsedGroups();
-    return _buildGroups(_tables, membership);
+    _groupOrder = await dao.loadGroupOrder();
+    return _buildGroups(_tables, membership, _groupOrder);
   }
 
   void _select(String tableName) {
@@ -440,6 +462,47 @@ class _HomeShellState extends State<HomeShell> {
     final sorted = [...group.tables]
       ..sort((a, b) => a.displayName.compareTo(b.displayName));
     await dao.setGroupOrder(group.name, [for (final t in sorted) t.tableName]);
+    _reloadGroups();
+  }
+
+  /// Reorders the sidebar's *groups* (not the tables within one -- see
+  /// [_reorderTable]/[_sortGroupAlphabetically] for that) so [dragged] sits
+  /// immediately before [target], via [SidebarGroupingDao
+  /// .setGroupDisplayOrder]. Unlike table-within-group reordering, this
+  /// applies uniformly to every group name, "Ungrouped" included --
+  /// `table_group_order` has no concept of a synthetic bucket, it's just a
+  /// string key, so there's no reason to special-case it here the way
+  /// [_sortGroupAlphabetically]/[_reorderTable] still correctly do for
+  /// per-table positioning within it (which genuinely has no `table_group`
+  /// row to write to for that bucket).
+  Future<void> _reorderGroup(
+    String draggedGroupName,
+    String targetGroupName,
+    List<_SidebarGroup> groups,
+  ) async {
+    final dao = _groupingDao;
+    if (dao == null || draggedGroupName == targetGroupName) return;
+
+    final newOrder = [
+      for (final g in groups)
+        if (g.name != draggedGroupName) g.name,
+    ];
+    newOrder.insert(newOrder.indexOf(targetGroupName), draggedGroupName);
+
+    await dao.setGroupDisplayOrder(newOrder);
+    _reloadGroups();
+  }
+
+  /// One-click alphabetical sort for the groups themselves -- the
+  /// group-level counterpart to each group header's own "Sort A-Z" (which
+  /// only ever sorts the tables *within* one group). "Ungrouped" sorts
+  /// alongside every real group here, same reasoning as [_reorderGroup].
+  Future<void> _sortGroupsAlphabetically(List<_SidebarGroup> groups) async {
+    final dao = _groupingDao;
+    if (dao == null) return;
+
+    final sorted = [...groups]..sort((a, b) => a.name.compareTo(b.name));
+    await dao.setGroupDisplayOrder([for (final g in sorted) g.name]);
     _reloadGroups();
   }
 
@@ -672,8 +735,9 @@ class _HomeShellState extends State<HomeShell> {
 
   List<Widget> _buildRailChildren(List<_SidebarGroup> groups) {
     return [
+      if (groups.isNotEmpty) _railSortGroupsHeader(groups),
       for (final group in groups) ...[
-        _railGroupHeader(group),
+        _railGroupHeader(group, groups),
         if (!_collapsedGroups.contains(group.name))
           for (final table in group.tables) _railItem(table, groups),
       ],
@@ -760,9 +824,37 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _railGroupHeader(_SidebarGroup group) {
+  /// One-click "Sort groups A-Z", the group-level counterpart to each
+  /// group header's own per-table "Sort A-Z" icon.
+  Widget _railSortGroupsHeader(List<_SidebarGroup> groups) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: IconButton(
+          icon: const Icon(Icons.sort_by_alpha, size: 16),
+          tooltip: 'Sort groups A-Z',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+          visualDensity: VisualDensity.compact,
+          onPressed: () => _sortGroupsAlphabetically(groups),
+        ),
+      ),
+    );
+  }
+
+  /// [groups] is threaded through for group-level drag-reordering
+  /// ([_reorderGroup]) -- same reasoning [_railItem] already has for
+  /// per-table reordering. The header is now both a
+  /// `LongPressDraggable<_GroupDragPayload>` (drag this group elsewhere)
+  /// and a `DragTarget<_GroupDragPayload>` (drop another group onto this
+  /// one to reorder), nested around the existing `DragTarget<TableConfig>`
+  /// (drop a table here to move it into this group) -- Flutter dispatches a
+  /// drag only to targets whose generic type matches what's being dragged,
+  /// so the two drop behaviors never conflict at the same screen position.
+  Widget _railGroupHeader(_SidebarGroup group, List<_SidebarGroup> groups) {
     final collapsed = _collapsedGroups.contains(group.name);
-    return DragTarget<TableConfig>(
+    final tableDropTarget = DragTarget<TableConfig>(
       onAcceptWithDetails: (details) => _moveToGroup(details.data, group.name),
       builder: (context, candidateData, rejectedData) {
         return InkWell(
@@ -789,10 +881,12 @@ class _HomeShellState extends State<HomeShell> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                // Ungrouped isn't a real persisted group -- see
-                // _sortGroupAlphabetically's guard -- so no sort action for
-                // it, same reasoning as its group header not being a valid
-                // reorder target.
+                // Ungrouped isn't a real persisted group in `table_group` --
+                // see _sortGroupAlphabetically's guard -- so no per-table
+                // sort action for it. Group-*level* reordering (this
+                // header's own drag/drop and the "Sort groups A-Z" button
+                // above) applies to it fine, since table_group_order has no
+                // such restriction -- see _reorderGroup's own doc comment.
                 if (group.name != _ungroupedGroupName)
                   IconButton(
                     icon: const Icon(Icons.sort_by_alpha, size: 16),
@@ -805,6 +899,25 @@ class _HomeShellState extends State<HomeShell> {
               ],
             ),
           ),
+        );
+      },
+    );
+
+    final draggableHeader = LongPressDraggable<_GroupDragPayload>(
+      data: _GroupDragPayload(group.name),
+      feedback: _groupDragFeedback(group.name),
+      childWhenDragging: Opacity(opacity: 0.3, child: tableDropTarget),
+      child: tableDropTarget,
+    );
+
+    return DragTarget<_GroupDragPayload>(
+      onAcceptWithDetails: (details) => _reorderGroup(details.data.groupName, group.name, groups),
+      builder: (context, candidateData, rejectedData) {
+        return Container(
+          color: candidateData.isNotEmpty
+              ? Theme.of(context).colorScheme.secondaryContainer
+              : null,
+          child: draggableHeader,
         );
       },
     );
@@ -888,6 +1001,13 @@ class _HomeShellState extends State<HomeShell> {
         padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
         children: [
           const DrawerHeader(child: Text('Essentials')),
+          if (groups.isNotEmpty)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.sort_by_alpha, size: 18),
+              title: const Text('Sort groups A-Z'),
+              onTap: () => _sortGroupsAlphabetically(groups),
+            ),
           for (final group in groups) ..._drawerGroupChildren(group, groups),
           const Divider(height: 1),
           ListTile(
@@ -936,45 +1056,71 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  /// See [_railGroupHeader]'s doc comment for the nested-DragTarget
+  /// reasoning -- identical shape here, just wrapped around a `ListTile`
+  /// instead of the rail's compact icon column. `LongPressDraggable` is the
+  /// only path to reorder groups on touch, same as it already is for
+  /// tables within a group -- there's no secondary-tap gesture to fall back
+  /// to on Android the way the rail has right-click on Windows.
   List<Widget> _drawerGroupChildren(
     _SidebarGroup group,
     List<_SidebarGroup> groups,
   ) {
     final collapsed = _collapsedGroups.contains(group.name);
+    final tableDropTarget = DragTarget<TableConfig>(
+      onAcceptWithDetails: (details) => _moveToGroup(details.data, group.name),
+      builder: (context, candidateData, rejectedData) {
+        // Material, not a plain colored Container wrapping the ListTile
+        // -- Flutter flagged this for real ("ListTile background color
+        // or ink splashes may be invisible") the first time this drag
+        // highlight actually fired on a real device: ListTile paints its
+        // own background/ink splashes on the nearest Material ancestor,
+        // so an opaque Container sitting between it and that Material
+        // hides both. Material's own `color` paints at the right depth
+        // for ListTile's splash to render on top of correctly.
+        return Material(
+          color: candidateData.isNotEmpty
+              ? Theme.of(context).colorScheme.primaryContainer
+              : Colors.transparent,
+          child: ListTile(
+            dense: true,
+            leading: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
+            title: Text(
+              group.name,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            // See _railGroupHeader -- same guard, Ungrouped has no
+            // table_group rows to reorder tables within it. Group-level
+            // reordering (the long-press drag below) still applies to it.
+            trailing: group.name == _ungroupedGroupName
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.sort_by_alpha, size: 18),
+                    tooltip: 'Sort A-Z',
+                    onPressed: () => _sortGroupAlphabetically(group),
+                  ),
+            onTap: () => _toggleCollapsed(group.name),
+          ),
+        );
+      },
+    );
+
+    final draggableHeader = LongPressDraggable<_GroupDragPayload>(
+      data: _GroupDragPayload(group.name),
+      feedback: _groupDragFeedback(group.name),
+      childWhenDragging: Opacity(opacity: 0.3, child: tableDropTarget),
+      child: tableDropTarget,
+    );
+
     return [
-      DragTarget<TableConfig>(
-        onAcceptWithDetails: (details) => _moveToGroup(details.data, group.name),
+      DragTarget<_GroupDragPayload>(
+        onAcceptWithDetails: (details) => _reorderGroup(details.data.groupName, group.name, groups),
         builder: (context, candidateData, rejectedData) {
-          // Material, not a plain colored Container wrapping the ListTile
-          // -- Flutter flagged this for real ("ListTile background color
-          // or ink splashes may be invisible") the first time this drag
-          // highlight actually fired on a real device: ListTile paints its
-          // own background/ink splashes on the nearest Material ancestor,
-          // so an opaque Container sitting between it and that Material
-          // hides both. Material's own `color` paints at the right depth
-          // for ListTile's splash to render on top of correctly.
           return Material(
             color: candidateData.isNotEmpty
-                ? Theme.of(context).colorScheme.primaryContainer
+                ? Theme.of(context).colorScheme.secondaryContainer
                 : Colors.transparent,
-            child: ListTile(
-              dense: true,
-              leading: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
-              title: Text(
-                group.name,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              // See _railGroupHeader -- same guard, Ungrouped has no
-              // table_group rows to reorder.
-              trailing: group.name == _ungroupedGroupName
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.sort_by_alpha, size: 18),
-                      tooltip: 'Sort A-Z',
-                      onPressed: () => _sortGroupAlphabetically(group),
-                    ),
-              onTap: () => _toggleCollapsed(group.name),
-            ),
+            child: draggableHeader,
           );
         },
       ),
@@ -1043,6 +1189,17 @@ class _HomeShellState extends State<HomeShell> {
       ),
     );
   }
+
+  Widget _groupDragFeedback(String groupName) {
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Text(groupName, style: const TextStyle(fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
 }
 
 class _SidebarGroup {
@@ -1052,16 +1209,31 @@ class _SidebarGroup {
   final List<TableConfig> tables;
 }
 
-/// Buckets [tables] by [membership], in first-appearance order among
-/// [tables] itself (see the class doc comment on [HomeShell] for why group
-/// order isn't a stored field). Within a group, tables sort by
-/// `group_position`, falling back to their original [tables] index for any
-/// table that predates that group existing (or was never explicitly
-/// positioned) -- keeps ordering stable and deterministic without
-/// requiring every row to have an explicit position.
+/// The payload a group header's own `LongPressDraggable`/`DragTarget` pair
+/// carries -- just the group's name, distinct from [TableConfig] so
+/// Flutter's generic-typed drag-and-drop never confuses "drag a table onto
+/// a group" with "drag a group onto another group" at the same screen
+/// position (see [HomeShell._railGroupHeader]'s own doc comment).
+class _GroupDragPayload {
+  const _GroupDragPayload(this.groupName);
+
+  final String groupName;
+}
+
+/// Buckets [tables] by [membership], then orders the resulting groups by
+/// [groupOrder] (`table_group_order`, keyed by group name) -- falling back
+/// to first-appearance order among [tables] itself for any group with no
+/// explicit entry there, exactly the behavior every group had before that
+/// table existed. Within a group, tables sort by `group_position`, falling
+/// back to their original [tables] index for any table that predates that
+/// group existing (or was never explicitly positioned) -- keeps ordering
+/// stable and deterministic without requiring every row to have an
+/// explicit position, same fallback shape [groupOrder] itself now uses one
+/// level up.
 List<_SidebarGroup> _buildGroups(
   List<TableConfig> tables,
   List<TableGroupMembership> membership,
+  Map<String, int> groupOrder,
 ) {
   final membershipByTable = {for (final m in membership) m.tableName: m};
 
@@ -1077,6 +1249,17 @@ List<_SidebarGroup> _buildGroups(
     });
     bucket.add(MapEntry(i, table));
   }
+
+  // Captured before sorting `order` in place -- the fallback position for a
+  // never-explicitly-ordered group is its original first-appearance index,
+  // which would otherwise become self-referential once `order` itself is
+  // reordered below.
+  final fallbackGroupPosition = {for (var i = 0; i < order.length; i++) order[i]: i};
+  order.sort((a, b) {
+    final posA = groupOrder[a] ?? fallbackGroupPosition[a]!;
+    final posB = groupOrder[b] ?? fallbackGroupPosition[b]!;
+    return posA.compareTo(posB);
+  });
 
   return [
     for (final groupName in order)

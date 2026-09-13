@@ -9541,3 +9541,87 @@ debug APK pushed to MIKE-12R.
 **Mike's interactive verification: done, passed, on both MIKE-CU and
 MIKE-12R** -- a filtered column shows the small filter icon again, and
 tapping it does nothing (no stock TrinaGrid popup reappeared).
+
+## New feature: "Sort groups" -- group-level ordering, drag or Sort A-Z (2026-09-13)
+
+Extends the sidebar's existing within-a-group table ordering (drag,
+"Sort A-Z" per group header -- see "Follow-up, same phase: within-group
+table ordering" under the Settings & Persistence Architecture phase
+above) to the *groups themselves*, which until now had no stored order at
+all -- a group's position was always derived purely from first-appearance
+order among the nav's tables (see `home_shell.dart`'s own now-outdated doc
+comment, corrected as part of this change).
+
+**New infra table, `table_group_order`** (shared/synced, same bucket as
+`table_group`/`view_definitions`) -- deliberately its own tiny table
+keyed only by `group_name`, not a column bolted onto `table_group` (whose
+rows are per-*table*, so a group-level attribute would mean writing it
+redundantly onto every member row). Bootstrapped onto the live
+`essentials.db` via `tool/add_table_group_order_table.dart`, mirroring
+`add_view_definitions_table.dart`/`add_template_definitions_table.dart`'s
+exact pattern (authors a real `migration_log` row, applies immediately to
+this device, refuses to guess a `--device-id` for anything but the
+default local path). Added to `schema.sql`, `tool/bootstrap_fresh_db
+.dart`'s `infraSchemaStatements`, and `server/bin/server.dart`'s
+`schemaStatements` for from-scratch-rebuild parity, and to
+`table_discovery_service.dart`'s `infraTables` set (excludes it from
+`SchemaEditorService`'s name-collision check, the old heuristic discovery
+path `OrphanCleanupService` still uses, and `SearchIndexService`'s
+full-text indexing pass).
+
+**A genuine simplification this new table enables, worth remembering:**
+because `table_group_order` is keyed by a plain `group_name` string with
+no relationship to `table_group`'s per-table rows, the synthetic
+"Ungrouped" bucket can have a real stored position here -- unlike
+per-table ordering *within* Ungrouped, which still correctly has no
+`table_group` row to position anything against (that restriction,
+`_sortGroupAlphabetically`/`_reorderTable`'s existing guards, is
+unchanged). Group-level Sort A-Z and drag-reordering both apply to
+Ungrouped exactly like any other group, no special-casing needed.
+
+**`SidebarGroupingDao`** gained `loadGroupOrder()`/`setGroupDisplayOrder()`
+(whole-set replace, same pattern as `setGroupOrder`'s per-table version)/
+`removeGroupOrder()` (tombstone, not reachable from any UI -- there's no
+"delete a group" concept -- but needed for test cleanup, matching every
+other DAO's own dedicated removal method).
+
+**`home_shell.dart`'s `_buildGroups`** now takes the loaded order map as a
+third parameter: groups are bucketed exactly as before, then the bucket
+*order* is sorted by `table_group_order` position, falling back to each
+group's original first-appearance index (captured before sorting, to
+avoid the fallback becoming self-referential once the list being sorted
+is the same list the fallback reads from) -- same fallback shape
+per-table ordering already uses one level up.
+
+**UI, both platforms:** each group header (rail's compact header, drawer's
+`ListTile`) is now *also* a `LongPressDraggable<_GroupDragPayload>` and a
+`DragTarget<_GroupDragPayload>`, nested around the existing
+`DragTarget<TableConfig>` (drop a table here to move it into this group)
+-- Flutter only dispatches a drag to a target whose generic type matches
+what's being dragged, so the two behaviors coexist at the same screen
+position without conflict, confirmed by reasoning through Flutter's own
+type-checked drag-and-drop dispatch (`_GroupDragPayload` is a new,
+minimal wrapper class solely to keep it distinct from `TableConfig`'s
+own drag payload). A "Sort groups A-Z" action sits above the group list
+in both the rail (a small icon button) and the drawer (a `ListTile`),
+calling `_sortGroupsAlphabetically`.
+
+New test file, `test/sidebar_grouping_dao_test.dart` (5 tests, against the
+real `essentials.db` -- this table has no relationship to physical
+tables, so unlike most DAO tests here there's no `SchemaEditorService
+.createTable` involved and no `crdt_sync` batch-atomicity risk from table
+creation, though it's still run on its own as a matter of course) --
+absence when never ordered, position assignment, whole-set-replace
+overwrite, uniform treatment of an "Ungrouped"-named group, and tombstone
+removal. `flutter analyze` clean project-wide (12 pre-existing, unrelated
+info-lints aside), `flutter build windows`/`apk --debug` both clean,
+debug APK pushed to MIKE-12R. Confirmed via direct query afterward: the
+test's own tagged rows are present only as tombstones (`is_deleted = 1`),
+`PRAGMA integrity_check: ok`.
+
+**Build-verified only -- not yet Mike-tested interactively.** Next: on
+MIKE-CU, long-press-drag one group header onto another to reorder them,
+confirm "Sort groups A-Z" sorts every group (Ungrouped included)
+alphabetically, confirm the new order persists across a restart, then
+F5/relaunch MIKE-12R to confirm both the schema change and the group
+order itself sync there too.

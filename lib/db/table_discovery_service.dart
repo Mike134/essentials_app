@@ -41,6 +41,9 @@ const Set<String> infraTables = {
   'device_settings',
   'field_metadata',
   'table_group',
+  // Sidebar group display order -- shared, synced, never a nav/grid entry
+  // of its own. See schema.sql's own doc comment on `table_group_order`.
+  'table_group_order',
   // schema_admin's migration system -- see CLAUDE.md "schema_admin --
   // migration authoring tool". Real CRDT-tracked tables (sync like
   // everything else), but never a normal nav/grid entry.
