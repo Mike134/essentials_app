@@ -10255,5 +10255,18 @@ MIKE-12R.
 **Mike's interactive verification on MIKE-CU: done, passed** -- then
 asked for "an additional 200%" on top of that (2 -> 6, i.e. `height: 2`
 plus 200% of itself). Both copies updated again, same reasoning,
-`flutter analyze`/both builds clean, debug APK pushed to MIKE-12R. Not
-yet Mike-tested interactively at this new size.
+`flutter analyze`/both builds clean, debug APK pushed to MIKE-12R.
+
+**Real gotcha found: `height` was the wrong property the whole time --
+Mike correctly noticed each increase "grows microscopically" despite
+tripling it.** `Divider.height` only controls the *space allocated
+around* the line (padding above/below), not how thick the visible bar
+itself looks -- the actual line width comes from `thickness` (left unset
+this whole time, defaulting to ~1px regardless of `height`). Every prior
+change in this section was quadrupling an invisible margin, not the bar
+Mike was actually looking at. Fixed properly this time, both copies:
+`Divider(height: 16, thickness: 11)` -- a real 1000% increase on
+`thickness`'s ~1px default, with `height` bumped just enough to contain
+the now-much-thicker line without clipping it. `flutter analyze`/both
+builds clean, debug APK pushed to MIKE-12R. Not yet Mike-tested
+interactively.
