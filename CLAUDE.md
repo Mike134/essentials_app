@@ -9809,3 +9809,81 @@ creates the script above via the Scripts screen, binds it to `next`'s
 `button_clicked` event via Manage events, and confirms pressing "Next" on
 a real Agenda record (Guava Updates or similar) creates a correct new
 occurrence while leaving the original row exactly as it was.
+
+### Script refined, same session: duplicate check + Status reset -- a real message-box (Continue/Abort) capability explicitly deferred, not built
+
+Mike's own follow-up spec for the actual script: check whether the next
+occurrence already exists before creating it, and if so show a message
+box with Continue/Abort buttons; also reset the new record's Status field
+to "none" so a fresh occurrence doesn't inherit whatever state the last
+one ended up in.
+
+**The Status reset and the existence check both needed zero new engine
+work** -- fully composable from primitives that already existed before
+this session's own `nextOccurrence`/`fields()` additions:
+`table('Agenda').find({description: ..., start: next.start})` for the
+duplicate check (Activity + the newly-computed Start as the match key --
+Agenda has no stable "series id" linking occurrences together, so this is
+the same name-based-identity convention `RecurringReminderService
+._titleColumnFor`/Geo Location/Recurring Reminders itself all already
+use), and `table('status').find({status: 'none'})` for resolving the
+lookup id to write into `Status` (a linked field stores the target row's
+id, not its display text).
+
+**The Continue/Abort message box is a genuinely different kind of ask,
+flagged rather than faked:** today's script model is synchronous, runs in
+an isolated context with a fixed 5-second timeout, and defers every write
+(`record.save()`/`table().create()`) until *after* the script finishes
+cleanly -- there is no mechanism for a script to pause mid-run, show a
+real dialog, and wait (potentially far longer than 5 seconds) for a human
+to tap a button. A real version of this would need a genuine two-phase
+execution model (script requests confirmation as a captured effect, same
+category as today's `notifications`/`navigations` -> the app shows a real
+dialog -> a second phase actually performs the write only if confirmed)
+-- a real engine change, not something achievable by writing a cleverer
+script, and worth its own short design pass if ever wanted.
+
+**Resolved with Mike, not built around:** proposed the safe alternative
+that ships with zero engine work -- if the occurrence already exists, the
+script just aborts automatically and `notify()`s why, instead of prompting;
+recreating it requires deleting the existing occurrence first and pressing
+Next again. Mike confirmed: "The auto-abort version is good enough for
+now." Final script text (both here and in the Guide, per the standing
+"user-facing changes update the Guide too" rule):
+
+```javascript
+var next = record.nextOccurrence('start', 'timeframe', 'period', 'end_2');
+
+if (next === null) {
+  notify('No further occurrences for "' + record.get('description') + '".');
+} else {
+  var existing = table('Agenda').find({
+    description: record.get('description'),
+    start: next.start
+  });
+
+  if (existing.length > 0) {
+    notify('Already exists: "' + record.get('description') + '" on ' + next.start + '. Delete it first if you want to recreate it.');
+  } else {
+    var noneStatus = table('status').find({status: 'none'});
+
+    var copy = record.fields();
+    delete copy.id;
+    copy.start = next.start;
+    copy.end_2 = next.end;
+    copy.status = noneStatus.length > 0 ? noneStatus[0].id : null;
+
+    table('Agenda').create(copy);
+    notify('Created next occurrence: ' + next.start);
+  }
+}
+```
+
+No code changes this pass -- purely a script-design conversation, nothing
+for `flutter analyze`/build/tests to re-verify. **Still not attached to
+the button** -- next, same as before: Mike pastes this into the Scripts
+screen, binds it to `next`'s `button_clicked` event, and tests it for
+real on a live Agenda record, including the duplicate-abort path (press
+Next twice in a row on the same record without deleting the first result,
+confirm the second press aborts with the expected message rather than
+creating a second duplicate).
