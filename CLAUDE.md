@@ -10238,6 +10238,6 @@ of labor as every other UI-level grid feature in this project.
 `flutter analyze` clean, `flutter build windows`/`apk --debug` both
 clean, debug APK pushed to MIKE-12R.
 
-**Mike's interactive verification on MIKE-CU: done, passed.** "Very
-nice!!" -- the button appears correctly sized and centered, and works
-exactly like the form's version.
+**Mike's interactive verification: done, passed, on both MIKE-CU and
+MIKE-12R.** "Very nice!!" -- the button appears correctly sized and
+centered, and works exactly like the form's version, on both platforms.
