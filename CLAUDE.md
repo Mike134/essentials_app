@@ -9942,3 +9942,105 @@ test tables.
 **Mike's interactive verification on MIKE-CU: done, passed** -- the new
 row now appears in the Grid immediately, no need to leave and return to
 the table.
+
+## Incident: the sync server crash-looped for real, root-caused and fixed -- a new `MigrationService.applyPending()` vs. `getChangeset()` race, distinct from the already-documented one
+
+Mike reported the new script had reached MIKE-12R but the "Next" button
+field itself hadn't -- investigating that turned up something much more
+serious: **the sync server had actually crashed and stayed dead**, not
+just lagged.
+
+**Root cause, confirmed via `server.err.log`, not guessed:** an unhandled
+exception, `no such table: script_record_<tag>` -- a stray table name
+matching this session's own earlier `script_api_runtime_test.dart` test
+runs (the "Script Record" throwaway tables from writing/testing
+`record.fields()`/`record.nextOccurrence()` earlier this session). The
+table was genuinely, correctly gone (`PRAGMA integrity_check: ok`, no
+such table in `sqlite_master`) -- this wasn't data corruption. Read
+`sqlite_crdt`'s own source to find the real mechanism rather than
+guessing: `SqliteCrdt.getTables()` queries `sqlite_schema` **fresh, live,
+uncached** on every call, no stale in-memory list involved at all (ruling
+out the "stale cache" theory the table_group_order incident earlier this
+session had trained toward). The actual cause: a genuine **time-of-check-
+to-time-of-use race** between `MigrationService.applyPending()` (which
+had a 192-migration backlog -- this session's own test churn, create-
+then-immediately-drop for dozens of throwaway tables, never applied to
+the server because it had been stopped/restarted several times without
+an uninterrupted window to finish catching up) and `SqlCrdt.getChangeset()`
+(triggered by CU's own reconnect), both running against the same live
+`hub.db` connection at server startup. `getTables()` would list a table
+that `applyPending()`'s own CREATE-then-DROP sequence was mid-cycle on;
+by the time `getChangeset()`'s per-table `SELECT * FROM ...` actually ran
+a moment later, `applyPending()` had already dropped it again -- crash.
+Confirmed by cross-referencing `migration_status.attempted_at` timestamps
+(create and drop, milliseconds apart, both freshly applied *today*, not
+historical) against the crash timing -- this wasn't a one-off, it
+recurred on **two consecutive restarts**, since each restart's
+`applyPending()` pass only got partway through the backlog before the
+crash killed the process, leaving the rest to race again next restart.
+The tray host has no crash-monitoring/auto-restart of its own (only a
+manual "Restart server" tray-menu click), so the server sat silently dead
+for a real stretch of time with nothing surfacing it -- everything CU
+tried to push in the meantime just hit a dead listener.
+
+**A genuinely different bug from the earlier `table_group_order`
+incident this same session**, worth distinguishing even though both
+involve `sql_crdt`/schema-change races: that one was the already-
+documented "new table's migration + first row bundled in one changeset,
+rolled back when the peer doesn't have the physical table yet" batch-
+atomicity gap (`tool/adopt_migrations.dart`'s own doc comment). This one
+is `MigrationService`'s own DDL racing `getChangeset()`'s two-step read,
+a mirror image of the *already-fixed* "database is locked" race between
+`MigrationService` and `crdt_sync`'s own merge (`server/bin
+/migration_service.dart`'s own doc comment, "Real-device final
+verification pass") -- same general family (this server's live-apply
+trigger creating new concurrency surfaces that a 5-minute periodic check
+never had reason to hit), a new specific instance, not yet defended
+against by the existing lock-retry fix (which only catches "database is
+locked," not "no such table" from a genuine TOCTOU gap).
+
+**Fix applied: drained the backlog, not (yet) a code fix for the
+race itself.** New tool, `tool/drain_hub_migrations.dart` -- runs the
+server's own `MigrationService.applyPending()` (a plain Dart class, no
+Flutter dependency, imported directly across the sibling `server/`
+package via a relative path) against `hub.db` **with no HTTP server
+running at all**, so nothing can race it. Ran once, cleanly: 192 pending
+migrations, 0 failures, `integrity_check: ok` afterward. Restarted the
+real server -- confirmed stable, no crash recurrence, CU's backlog
+(the script + event binding) already correctly present on `hub.db` from
+the one merge that *had* succeeded before the crash.
+
+**The actual reason 12R still didn't show the button, once its data was
+directly inspected: nothing was missing at all.** Pulled MIKE-12R's own
+`essentials.db` (main + WAL + SHM, checkpointed, integrity-checked) and
+confirmed `field_definitions`, the physical `agenda.next` column, the
+script, and the event binding were **all already correctly present** --
+this was purely the standard "table/field discovery runs at launch, not
+live" limitation for a field on an *already-known* table, not a sync gap.
+Force-stopped and relaunched the app fresh; the button appeared
+immediately, confirmed by Mike.
+
+**Not yet fixed, a real, flagged follow-up:** the underlying
+`MigrationService.applyPending()`-vs-`getChangeset()` race itself is
+still there in the code -- draining the backlog *this time* removes the
+conditions that triggered it today, but a large-enough future migration
+backlog colliding with a live reconnect at just the wrong moment could
+still crash the server the same way. Two independent angles worth a
+future pass, neither attempted here (drain-the-backlog was the correct,
+minimal fix for *today's* actual incident): (1) `server.dart` could avoid
+calling `applyPending()` and accepting connections in the same window
+during startup -- finish applying everything pending *before*
+`HttpServer.bind`, which it already does structurally, but the periodic/
+live-trigger re-runs of `applyPending()` after startup have no such
+ordering guarantee against a concurrent `getChangeset()`; (2) the tray
+host could gain real crash-monitoring (detect `server.exe` exiting
+unexpectedly, auto-restart, maybe alert Mike) instead of relying on
+someone noticing sync has silently stopped -- the exact same category of
+gap the Windows background-check watchdog already solved for scheduled
+scripts, just never extended to the sync server's own liveness.
+
+**Session outcome, confirmed on both platforms:** MIKE-CU verified
+earlier (script works, duplicate-abort works, Grid live-refresh works);
+**MIKE-12R now confirmed too** -- the Next button is visible and
+functional there as well. The whole recurrence-advancement feature (this
+session's original ask) is done and working end-to-end on both devices.
