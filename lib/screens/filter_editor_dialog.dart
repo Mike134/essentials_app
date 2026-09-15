@@ -238,9 +238,22 @@ class _FilterEditorDialogState extends State<_FilterEditorDialog> {
     );
   }
 
+  /// The row's currently-selected [TrinaColumn], or `null` if nothing's
+  /// picked yet -- looked up by field name since [_EditableFilterRow] only
+  /// ever stores the field string (matching what actually gets saved/
+  /// applied), not the column object itself.
+  TrinaColumn? _columnFor(_EditableFilterRow row) {
+    for (final column in _filterableColumns) {
+      if (column.field == row.columnField) return column;
+    }
+    return null;
+  }
+
   Widget _buildRow(int index) {
     final row = _rows[index];
     final isSelected = index == _selectedIndex;
+    final column = _columnFor(row);
+    final showDateKeywordButtons = column != null && isDateFilterColumn(column);
     return Material(
       color: isSelected ? Theme.of(context).colorScheme.primaryContainer : null,
       child: InkWell(
@@ -256,36 +269,69 @@ class _FilterEditorDialogState extends State<_FilterEditorDialog> {
         onTap: () => setState(() => _selectedIndex = index),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Radio<int>(value: index),
-              Expanded(
-                child: DropdownButton<String?>(
-                  isExpanded: true,
-                  value: row.columnField,
-                  items: [
-                    for (final column in _filterableColumns)
-                      DropdownMenuItem(value: column.field, child: Text(column.title, overflow: TextOverflow.ellipsis)),
-                  ],
-                  onChanged: (value) => setState(() => row.columnField = value),
+              Row(
+                children: [
+                  Radio<int>(value: index),
+                  Expanded(
+                    child: DropdownButton<String?>(
+                      isExpanded: true,
+                      value: row.columnField,
+                      items: [
+                        for (final candidate in _filterableColumns)
+                          DropdownMenuItem(value: candidate.field, child: Text(candidate.title, overflow: TextOverflow.ellipsis)),
+                      ],
+                      onChanged: (value) => setState(() => row.columnField = value),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: row.filterType.title,
+                      items: [
+                        for (final type in displayAwareFilterTypes)
+                          DropdownMenuItem(value: type.title, child: Text(type.title, overflow: TextOverflow.ellipsis)),
+                      ],
+                      onChanged: (value) => setState(() => row.filterType = _typeByTitle(value!)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(controller: row.valueController, decoration: const InputDecoration(isDense: true)),
+                  ),
+                ],
+              ),
+              // Only for a date/dateTime column -- these words are
+              // meaningless as a filter value on anything else, and
+              // `displayAwareFilterTypes`' own keyword handling only ever
+              // looks at them for a date/dateTime column in the first
+              // place (`isDateFilterColumn`). Sets the filter type to
+              // Equals ("Today" as a *range* reads most naturally there --
+              // "on or after"/"before" is still reachable by hand-picking
+              // Greater than/Less than afterward) and fills the value box
+              // with the exact word `_dateKeywordRange` recognizes, rather
+              // than making Mike type/remember it.
+              if (showDateKeywordButtons)
+                Padding(
+                  padding: const EdgeInsets.only(left: 40, top: 4),
+                  child: Wrap(
+                    spacing: 6,
+                    children: [
+                      for (final label in dateFilterKeywordLabels)
+                        ActionChip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(label),
+                          onPressed: () => setState(() {
+                            row.filterType = _typeByTitle(TrinaFilterTypeEquals.name);
+                            row.valueController.text = label;
+                          }),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: DropdownButton<String>(
-                  isExpanded: true,
-                  value: row.filterType.title,
-                  items: [
-                    for (final type in displayAwareFilterTypes)
-                      DropdownMenuItem(value: type.title, child: Text(type.title, overflow: TextOverflow.ellipsis)),
-                  ],
-                  onChanged: (value) => setState(() => row.filterType = _typeByTitle(value!)),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(controller: row.valueController, decoration: const InputDecoration(isDense: true)),
-              ),
             ],
           ),
         ),
