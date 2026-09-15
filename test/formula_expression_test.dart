@@ -199,6 +199,31 @@ void main() {
       expect(evaluate('round(3.7)'), 4);
       expect(evaluate("if(true, 1, 2)"), 1);
     });
+
+    test('WEEKDAY defaults to the short (ddd) name', () {
+      // 2026-09-14 is a Monday.
+      expect(evaluate('WEEKDAY({start})', {'start': '2026-09-14'}), 'Mon');
+      expect(evaluate('WEEKDAY({start})', {'start': '2026-09-20'}), 'Sun');
+    });
+
+    test('WEEKDAY honors an explicit dddd/ddd format argument', () {
+      expect(evaluate("WEEKDAY({start}, 'dddd')", {'start': '2026-09-14'}), 'Monday');
+      expect(evaluate("WEEKDAY({start}, 'ddd')", {'start': '2026-09-14'}), 'Mon');
+      // An unrecognized format falls back to the short name rather than
+      // throwing -- same "bad input degrades, never throws" posture as
+      // every other function here.
+      expect(evaluate("WEEKDAY({start}, 'bogus')", {'start': '2026-09-14'}), 'Mon');
+    });
+
+    test('WEEKDAY works on a dateTime (not just a plain date) value', () {
+      expect(evaluate('WEEKDAY({start})', {'start': '2026-09-12 08:30'}), 'Sat');
+      expect(evaluate('WEEKDAY({start})', {'start': '2026-09-12 08:30:00'}), 'Sat');
+    });
+
+    test('WEEKDAY yields null for a missing or unparseable value', () {
+      expect(evaluate('WEEKDAY({missing})'), isNull);
+      expect(evaluate("WEEKDAY('not a date')"), isNull);
+    });
   });
 
   group('parse errors', () {

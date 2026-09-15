@@ -483,7 +483,41 @@ final Map<String, _FunctionDef> _functions = {
   // MIN/MAX would be surprising more often than useful here.
   'MIN': _FunctionDef(1, -1, (args) => _extreme(args, takeSmaller: true)),
   'MAX': _FunctionDef(1, -1, (args) => _extreme(args, takeSmaller: false)),
+  // The date value is whatever `{field}` resolves to -- for a date/dateTime
+  // field this is always the raw ISO8601 TEXT storage string (see
+  // `FormulaService.typedValue`, which passes date/dateTime fields through
+  // unconverted), parsed the same way every other date-handling site in
+  // this app already relies on `DateTime.tryParse` accepting (`date_format
+  // .dart`'s own doc comment). Not a field itself -> not a date -> null,
+  // same "bad input yields null, never throws" posture as every other
+  // function here. Second argument picks short ("ddd", default) vs. full
+  // ("dddd") name, case-insensitive; anything else falls back to short.
+  'WEEKDAY': _FunctionDef(1, 2, (args) {
+    final date = _asFormulaDate(args[0]);
+    if (date == null) return null;
+    final full = args.length > 1 && args[1]?.toString().trim().toLowerCase() == 'dddd';
+    return _weekdayNames(full: full)[date.weekday - 1];
+  }),
 };
+
+DateTime? _asFormulaDate(Object? value) {
+  if (value is DateTime) return value;
+  if (value is String) return DateTime.tryParse(value.trim());
+  return null;
+}
+
+const _shortWeekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const _fullWeekdayNames = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+];
+
+List<String> _weekdayNames({required bool full}) => full ? _fullWeekdayNames : _shortWeekdayNames;
 
 Object? _extreme(List<Object?> args, {required bool takeSmaller}) {
   num? best;
