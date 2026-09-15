@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' show dirname, extension;
 import 'package:permission_handler/permission_handler.dart';
@@ -28,6 +29,7 @@ import '../util/links.dart';
 import '../util/lookup_value.dart';
 import '../util/scheduling/recurrence_when_field.dart';
 import '../util/scheduling/recurring_reminder_fields.dart';
+import '../util/text_selection_insert.dart';
 
 /// Add/edit form for a single row, entirely driven by [config]. Renders
 /// text/number/boolean fields directly, lookup fields (batch 2+) as a
@@ -214,21 +216,28 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
             ? _dateTimeDisplayText(existingValue)
             : existingValue?.toString() ?? '';
         _controllers[field.column] = TextEditingController(text: displayText);
-        // Recompute readOnly fields (e.g. yearly_cost) when the user tabs
-        // off an editable field that might feed them -- only wired up when
-        // this config actually has a preview formula (see computePreview's
-        // doc comment), and never for readOnly fields themselves (those are
-        // outputs, not inputs). Also allocated for an autocomplete-eligible
-        // field regardless of computePreview -- Autocomplete requires its
-        // own FocusNode paired with the TextEditingController it's given
-        // (see _buildAutocompleteField); the listener itself stays a safe
-        // no-op when computePreview is null (_recomputePreview's own early
-        // return).
-        if (!field.readOnly && (widget.config.computePreview != null || field.isAutocompleteText)) {
-          final focusNode = FocusNode();
-          focusNode.addListener(() {
-            if (!focusNode.hasFocus) _recomputePreview();
-          });
+        // Every writable plain-text field gets its own FocusNode now, not
+        // just the computePreview/autocomplete cases that used to gate
+        // this -- see _handleFieldKeyEvent's own doc comment for why: a
+        // real, confirmed Windows-desktop bug where Flutter's native
+        // Enter-key/newline handling in a multiline field silently never
+        // inserts the character, at all, ever (a plain-text notes field
+        // like this needs Enter to work regardless of whether the table
+        // has a computed/autocomplete field anywhere on it). Never for a
+        // readOnly field (those are outputs, not something the user
+        // types into).
+        if (!field.readOnly) {
+          final focusNode = FocusNode(onKeyEvent: (node, event) => _handleFieldKeyEvent(field, event));
+          // Recompute readOnly fields (e.g. yearly_cost) when the user
+          // tabs off an editable field that might feed them -- only
+          // wired up when this config actually has a preview formula
+          // (see computePreview's own doc comment); a safe no-op
+          // otherwise (_recomputePreview's own early return).
+          if (widget.config.computePreview != null || field.isAutocompleteText) {
+            focusNode.addListener(() {
+              if (!focusNode.hasFocus) _recomputePreview();
+            });
+          }
           _focusNodes[field.column] = focusNode;
         }
       }
@@ -279,6 +288,54 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
       focusNode.dispose();
     }
     super.dispose();
+  }
+
+  /// Manually inserts a real `\n` into [field]'s own controller on a plain
+  /// Enter or numpad Enter press -- a real, confirmed bug on Windows
+  /// desktop, not a theoretical one: Flutter's own Dart-side configuration
+  /// here is exactly what its docs recommend for "Enter inserts a line
+  /// break" (`maxLines: null` already makes `keyboardType` resolve to
+  /// `TextInputType.multiline`, which in turn makes `textInputAction`
+  /// resolve to `TextInputAction.newline` -- confirmed by reading
+  /// `EditableText`'s own source, not assumed), but native Enter-key
+  /// handling on Windows silently inserts nothing at all -- verified three
+  /// separate ways (plain Enter, Ctrl+Enter, Shift+Enter), and confirmed
+  /// via save-then-reopen that the newline never reached the saved value,
+  /// not just a live-typing rendering lag. This bypasses that native path
+  /// entirely rather than trying to fix it, since the actual insertion
+  /// logic lives in the platform's own embedder, unreachable from here.
+  ///
+  /// A safe no-op (returns [KeyEventResult.ignored], letting Flutter's
+  /// normal handling proceed) for [field.isAutocompleteText] -- that field
+  /// shares this exact `FocusNode` (see `_buildAutocompleteField`'s own
+  /// `focusNode: _focusNodes[field.column]!`) but is deliberately kept
+  /// single-line, where Enter's job is accepting the highlighted
+  /// suggestion, not inserting a newline. Also a no-op for every key other
+  /// than a plain/numpad Enter, so Ctrl/Shift/Alt+Enter and everything
+  /// else -- copy/paste, arrow-key navigation, normal typing -- reach
+  /// Flutter's own handling completely unchanged.
+  ///
+  /// **Deliberately gated to Windows only** (`Platform.isWindows`), not
+  /// applied everywhere just because it's harmless-looking. Only Windows
+  /// was ever confirmed broken; Android's native Enter/newline handling
+  /// has never been reported as failing, and there's no way to prove from
+  /// here that the native and this manual path can never *both* fire for
+  /// the same keypress on a platform this wasn't tested against -- if
+  /// Android's own native insertion already works, adding a second,
+  /// independent one here risks a genuinely new double-newline bug rather
+  /// than fixing anything. Scoping this to the one platform with an actual
+  /// confirmed failure avoids that risk entirely.
+  KeyEventResult _handleFieldKeyEvent(FieldConfig field, KeyEvent event) {
+    if (!Platform.isWindows) return KeyEventResult.ignored;
+    if (field.isAutocompleteText) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final isEnter =
+        event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.numpadEnter;
+    if (!isEnter) return KeyEventResult.ignored;
+
+    final controller = _controllers[field.column]!;
+    controller.value = insertAtSelection(controller.value, '\n');
+    return KeyEventResult.handled;
   }
 
   /// The in-progress field values a save would write, keyed by column --
@@ -546,25 +603,31 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.isEditing ? 'Edit' : 'Add'),
         // Save lives here, not at the bottom of the form -- Mike's ask:
-        // reachable without scrolling through a long form first. Directly
-        // right of the title, before any other appBarActions (e.g. the
-        // split-pane order screen's "Items" button) so it's the first
-        // thing reached tabbing/scanning right from the title.
-        actions: [
-          TextButton(
-            onPressed: _saving ? null : _save,
-            child: _saving
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Save'),
-          ),
-          ...?widget.appBarActions,
-        ],
+        // reachable without scrolling through a long form first. Put in
+        // the `title` slot (not `actions`) so it sits directly to the
+        // right of "Edit"/"Add", left-aligned with the title, rather than
+        // pinned to the far right edge the way `actions` always renders --
+        // a second, later ask, once the far-right placement read as
+        // unnatural in practice.
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(widget.isEditing ? 'Edit' : 'Add'),
+            const SizedBox(width: 16),
+            TextButton(
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Save'),
+            ),
+          ],
+        ),
+        actions: [...?widget.appBarActions],
       ),
       body: Form(
         key: _formKey,
@@ -1330,6 +1393,21 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
         controller: _controllers[field.column],
         focusNode: _focusNodes[field.column],
         maxLines: null,
+        // `textInputAction: newline` explicit, not just relying on
+        // Flutter's own implicit inference (`textInputAction` defaults to
+        // `.newline` whenever `keyboardType == TextInputType.multiline` --
+        // true by reading EditableText's own source, and the switch below
+        // already requests multiline for every non-numeric field). Made
+        // explicit because of a real, Android-specific symptom found live:
+        // the on-screen keyboard showed a checkmark ("Done") action
+        // instead of a return/newline one, with no way to enter a line
+        // break at all -- the Windows fix above (`_handleFieldKeyEvent`)
+        // never even gets a chance to help there, since there's no Enter
+        // keypress happening in the first place, just a tap on that
+        // checkmark. Being explicit removes any ambiguity in what's
+        // actually requested from the platform, regardless of whether the
+        // implicit default was really the cause.
+        textInputAction: TextInputAction.newline,
         // Same blue-underline treatment as the grid's link renderer, so a
         // link field reads as a link here too, not just via the icon.
         style: field.isLink
@@ -1413,10 +1491,15 @@ class _GenericFormScreenState extends State<GenericFormScreen> {
               ? const BoxConstraints()
               : null,
         ),
+        // `TextInputType.multiline` (not `.text`) for every non-numeric
+        // field, matching this field's own `maxLines: null` above and
+        // pairing with the explicit `textInputAction: newline` -- see that
+        // parameter's own doc comment for why this got made explicit
+        // rather than left to Flutter's implicit default.
         keyboardType: switch (field.type) {
           FieldType.integer => TextInputType.number,
           FieldType.real => const TextInputType.numberWithOptions(decimal: true),
-          _ => TextInputType.text,
+          _ => TextInputType.multiline,
         },
         validator: field.required
             ? (value) =>
